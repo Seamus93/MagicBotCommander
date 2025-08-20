@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Scrollbar dark stile Apple-like */
+.modal-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.modal-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.modal-scroll::-webkit-scrollbar-thumb {
+  background-color: #444; /* scuro ma visibile */
+  border-radius: 10px;
+}
+
+.modal-scroll:hover::-webkit-scrollbar-thumb {
+  background-color: #666;
+}
+
+.modal-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #444 transparent;
+}
