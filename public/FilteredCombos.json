@@ -1,0 +1,3033 @@
+{
+  "combos": [
+    {
+      "id": "2397-3634-3821",
+      "of": [
+        {
+          "id": 1340
+        }
+      ],
+      "uses": [
+        {
+          "card": {
+            "id": 3821,
+            "name": "Peregrine Drake",
+            "spoiler": false,
+            "oracleId": "0bd67481-6bd9-48d6-92bd-8933b5ea1eae",
+            "typeLine": "Creature — Drake"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "H"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 3634,
+            "name": "Venser, Shaper Savant",
+            "spoiler": false,
+            "oracleId": "0f41cefc-d6ff-4db7-ba35-502b7e081de1",
+            "typeLine": "Legendary Creature — Human Wizard"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "H"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 2397,
+            "name": "Panharmonicon",
+            "spoiler": false,
+            "oracleId": "76678885-3674-443d-b9a2-2a460cf6aac0",
+            "typeLine": "Artifact"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "B"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        }
+      ],
+      "notes": "",
+      "prices": {
+        "tcgplayer": "4.38",
+        "cardmarket": "3.25",
+        "cardkingdom": "6.83"
+      },
+      "status": "OK",
+      "spoiler": false,
+      "identity": "U",
+      "includes": [
+        {
+          "id": 1340
+        },
+        {
+          "id": 28081
+        }
+      ],
+      "produces": [
+        {
+          "feature": {
+            "id": 4,
+            "name": "Infinite ETB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 3,
+            "name": "Infinite LTB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 28,
+            "name": "Infinite mana lands you control can produce",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 17,
+            "name": "Infinite storm count",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        }
+      ],
+      "requires": [],
+      "legalities": {
+        "brawl": false,
+        "predh": false,
+        "legacy": true,
+        "modern": false,
+        "pauper": false,
+        "pioneer": false,
+        "vintage": true,
+        "standard": false,
+        "commander": true,
+        "premodern": false,
+        "oathbreaker": true,
+        "pauperCommander": false,
+        "pauperCommanderMain": false
+      },
+      "popularity": 12992,
+      "bracketTag": "C",
+      "description": "Cast Peregrine Drake by paying {4}{U}.\nWhen Peregrine Drake enters the battlefield, it triggers itself twice due to Panharmonicon.\nResolve one Peregrine Drake trigger, untapping five lands.\nActivate those lands by tapping them to add at least {3}{U}{U}.\nResolve the remaining Peregrine Drake trigger, untapping five lands.\nActivate those lands by tapping them to add at least {4}{U}.\nCast Venser by paying {2}{U}{U}.\nWhen Venser enters the battlefield, it triggers itself twice due to Panharmonicon, returning itself and Peregrine Drake from the battlefield to your hand.\nRepeat.",
+      "manaNeeded": "{4}{U}",
+      "variantCount": 1,
+      "manaValueNeeded": 5,
+      "easyPrerequisites": "",
+      "notablePrerequisites": "You control lands that can produce at least {3}{U}{U}."
+    },
+    {
+      "id": "864-1987-3821",
+      "of": [
+        {
+          "id": 2775
+        }
+      ],
+      "uses": [
+        {
+          "card": {
+            "id": 1987,
+            "name": "Ghostly Flicker",
+            "spoiler": false,
+            "oracleId": "ad0070db-6454-41cb-861f-8f5b8fc2a3b8",
+            "typeLine": "Instant"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "H"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 3821,
+            "name": "Peregrine Drake",
+            "spoiler": false,
+            "oracleId": "0bd67481-6bd9-48d6-92bd-8933b5ea1eae",
+            "typeLine": "Creature — Drake"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "B"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 864,
+            "name": "Eternal Witness",
+            "spoiler": false,
+            "oracleId": "30b24e8e-3b0e-4d8e-90f3-f66eb7c1858c",
+            "typeLine": "Creature — Human Shaman"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "B"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        }
+      ],
+      "notes": "If you control five lands that can tap to produce at least {3}{U}, this combo nets infinite mana, and you may blink any other permanent besides Peregrine Drake.",
+      "prices": {
+        "tcgplayer": "2.22",
+        "cardmarket": "1.66",
+        "cardkingdom": "4.33"
+      },
+      "status": "OK",
+      "spoiler": false,
+      "identity": "GU",
+      "includes": [
+        {
+          "id": 2775
+        },
+        {
+          "id": 28081
+        },
+        {
+          "id": 27521
+        }
+      ],
+      "produces": [
+        {
+          "feature": {
+            "id": 87,
+            "name": "Infinite blinking",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 4,
+            "name": "Infinite ETB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 119,
+            "name": "Infinite landfall triggers",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 3,
+            "name": "Infinite LTB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 77,
+            "name": "Infinite magecraft triggers",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 28,
+            "name": "Infinite mana lands you control can produce",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 17,
+            "name": "Infinite storm count",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 173,
+            "name": "Infinite untap of lands you control",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        }
+      ],
+      "requires": [],
+      "legalities": {
+        "brawl": false,
+        "predh": false,
+        "legacy": true,
+        "modern": false,
+        "pauper": false,
+        "pioneer": false,
+        "vintage": true,
+        "standard": false,
+        "commander": true,
+        "premodern": false,
+        "oathbreaker": true,
+        "pauperCommander": false,
+        "pauperCommanderMain": false
+      },
+      "popularity": 11409,
+      "bracketTag": "C",
+      "description": "Activate up to five lands by tapping them, adding at least {2}{U}.\nCast Ghostly Flicker by paying {2}{U}, blinking Eternal Witness and Peregrine Drake.\nWhen Eternal Witness and Peregrine Drake enter the battlefield, their abilities trigger.\nResolve the Eternal Witness trigger, returning Ghostly Flicker to your hand from your graveyard.\nResolve the Peregrine Drake trigger, untapping up to five lands.\nRepeat.",
+      "manaNeeded": "",
+      "variantCount": 17,
+      "manaValueNeeded": 0,
+      "easyPrerequisites": "",
+      "notablePrerequisites": "You control up to five lands that can tap to produce at least {2}{U}."
+    },
+    {
+      "id": "3821-4013",
+      "of": [
+        {
+          "id": 347
+        }
+      ],
+      "uses": [
+        {
+          "card": {
+            "id": 3821,
+            "name": "Peregrine Drake",
+            "spoiler": false,
+            "oracleId": "0bd67481-6bd9-48d6-92bd-8933b5ea1eae",
+            "typeLine": "Creature — Drake"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "B"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 4013,
+            "name": "Eldrazi Displacer",
+            "spoiler": false,
+            "oracleId": "9b1f552a-bddc-4fcb-ac67-b4a65b2f48ba",
+            "typeLine": "Creature — Eldrazi"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "B"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        }
+      ],
+      "notes": "If the lands can produce at least {3}{C}, this combo nets infinite mana, and you may blink any number of other creature(s).",
+      "prices": {
+        "tcgplayer": "1.15",
+        "cardmarket": "0.70",
+        "cardkingdom": "1.34"
+      },
+      "status": "OK",
+      "spoiler": false,
+      "identity": "WU",
+      "includes": [
+        {
+          "id": 27568
+        },
+        {
+          "id": 347
+        },
+        {
+          "id": 28082
+        },
+        {
+          "id": 28081
+        }
+      ],
+      "produces": [
+        {
+          "feature": {
+            "id": 4,
+            "name": "Infinite ETB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 3,
+            "name": "Infinite LTB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 28,
+            "name": "Infinite mana lands you control can produce",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 87,
+            "name": "Infinite blinking",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        }
+      ],
+      "requires": [],
+      "legalities": {
+        "brawl": false,
+        "predh": false,
+        "legacy": true,
+        "modern": false,
+        "pauper": false,
+        "pioneer": false,
+        "vintage": true,
+        "standard": false,
+        "commander": true,
+        "premodern": false,
+        "oathbreaker": true,
+        "pauperCommander": false,
+        "pauperCommanderMain": false
+      },
+      "popularity": 5936,
+      "bracketTag": "C",
+      "description": "Activate up to five lands by tapping them, adding at least {2}{C}.\nActivate Eldrazi Displacer by paying {2}{C}, blinking Peregrine Drake.\nWhen Peregrine Drake enters the battlefield, it triggers, untapping up to five lands.\nRepeat.",
+      "manaNeeded": "",
+      "variantCount": 4,
+      "manaValueNeeded": 0,
+      "easyPrerequisites": "",
+      "notablePrerequisites": "You control up to five lands that can tap to produce at least {2}{C}."
+    },
+    {
+      "id": "372-4013",
+      "of": [
+        {
+          "id": 8800
+        }
+      ],
+      "uses": [
+        {
+          "card": {
+            "id": 372,
+            "name": "Abdel Adrian, Gorion's Ward",
+            "spoiler": false,
+            "oracleId": "cab092f9-b7ff-43b9-935f-310869a4daf8",
+            "typeLine": "Legendary Creature — Human Warrior"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "B"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 4013,
+            "name": "Eldrazi Displacer",
+            "spoiler": false,
+            "oracleId": "9b1f552a-bddc-4fcb-ac67-b4a65b2f48ba",
+            "typeLine": "Creature — Eldrazi"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "B"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        }
+      ],
+      "notes": "",
+      "prices": {
+        "tcgplayer": "1.15",
+        "cardmarket": "0.73",
+        "cardkingdom": "1.34"
+      },
+      "status": "OK",
+      "spoiler": false,
+      "identity": "W",
+      "includes": [
+        {
+          "id": 27481
+        },
+        {
+          "id": 27568
+        },
+        {
+          "id": 8800
+        }
+      ],
+      "produces": [
+        {
+          "feature": {
+            "id": 87,
+            "name": "Infinite blinking",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 21,
+            "name": "Infinite creature tokens",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 4,
+            "name": "Infinite ETB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 3,
+            "name": "Infinite LTB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 92,
+            "name": "Infinite mana nonland permanents you control can produce",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        }
+      ],
+      "requires": [],
+      "legalities": {
+        "brawl": false,
+        "predh": false,
+        "legacy": true,
+        "modern": false,
+        "pauper": false,
+        "pioneer": false,
+        "vintage": true,
+        "standard": false,
+        "commander": true,
+        "premodern": false,
+        "oathbreaker": true,
+        "pauperCommander": false,
+        "pauperCommanderMain": false
+      },
+      "popularity": 4786,
+      "bracketTag": "C",
+      "description": "Activate Eldrazi Displacer by paying {2}{C}, blinking Abdel Adrian.\nAbdel Adrian leaves and enters the battlefield, causing all cards exiled with it to return to the battlefield from exile, and triggering Abdel Adrian's enters-the-battlefield ability.\nHolding priority, activate the nonland mana-producing permanent(s) by tapping them, adding at least {3}{C}.\nResolve the Abdel Adrian trigger, exiling the nonland mana-producing permanent(s) and creating that many 1/1 Soldier creature tokens.\nRepeat.",
+      "manaNeeded": "{2}{C}",
+      "variantCount": 1,
+      "manaValueNeeded": 3,
+      "easyPrerequisites": "",
+      "notablePrerequisites": "Nonland permanent card(s) you own that can produce at least {3}{C} exiled by Abdel Adrian."
+    },
+    {
+      "id": "1987-3821-4823",
+      "of": [
+        {
+          "id": 2775
+        }
+      ],
+      "uses": [
+        {
+          "card": {
+            "id": 1987,
+            "name": "Ghostly Flicker",
+            "spoiler": false,
+            "oracleId": "ad0070db-6454-41cb-861f-8f5b8fc2a3b8",
+            "typeLine": "Instant"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "H"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 3821,
+            "name": "Peregrine Drake",
+            "spoiler": false,
+            "oracleId": "0bd67481-6bd9-48d6-92bd-8933b5ea1eae",
+            "typeLine": "Creature — Drake"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "B"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 4823,
+            "name": "Timeless Witness",
+            "spoiler": false,
+            "oracleId": "a52a06aa-56fc-4845-bbcd-a54f16369b34",
+            "typeLine": "Creature — Human Shaman"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "B"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        }
+      ],
+      "notes": "If you control five lands that can tap to produce at least {3}{U}, this combo nets infinite mana, and you may blink any other permanent besides Peregrine Drake.",
+      "prices": {
+        "tcgplayer": "1.42",
+        "cardmarket": "1.32",
+        "cardkingdom": "2.73"
+      },
+      "status": "OK",
+      "spoiler": false,
+      "identity": "GU",
+      "includes": [
+        {
+          "id": 2775
+        },
+        {
+          "id": 28081
+        },
+        {
+          "id": 27521
+        }
+      ],
+      "produces": [
+        {
+          "feature": {
+            "id": 3,
+            "name": "Infinite LTB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 4,
+            "name": "Infinite ETB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 17,
+            "name": "Infinite storm count",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 28,
+            "name": "Infinite mana lands you control can produce",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 77,
+            "name": "Infinite magecraft triggers",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 87,
+            "name": "Infinite blinking",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 119,
+            "name": "Infinite landfall triggers",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 173,
+            "name": "Infinite untap of lands you control",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        }
+      ],
+      "requires": [],
+      "legalities": {
+        "brawl": false,
+        "predh": false,
+        "legacy": true,
+        "modern": false,
+        "pauper": false,
+        "pioneer": false,
+        "vintage": true,
+        "standard": false,
+        "commander": true,
+        "premodern": false,
+        "oathbreaker": true,
+        "pauperCommander": false,
+        "pauperCommanderMain": false
+      },
+      "popularity": 2030,
+      "bracketTag": "C",
+      "description": "Activate up to five lands by tapping them, adding at least {2}{U}.\nCast Ghostly Flicker by paying {2}{U}, blinking Timeless Witness and Peregrine Drake.\nWhen Timeless Witness and Peregrine Drake enter the battlefield, their abilities trigger.\nResolve the Timeless Witness trigger, returning Ghostly Flicker to your hand from your graveyard.\nResolve the Peregrine Drake trigger, untapping up to five lands.\nRepeat.",
+      "manaNeeded": "",
+      "variantCount": 17,
+      "manaValueNeeded": 0,
+      "easyPrerequisites": "",
+      "notablePrerequisites": "You control up to five lands that can tap to produce at least {2}{U}."
+    },
+    {
+      "id": "372-864-3603",
+      "of": [
+        {
+          "id": 28825
+        }
+      ],
+      "uses": [
+        {
+          "card": {
+            "id": 372,
+            "name": "Abdel Adrian, Gorion's Ward",
+            "spoiler": false,
+            "oracleId": "cab092f9-b7ff-43b9-935f-310869a4daf8",
+            "typeLine": "Legendary Creature — Human Warrior"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "B"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 3603,
+            "name": "Cloudshift",
+            "spoiler": false,
+            "oracleId": "6879f5ce-7a1b-4606-bad1-885779b0d456",
+            "typeLine": "Instant"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "H"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 864,
+            "name": "Eternal Witness",
+            "spoiler": false,
+            "oracleId": "30b24e8e-3b0e-4d8e-90f3-f66eb7c1858c",
+            "typeLine": "Creature — Human Shaman"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "E"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        }
+      ],
+      "notes": "",
+      "prices": {
+        "tcgplayer": "2.08",
+        "cardmarket": "1.52",
+        "cardkingdom": "3.63"
+      },
+      "status": "OK",
+      "spoiler": false,
+      "identity": "GW",
+      "includes": [
+        {
+          "id": 27481
+        },
+        {
+          "id": 28825
+        }
+      ],
+      "produces": [
+        {
+          "feature": {
+            "id": 3,
+            "name": "Infinite LTB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 4,
+            "name": "Infinite ETB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 17,
+            "name": "Infinite storm count",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 21,
+            "name": "Infinite creature tokens",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 70,
+            "name": "Infinite blinking of nonland permanents you control",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 77,
+            "name": "Infinite magecraft triggers",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        }
+      ],
+      "requires": [],
+      "legalities": {
+        "brawl": false,
+        "predh": false,
+        "legacy": true,
+        "modern": false,
+        "pauper": false,
+        "pioneer": false,
+        "vintage": true,
+        "standard": false,
+        "commander": true,
+        "premodern": false,
+        "oathbreaker": true,
+        "pauperCommander": false,
+        "pauperCommanderMain": false
+      },
+      "popularity": 1252,
+      "bracketTag": "C",
+      "description": "Cast Cloudshift by paying its mana cost, blinking Abdel Adrian.\nAbdel Adrian leaves the battlefield, returning Eternal Witness and all other cards that were exiled with it to the battlefield.\nAbdel Adrian and Eternal Witness trigger.\nResolve the Eternal Witness trigger, returning Cloudshift from your graveyard to your hand.\nHolding priority, activate any number of nonland permanents you control by tapping them, adding at least enough mana to cast Cloudshift.\nResolve the Abdel Adrian trigger, exiling Eternal Witness and the mana-producing permanents until Abdel Adrian leaves the battlefield, and creating a 1/1 Soldier creature token for each permanent exiled this way.\nRepeat.",
+      "manaNeeded": "",
+      "variantCount": 90,
+      "manaValueNeeded": 0,
+      "easyPrerequisites": "",
+      "notablePrerequisites": "You have any number of other nonland permanents that enter the battlefield untapped, and that can collectively tap to produce enough mana to cast Cloudshift exiled by Abdel Adrian.\nEternal Witness exiled by Abdel Adrian.\nYou have enough mana to cast Cloudshift."
+    },
+    {
+      "id": "372-864-1987",
+      "of": [
+        {
+          "id": 28825
+        }
+      ],
+      "uses": [
+        {
+          "card": {
+            "id": 372,
+            "name": "Abdel Adrian, Gorion's Ward",
+            "spoiler": false,
+            "oracleId": "cab092f9-b7ff-43b9-935f-310869a4daf8",
+            "typeLine": "Legendary Creature — Human Warrior"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "B"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 1987,
+            "name": "Ghostly Flicker",
+            "spoiler": false,
+            "oracleId": "ad0070db-6454-41cb-861f-8f5b8fc2a3b8",
+            "typeLine": "Instant"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "H"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 864,
+            "name": "Eternal Witness",
+            "spoiler": false,
+            "oracleId": "30b24e8e-3b0e-4d8e-90f3-f66eb7c1858c",
+            "typeLine": "Creature — Human Shaman"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "E"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        }
+      ],
+      "notes": "",
+      "prices": {
+        "tcgplayer": "2.22",
+        "cardmarket": "1.69",
+        "cardkingdom": "4.33"
+      },
+      "status": "OK",
+      "spoiler": false,
+      "identity": "GWU",
+      "includes": [
+        {
+          "id": 27481
+        },
+        {
+          "id": 28825
+        }
+      ],
+      "produces": [
+        {
+          "feature": {
+            "id": 3,
+            "name": "Infinite LTB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 4,
+            "name": "Infinite ETB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 17,
+            "name": "Infinite storm count",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 21,
+            "name": "Infinite creature tokens",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 70,
+            "name": "Infinite blinking of nonland permanents you control",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 77,
+            "name": "Infinite magecraft triggers",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        }
+      ],
+      "requires": [],
+      "legalities": {
+        "brawl": false,
+        "predh": false,
+        "legacy": true,
+        "modern": false,
+        "pauper": false,
+        "pioneer": false,
+        "vintage": true,
+        "standard": false,
+        "commander": true,
+        "premodern": false,
+        "oathbreaker": true,
+        "pauperCommander": false,
+        "pauperCommanderMain": false
+      },
+      "popularity": 878,
+      "bracketTag": "C",
+      "description": "Cast Ghostly Flicker by paying its mana cost, blinking Abdel Adrian.\nAbdel Adrian leaves the battlefield, returning Eternal Witness and all other cards that were exiled with it to the battlefield.\nAbdel Adrian and Eternal Witness trigger.\nResolve the Eternal Witness trigger, returning Ghostly Flicker from your graveyard to your hand.\nHolding priority, activate any number of nonland permanents you control by tapping them, adding at least enough mana to cast Ghostly Flicker.\nResolve the Abdel Adrian trigger, exiling Eternal Witness and the mana-producing permanents until Abdel Adrian leaves the battlefield, and creating a 1/1 Soldier creature token for each permanent exiled this way.\nRepeat.",
+      "manaNeeded": "",
+      "variantCount": 90,
+      "manaValueNeeded": 0,
+      "easyPrerequisites": "",
+      "notablePrerequisites": "You have any number of other nonland permanents that enter the battlefield untapped, and that can collectively tap to produce enough mana to cast Ghostly Flicker exiled by Abdel Adrian.\nEternal Witness exiled by Abdel Adrian.\nYou have enough mana to cast Ghostly Flicker."
+    },
+    {
+      "id": "372-864-1567",
+      "of": [
+        {
+          "id": 28825
+        }
+      ],
+      "uses": [
+        {
+          "card": {
+            "id": 372,
+            "name": "Abdel Adrian, Gorion's Ward",
+            "spoiler": false,
+            "oracleId": "cab092f9-b7ff-43b9-935f-310869a4daf8",
+            "typeLine": "Legendary Creature — Human Warrior"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "B"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 1567,
+            "name": "Momentary Blink",
+            "spoiler": false,
+            "oracleId": "a3ec6b5d-08ec-4ae0-b1db-c4b87a1849c7",
+            "typeLine": "Instant"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "H"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 864,
+            "name": "Eternal Witness",
+            "spoiler": false,
+            "oracleId": "30b24e8e-3b0e-4d8e-90f3-f66eb7c1858c",
+            "typeLine": "Creature — Human Shaman"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "E"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        }
+      ],
+      "notes": "",
+      "prices": {
+        "tcgplayer": "1.54",
+        "cardmarket": "0.76",
+        "cardkingdom": "2.69"
+      },
+      "status": "OK",
+      "spoiler": false,
+      "identity": "GWU",
+      "includes": [
+        {
+          "id": 27481
+        },
+        {
+          "id": 28825
+        }
+      ],
+      "produces": [
+        {
+          "feature": {
+            "id": 3,
+            "name": "Infinite LTB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 4,
+            "name": "Infinite ETB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 17,
+            "name": "Infinite storm count",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 21,
+            "name": "Infinite creature tokens",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 70,
+            "name": "Infinite blinking of nonland permanents you control",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 77,
+            "name": "Infinite magecraft triggers",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        }
+      ],
+      "requires": [],
+      "legalities": {
+        "brawl": false,
+        "predh": false,
+        "legacy": true,
+        "modern": false,
+        "pauper": false,
+        "pioneer": false,
+        "vintage": true,
+        "standard": false,
+        "commander": true,
+        "premodern": false,
+        "oathbreaker": true,
+        "pauperCommander": false,
+        "pauperCommanderMain": false
+      },
+      "popularity": 684,
+      "bracketTag": "C",
+      "description": "Cast Momentary Blink by paying its mana cost, blinking Abdel Adrian.\nAbdel Adrian leaves the battlefield, returning Eternal Witness and all other cards that were exiled with it to the battlefield.\nAbdel Adrian and Eternal Witness trigger.\nResolve the Eternal Witness trigger, returning Momentary Blink from your graveyard to your hand.\nHolding priority, activate any number of nonland permanents you control by tapping them, adding at least enough mana to cast Momentary Blink.\nResolve the Abdel Adrian trigger, exiling Eternal Witness and the mana-producing permanents until Abdel Adrian leaves the battlefield, and creating a 1/1 Soldier creature token for each permanent exiled this way.\nRepeat.",
+      "manaNeeded": "",
+      "variantCount": 90,
+      "manaValueNeeded": 0,
+      "easyPrerequisites": "",
+      "notablePrerequisites": "You have any number of other nonland permanents that enter the battlefield untapped, and that can collectively tap to produce enough mana to cast Momentary Blink exiled by Abdel Adrian.\nEternal Witness exiled by Abdel Adrian.\nYou have enough mana to cast Momentary Blink."
+    },
+    {
+      "id": "372-864-4598",
+      "of": [
+        {
+          "id": 28825
+        }
+      ],
+      "uses": [
+        {
+          "card": {
+            "id": 372,
+            "name": "Abdel Adrian, Gorion's Ward",
+            "spoiler": false,
+            "oracleId": "cab092f9-b7ff-43b9-935f-310869a4daf8",
+            "typeLine": "Legendary Creature — Human Warrior"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "B"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 4598,
+            "name": "Essence Flux",
+            "spoiler": false,
+            "oracleId": "64824ae5-efab-4b55-9d3c-b9c690bad857",
+            "typeLine": "Instant"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "H"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 864,
+            "name": "Eternal Witness",
+            "spoiler": false,
+            "oracleId": "30b24e8e-3b0e-4d8e-90f3-f66eb7c1858c",
+            "typeLine": "Creature — Human Shaman"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "E"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        }
+      ],
+      "notes": "",
+      "prices": {
+        "tcgplayer": "1.73",
+        "cardmarket": "1.09",
+        "cardkingdom": "2.93"
+      },
+      "status": "OK",
+      "spoiler": false,
+      "identity": "GWU",
+      "includes": [
+        {
+          "id": 27481
+        },
+        {
+          "id": 28825
+        }
+      ],
+      "produces": [
+        {
+          "feature": {
+            "id": 3,
+            "name": "Infinite LTB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 4,
+            "name": "Infinite ETB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 17,
+            "name": "Infinite storm count",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 21,
+            "name": "Infinite creature tokens",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 70,
+            "name": "Infinite blinking of nonland permanents you control",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 77,
+            "name": "Infinite magecraft triggers",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        }
+      ],
+      "requires": [],
+      "legalities": {
+        "brawl": false,
+        "predh": false,
+        "legacy": true,
+        "modern": false,
+        "pauper": false,
+        "pioneer": false,
+        "vintage": true,
+        "standard": false,
+        "commander": true,
+        "premodern": false,
+        "oathbreaker": true,
+        "pauperCommander": false,
+        "pauperCommanderMain": false
+      },
+      "popularity": 544,
+      "bracketTag": "C",
+      "description": "Cast Essence Flux by paying its mana cost, blinking Abdel Adrian.\nAbdel Adrian leaves the battlefield, returning Eternal Witness and all other cards that were exiled with it to the battlefield.\nAbdel Adrian and Eternal Witness trigger.\nResolve the Eternal Witness trigger, returning Essence Flux from your graveyard to your hand.\nHolding priority, activate any number of nonland permanents you control by tapping them, adding at least enough mana to cast Essence Flux.\nResolve the Abdel Adrian trigger, exiling Eternal Witness and the mana-producing permanents until Abdel Adrian leaves the battlefield, and creating a 1/1 Soldier creature token for each permanent exiled this way.\nRepeat.",
+      "manaNeeded": "",
+      "variantCount": 90,
+      "manaValueNeeded": 0,
+      "easyPrerequisites": "",
+      "notablePrerequisites": "You have any number of other nonland permanents that enter the battlefield untapped, and that can collectively tap to produce enough mana to cast Essence Flux exiled by Abdel Adrian.\nEternal Witness exiled by Abdel Adrian.\nYou have enough mana to cast Essence Flux."
+    },
+    {
+      "id": "372-864-3563",
+      "of": [
+        {
+          "id": 28825
+        }
+      ],
+      "uses": [
+        {
+          "card": {
+            "id": 372,
+            "name": "Abdel Adrian, Gorion's Ward",
+            "spoiler": false,
+            "oracleId": "cab092f9-b7ff-43b9-935f-310869a4daf8",
+            "typeLine": "Legendary Creature — Human Warrior"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "B"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 3563,
+            "name": "Flicker of Fate",
+            "spoiler": false,
+            "oracleId": "d5b9d250-92f5-40d8-b962-4ae4adb466c8",
+            "typeLine": "Instant"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "H"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 864,
+            "name": "Eternal Witness",
+            "spoiler": false,
+            "oracleId": "30b24e8e-3b0e-4d8e-90f3-f66eb7c1858c",
+            "typeLine": "Creature — Human Shaman"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "E"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        }
+      ],
+      "notes": "",
+      "prices": {
+        "tcgplayer": "1.60",
+        "cardmarket": "0.81",
+        "cardkingdom": "2.83"
+      },
+      "status": "OK",
+      "spoiler": false,
+      "identity": "GW",
+      "includes": [
+        {
+          "id": 27481
+        },
+        {
+          "id": 28825
+        }
+      ],
+      "produces": [
+        {
+          "feature": {
+            "id": 3,
+            "name": "Infinite LTB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 4,
+            "name": "Infinite ETB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 17,
+            "name": "Infinite storm count",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 21,
+            "name": "Infinite creature tokens",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 70,
+            "name": "Infinite blinking of nonland permanents you control",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 77,
+            "name": "Infinite magecraft triggers",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        }
+      ],
+      "requires": [],
+      "legalities": {
+        "brawl": false,
+        "predh": false,
+        "legacy": true,
+        "modern": false,
+        "pauper": false,
+        "pioneer": false,
+        "vintage": true,
+        "standard": false,
+        "commander": true,
+        "premodern": false,
+        "oathbreaker": true,
+        "pauperCommander": false,
+        "pauperCommanderMain": false
+      },
+      "popularity": 498,
+      "bracketTag": "C",
+      "description": "Cast Flicker of Fate by paying its mana cost, blinking Abdel Adrian.\nAbdel Adrian leaves the battlefield, returning Eternal Witness and all other cards that were exiled with it to the battlefield.\nAbdel Adrian and Eternal Witness trigger.\nResolve the Eternal Witness trigger, returning Flicker of Fate from your graveyard to your hand.\nHolding priority, activate any number of nonland permanents you control by tapping them, adding at least enough mana to cast Flicker of Fate.\nResolve the Abdel Adrian trigger, exiling Eternal Witness and the mana-producing permanents until Abdel Adrian leaves the battlefield, and creating a 1/1 Soldier creature token for each permanent exiled this way.\nRepeat.",
+      "manaNeeded": "",
+      "variantCount": 90,
+      "manaValueNeeded": 0,
+      "easyPrerequisites": "",
+      "notablePrerequisites": "You have any number of other nonland permanents that enter the battlefield untapped, and that can collectively tap to produce enough mana to cast Flicker of Fate exiled by Abdel Adrian.\nEternal Witness exiled by Abdel Adrian.\nYou have enough mana to cast Flicker of Fate."
+    },
+    {
+      "id": "372-3603-4823",
+      "of": [
+        {
+          "id": 28825
+        }
+      ],
+      "uses": [
+        {
+          "card": {
+            "id": 372,
+            "name": "Abdel Adrian, Gorion's Ward",
+            "spoiler": false,
+            "oracleId": "cab092f9-b7ff-43b9-935f-310869a4daf8",
+            "typeLine": "Legendary Creature — Human Warrior"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "B"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 3603,
+            "name": "Cloudshift",
+            "spoiler": false,
+            "oracleId": "6879f5ce-7a1b-4606-bad1-885779b0d456",
+            "typeLine": "Instant"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "H"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 4823,
+            "name": "Timeless Witness",
+            "spoiler": false,
+            "oracleId": "a52a06aa-56fc-4845-bbcd-a54f16369b34",
+            "typeLine": "Creature — Human Shaman"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "E"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        }
+      ],
+      "notes": "",
+      "prices": {
+        "tcgplayer": "1.28",
+        "cardmarket": "1.18",
+        "cardkingdom": "2.03"
+      },
+      "status": "OK",
+      "spoiler": false,
+      "identity": "GW",
+      "includes": [
+        {
+          "id": 27481
+        },
+        {
+          "id": 28825
+        }
+      ],
+      "produces": [
+        {
+          "feature": {
+            "id": 3,
+            "name": "Infinite LTB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 4,
+            "name": "Infinite ETB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 17,
+            "name": "Infinite storm count",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 21,
+            "name": "Infinite creature tokens",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 70,
+            "name": "Infinite blinking of nonland permanents you control",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 77,
+            "name": "Infinite magecraft triggers",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        }
+      ],
+      "requires": [],
+      "legalities": {
+        "brawl": false,
+        "predh": false,
+        "legacy": true,
+        "modern": false,
+        "pauper": false,
+        "pioneer": false,
+        "vintage": true,
+        "standard": false,
+        "commander": true,
+        "premodern": false,
+        "oathbreaker": true,
+        "pauperCommander": false,
+        "pauperCommanderMain": false
+      },
+      "popularity": 372,
+      "bracketTag": "C",
+      "description": "Cast Cloudshift by paying its mana cost, blinking Abdel Adrian.\nAbdel Adrian leaves the battlefield, returning Timeless Witness and all other cards that were exiled with it to the battlefield.\nAbdel Adrian and Timeless Witness trigger.\nResolve the Timeless Witness trigger, returning Cloudshift from your graveyard to your hand.\nHolding priority, activate any number of nonland permanents you control by tapping them, adding at least enough mana to cast Cloudshift.\nResolve the Abdel Adrian trigger, exiling Timeless Witness and the mana-producing permanents until Abdel Adrian leaves the battlefield, and creating a 1/1 Soldier creature token for each permanent exiled this way.\nRepeat.",
+      "manaNeeded": "",
+      "variantCount": 90,
+      "manaValueNeeded": 0,
+      "easyPrerequisites": "",
+      "notablePrerequisites": "You have any number of other nonland permanents that enter the battlefield untapped, and that can collectively tap to produce enough mana to cast Cloudshift exiled by Abdel Adrian.\nTimeless Witness exiled by Abdel Adrian.\nYou have enough mana to cast Cloudshift."
+    },
+    {
+      "id": "372-1987-4823",
+      "of": [
+        {
+          "id": 28825
+        }
+      ],
+      "uses": [
+        {
+          "card": {
+            "id": 372,
+            "name": "Abdel Adrian, Gorion's Ward",
+            "spoiler": false,
+            "oracleId": "cab092f9-b7ff-43b9-935f-310869a4daf8",
+            "typeLine": "Legendary Creature — Human Warrior"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "B"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 1987,
+            "name": "Ghostly Flicker",
+            "spoiler": false,
+            "oracleId": "ad0070db-6454-41cb-861f-8f5b8fc2a3b8",
+            "typeLine": "Instant"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "H"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 4823,
+            "name": "Timeless Witness",
+            "spoiler": false,
+            "oracleId": "a52a06aa-56fc-4845-bbcd-a54f16369b34",
+            "typeLine": "Creature — Human Shaman"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "E"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        }
+      ],
+      "notes": "",
+      "prices": {
+        "tcgplayer": "1.42",
+        "cardmarket": "1.35",
+        "cardkingdom": "2.73"
+      },
+      "status": "OK",
+      "spoiler": false,
+      "identity": "GWU",
+      "includes": [
+        {
+          "id": 27481
+        },
+        {
+          "id": 28825
+        }
+      ],
+      "produces": [
+        {
+          "feature": {
+            "id": 3,
+            "name": "Infinite LTB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 4,
+            "name": "Infinite ETB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 17,
+            "name": "Infinite storm count",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 21,
+            "name": "Infinite creature tokens",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 70,
+            "name": "Infinite blinking of nonland permanents you control",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 77,
+            "name": "Infinite magecraft triggers",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        }
+      ],
+      "requires": [],
+      "legalities": {
+        "brawl": false,
+        "predh": false,
+        "legacy": true,
+        "modern": false,
+        "pauper": false,
+        "pioneer": false,
+        "vintage": true,
+        "standard": false,
+        "commander": true,
+        "premodern": false,
+        "oathbreaker": true,
+        "pauperCommander": false,
+        "pauperCommanderMain": false
+      },
+      "popularity": 260,
+      "bracketTag": "C",
+      "description": "Cast Ghostly Flicker by paying its mana cost, blinking Abdel Adrian.\nAbdel Adrian leaves the battlefield, returning Timeless Witness and all other cards that were exiled with it to the battlefield.\nAbdel Adrian and Timeless Witness trigger.\nResolve the Timeless Witness trigger, returning Ghostly Flicker from your graveyard to your hand.\nHolding priority, activate any number of nonland permanents you control by tapping them, adding at least enough mana to cast Ghostly Flicker.\nResolve the Abdel Adrian trigger, exiling Timeless Witness and the mana-producing permanents until Abdel Adrian leaves the battlefield, and creating a 1/1 Soldier creature token for each permanent exiled this way.\nRepeat.",
+      "manaNeeded": "",
+      "variantCount": 90,
+      "manaValueNeeded": 0,
+      "easyPrerequisites": "",
+      "notablePrerequisites": "You have any number of other nonland permanents that enter the battlefield untapped, and that can collectively tap to produce enough mana to cast Ghostly Flicker exiled by Abdel Adrian.\nTimeless Witness exiled by Abdel Adrian.\nYou have enough mana to cast Ghostly Flicker."
+    },
+    {
+      "id": "372-1567-4823",
+      "of": [
+        {
+          "id": 28825
+        }
+      ],
+      "uses": [
+        {
+          "card": {
+            "id": 372,
+            "name": "Abdel Adrian, Gorion's Ward",
+            "spoiler": false,
+            "oracleId": "cab092f9-b7ff-43b9-935f-310869a4daf8",
+            "typeLine": "Legendary Creature — Human Warrior"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "B"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 1567,
+            "name": "Momentary Blink",
+            "spoiler": false,
+            "oracleId": "a3ec6b5d-08ec-4ae0-b1db-c4b87a1849c7",
+            "typeLine": "Instant"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "H"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 4823,
+            "name": "Timeless Witness",
+            "spoiler": false,
+            "oracleId": "a52a06aa-56fc-4845-bbcd-a54f16369b34",
+            "typeLine": "Creature — Human Shaman"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "E"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        }
+      ],
+      "notes": "",
+      "prices": {
+        "tcgplayer": "0.74",
+        "cardmarket": "0.42",
+        "cardkingdom": "1.09"
+      },
+      "status": "OK",
+      "spoiler": false,
+      "identity": "GWU",
+      "includes": [
+        {
+          "id": 27481
+        },
+        {
+          "id": 28825
+        }
+      ],
+      "produces": [
+        {
+          "feature": {
+            "id": 3,
+            "name": "Infinite LTB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 4,
+            "name": "Infinite ETB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 17,
+            "name": "Infinite storm count",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 21,
+            "name": "Infinite creature tokens",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 70,
+            "name": "Infinite blinking of nonland permanents you control",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 77,
+            "name": "Infinite magecraft triggers",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        }
+      ],
+      "requires": [],
+      "legalities": {
+        "brawl": false,
+        "predh": false,
+        "legacy": true,
+        "modern": false,
+        "pauper": false,
+        "pioneer": false,
+        "vintage": true,
+        "standard": false,
+        "commander": true,
+        "premodern": false,
+        "oathbreaker": true,
+        "pauperCommander": false,
+        "pauperCommanderMain": false
+      },
+      "popularity": 213,
+      "bracketTag": "C",
+      "description": "Cast Momentary Blink by paying its mana cost, blinking Abdel Adrian.\nAbdel Adrian leaves the battlefield, returning Timeless Witness and all other cards that were exiled with it to the battlefield.\nAbdel Adrian and Timeless Witness trigger.\nResolve the Timeless Witness trigger, returning Momentary Blink from your graveyard to your hand.\nHolding priority, activate any number of nonland permanents you control by tapping them, adding at least enough mana to cast Momentary Blink.\nResolve the Abdel Adrian trigger, exiling Timeless Witness and the mana-producing permanents until Abdel Adrian leaves the battlefield, and creating a 1/1 Soldier creature token for each permanent exiled this way.\nRepeat.",
+      "manaNeeded": "",
+      "variantCount": 90,
+      "manaValueNeeded": 0,
+      "easyPrerequisites": "",
+      "notablePrerequisites": "You have any number of other nonland permanents that enter the battlefield untapped, and that can collectively tap to produce enough mana to cast Momentary Blink exiled by Abdel Adrian.\nTimeless Witness exiled by Abdel Adrian.\nYou have enough mana to cast Momentary Blink."
+    },
+    {
+      "id": "372-3563-4823",
+      "of": [
+        {
+          "id": 28825
+        }
+      ],
+      "uses": [
+        {
+          "card": {
+            "id": 372,
+            "name": "Abdel Adrian, Gorion's Ward",
+            "spoiler": false,
+            "oracleId": "cab092f9-b7ff-43b9-935f-310869a4daf8",
+            "typeLine": "Legendary Creature — Human Warrior"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "B"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 3563,
+            "name": "Flicker of Fate",
+            "spoiler": false,
+            "oracleId": "d5b9d250-92f5-40d8-b962-4ae4adb466c8",
+            "typeLine": "Instant"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "H"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 4823,
+            "name": "Timeless Witness",
+            "spoiler": false,
+            "oracleId": "a52a06aa-56fc-4845-bbcd-a54f16369b34",
+            "typeLine": "Creature — Human Shaman"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "E"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        }
+      ],
+      "notes": "",
+      "prices": {
+        "tcgplayer": "0.80",
+        "cardmarket": "0.47",
+        "cardkingdom": "1.23"
+      },
+      "status": "OK",
+      "spoiler": false,
+      "identity": "GW",
+      "includes": [
+        {
+          "id": 27481
+        },
+        {
+          "id": 28825
+        }
+      ],
+      "produces": [
+        {
+          "feature": {
+            "id": 3,
+            "name": "Infinite LTB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 4,
+            "name": "Infinite ETB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 17,
+            "name": "Infinite storm count",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 21,
+            "name": "Infinite creature tokens",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 70,
+            "name": "Infinite blinking of nonland permanents you control",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 77,
+            "name": "Infinite magecraft triggers",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        }
+      ],
+      "requires": [],
+      "legalities": {
+        "brawl": false,
+        "predh": false,
+        "legacy": true,
+        "modern": false,
+        "pauper": false,
+        "pioneer": false,
+        "vintage": true,
+        "standard": false,
+        "commander": true,
+        "premodern": false,
+        "oathbreaker": true,
+        "pauperCommander": false,
+        "pauperCommanderMain": false
+      },
+      "popularity": 174,
+      "bracketTag": "C",
+      "description": "Cast Flicker of Fate by paying its mana cost, blinking Abdel Adrian.\nAbdel Adrian leaves the battlefield, returning Timeless Witness and all other cards that were exiled with it to the battlefield.\nAbdel Adrian and Timeless Witness trigger.\nResolve the Timeless Witness trigger, returning Flicker of Fate from your graveyard to your hand.\nHolding priority, activate any number of nonland permanents you control by tapping them, adding at least enough mana to cast Flicker of Fate.\nResolve the Abdel Adrian trigger, exiling Timeless Witness and the mana-producing permanents until Abdel Adrian leaves the battlefield, and creating a 1/1 Soldier creature token for each permanent exiled this way.\nRepeat.",
+      "manaNeeded": "",
+      "variantCount": 90,
+      "manaValueNeeded": 0,
+      "easyPrerequisites": "",
+      "notablePrerequisites": "You have any number of other nonland permanents that enter the battlefield untapped, and that can collectively tap to produce enough mana to cast Flicker of Fate exiled by Abdel Adrian.\nTimeless Witness exiled by Abdel Adrian.\nYou have enough mana to cast Flicker of Fate."
+    },
+    {
+      "id": "372-673-864",
+      "of": [
+        {
+          "id": 28825
+        }
+      ],
+      "uses": [
+        {
+          "card": {
+            "id": 372,
+            "name": "Abdel Adrian, Gorion's Ward",
+            "spoiler": false,
+            "oracleId": "cab092f9-b7ff-43b9-935f-310869a4daf8",
+            "typeLine": "Legendary Creature — Human Warrior"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "B"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 673,
+            "name": "Planar Incision",
+            "spoiler": false,
+            "oracleId": "a959a91a-3e1d-4bd4-9e14-5ee977540146",
+            "typeLine": "Instant"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "H"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 864,
+            "name": "Eternal Witness",
+            "spoiler": false,
+            "oracleId": "30b24e8e-3b0e-4d8e-90f3-f66eb7c1858c",
+            "typeLine": "Creature — Human Shaman"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "E"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        }
+      ],
+      "notes": "",
+      "prices": {
+        "tcgplayer": "1.60",
+        "cardmarket": "0.93",
+        "cardkingdom": "2.73"
+      },
+      "status": "OK",
+      "spoiler": false,
+      "identity": "GWU",
+      "includes": [
+        {
+          "id": 27481
+        },
+        {
+          "id": 28825
+        }
+      ],
+      "produces": [
+        {
+          "feature": {
+            "id": 3,
+            "name": "Infinite LTB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 4,
+            "name": "Infinite ETB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 17,
+            "name": "Infinite storm count",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 21,
+            "name": "Infinite creature tokens",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 70,
+            "name": "Infinite blinking of nonland permanents you control",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 77,
+            "name": "Infinite magecraft triggers",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        }
+      ],
+      "requires": [],
+      "legalities": {
+        "brawl": false,
+        "predh": false,
+        "legacy": true,
+        "modern": false,
+        "pauper": false,
+        "pioneer": false,
+        "vintage": true,
+        "standard": false,
+        "commander": true,
+        "premodern": false,
+        "oathbreaker": true,
+        "pauperCommander": false,
+        "pauperCommanderMain": false
+      },
+      "popularity": 161,
+      "bracketTag": "C",
+      "description": "Cast Planar Incision by paying its mana cost, blinking Abdel Adrian.\nAbdel Adrian leaves the battlefield, returning Eternal Witness and all other cards that were exiled with it to the battlefield.\nAbdel Adrian and Eternal Witness trigger.\nResolve the Eternal Witness trigger, returning Planar Incision from your graveyard to your hand.\nHolding priority, activate any number of nonland permanents you control by tapping them, adding at least enough mana to cast Planar Incision.\nResolve the Abdel Adrian trigger, exiling Eternal Witness and the mana-producing permanents until Abdel Adrian leaves the battlefield, and creating a 1/1 Soldier creature token for each permanent exiled this way.\nRepeat.",
+      "manaNeeded": "",
+      "variantCount": 90,
+      "manaValueNeeded": 0,
+      "easyPrerequisites": "",
+      "notablePrerequisites": "You have any number of other nonland permanents that enter the battlefield untapped, and that can collectively tap to produce enough mana to cast Planar Incision exiled by Abdel Adrian.\nEternal Witness exiled by Abdel Adrian.\nYou have enough mana to cast Planar Incision."
+    },
+    {
+      "id": "372-4598-4823",
+      "of": [
+        {
+          "id": 28825
+        }
+      ],
+      "uses": [
+        {
+          "card": {
+            "id": 372,
+            "name": "Abdel Adrian, Gorion's Ward",
+            "spoiler": false,
+            "oracleId": "cab092f9-b7ff-43b9-935f-310869a4daf8",
+            "typeLine": "Legendary Creature — Human Warrior"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "B"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 4598,
+            "name": "Essence Flux",
+            "spoiler": false,
+            "oracleId": "64824ae5-efab-4b55-9d3c-b9c690bad857",
+            "typeLine": "Instant"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "H"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 4823,
+            "name": "Timeless Witness",
+            "spoiler": false,
+            "oracleId": "a52a06aa-56fc-4845-bbcd-a54f16369b34",
+            "typeLine": "Creature — Human Shaman"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "E"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        }
+      ],
+      "notes": "",
+      "prices": {
+        "tcgplayer": "0.93",
+        "cardmarket": "0.75",
+        "cardkingdom": "1.33"
+      },
+      "status": "OK",
+      "spoiler": false,
+      "identity": "GWU",
+      "includes": [
+        {
+          "id": 27481
+        },
+        {
+          "id": 28825
+        }
+      ],
+      "produces": [
+        {
+          "feature": {
+            "id": 3,
+            "name": "Infinite LTB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 4,
+            "name": "Infinite ETB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 17,
+            "name": "Infinite storm count",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 21,
+            "name": "Infinite creature tokens",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 70,
+            "name": "Infinite blinking of nonland permanents you control",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 77,
+            "name": "Infinite magecraft triggers",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        }
+      ],
+      "requires": [],
+      "legalities": {
+        "brawl": false,
+        "predh": false,
+        "legacy": true,
+        "modern": false,
+        "pauper": false,
+        "pioneer": false,
+        "vintage": true,
+        "standard": false,
+        "commander": true,
+        "premodern": false,
+        "oathbreaker": true,
+        "pauperCommander": false,
+        "pauperCommanderMain": false
+      },
+      "popularity": 143,
+      "bracketTag": "C",
+      "description": "Cast Essence Flux by paying its mana cost, blinking Abdel Adrian.\nAbdel Adrian leaves the battlefield, returning Timeless Witness and all other cards that were exiled with it to the battlefield.\nAbdel Adrian and Timeless Witness trigger.\nResolve the Timeless Witness trigger, returning Essence Flux from your graveyard to your hand.\nHolding priority, activate any number of nonland permanents you control by tapping them, adding at least enough mana to cast Essence Flux.\nResolve the Abdel Adrian trigger, exiling Timeless Witness and the mana-producing permanents until Abdel Adrian leaves the battlefield, and creating a 1/1 Soldier creature token for each permanent exiled this way.\nRepeat.",
+      "manaNeeded": "",
+      "variantCount": 90,
+      "manaValueNeeded": 0,
+      "easyPrerequisites": "",
+      "notablePrerequisites": "You have any number of other nonland permanents that enter the battlefield untapped, and that can collectively tap to produce enough mana to cast Essence Flux exiled by Abdel Adrian.\nTimeless Witness exiled by Abdel Adrian.\nYou have enough mana to cast Essence Flux."
+    },
+    {
+      "id": "372-673-4823",
+      "of": [
+        {
+          "id": 28825
+        }
+      ],
+      "uses": [
+        {
+          "card": {
+            "id": 372,
+            "name": "Abdel Adrian, Gorion's Ward",
+            "spoiler": false,
+            "oracleId": "cab092f9-b7ff-43b9-935f-310869a4daf8",
+            "typeLine": "Legendary Creature — Human Warrior"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "B"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 673,
+            "name": "Planar Incision",
+            "spoiler": false,
+            "oracleId": "a959a91a-3e1d-4bd4-9e14-5ee977540146",
+            "typeLine": "Instant"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "H"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 4823,
+            "name": "Timeless Witness",
+            "spoiler": false,
+            "oracleId": "a52a06aa-56fc-4845-bbcd-a54f16369b34",
+            "typeLine": "Creature — Human Shaman"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "E"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        }
+      ],
+      "notes": "",
+      "prices": {
+        "tcgplayer": "0.80",
+        "cardmarket": "0.59",
+        "cardkingdom": "1.13"
+      },
+      "status": "OK",
+      "spoiler": false,
+      "identity": "GWU",
+      "includes": [
+        {
+          "id": 27481
+        },
+        {
+          "id": 28825
+        }
+      ],
+      "produces": [
+        {
+          "feature": {
+            "id": 3,
+            "name": "Infinite LTB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 4,
+            "name": "Infinite ETB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 17,
+            "name": "Infinite storm count",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 21,
+            "name": "Infinite creature tokens",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 70,
+            "name": "Infinite blinking of nonland permanents you control",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 77,
+            "name": "Infinite magecraft triggers",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        }
+      ],
+      "requires": [],
+      "legalities": {
+        "brawl": false,
+        "predh": false,
+        "legacy": true,
+        "modern": false,
+        "pauper": false,
+        "pioneer": false,
+        "vintage": true,
+        "standard": false,
+        "commander": true,
+        "premodern": false,
+        "oathbreaker": true,
+        "pauperCommander": false,
+        "pauperCommanderMain": false
+      },
+      "popularity": 55,
+      "bracketTag": "C",
+      "description": "Cast Planar Incision by paying its mana cost, blinking Abdel Adrian.\nAbdel Adrian leaves the battlefield, returning Timeless Witness and all other cards that were exiled with it to the battlefield.\nAbdel Adrian and Timeless Witness trigger.\nResolve the Timeless Witness trigger, returning Planar Incision from your graveyard to your hand.\nHolding priority, activate any number of nonland permanents you control by tapping them, adding at least enough mana to cast Planar Incision.\nResolve the Abdel Adrian trigger, exiling Timeless Witness and the mana-producing permanents until Abdel Adrian leaves the battlefield, and creating a 1/1 Soldier creature token for each permanent exiled this way.\nRepeat.",
+      "manaNeeded": "",
+      "variantCount": 90,
+      "manaValueNeeded": 0,
+      "easyPrerequisites": "",
+      "notablePrerequisites": "You have any number of other nonland permanents that enter the battlefield untapped, and that can collectively tap to produce enough mana to cast Planar Incision exiled by Abdel Adrian.\nTimeless Witness exiled by Abdel Adrian.\nYou have enough mana to cast Planar Incision."
+    },
+    {
+      "id": "372-864-5895",
+      "of": [
+        {
+          "id": 28826
+        }
+      ],
+      "uses": [
+        {
+          "card": {
+            "id": 372,
+            "name": "Abdel Adrian, Gorion's Ward",
+            "spoiler": false,
+            "oracleId": "cab092f9-b7ff-43b9-935f-310869a4daf8",
+            "typeLine": "Legendary Creature — Human Warrior"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "B"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 5895,
+            "name": "Splash Portal",
+            "spoiler": false,
+            "oracleId": "29b537f5-4d9f-40ed-b38b-e8faa2b5af7d",
+            "typeLine": "Sorcery"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "H"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 864,
+            "name": "Eternal Witness",
+            "spoiler": false,
+            "oracleId": "30b24e8e-3b0e-4d8e-90f3-f66eb7c1858c",
+            "typeLine": "Creature — Human Shaman"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "E"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        }
+      ],
+      "notes": "",
+      "prices": {
+        "tcgplayer": "1.64",
+        "cardmarket": "0.96",
+        "cardkingdom": "3.13"
+      },
+      "status": "OK",
+      "spoiler": false,
+      "identity": "GWU",
+      "includes": [
+        {
+          "id": 27481
+        },
+        {
+          "id": 28826
+        }
+      ],
+      "produces": [
+        {
+          "feature": {
+            "id": 3,
+            "name": "Infinite LTB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 4,
+            "name": "Infinite ETB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 17,
+            "name": "Infinite storm count",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 21,
+            "name": "Infinite creature tokens",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 70,
+            "name": "Infinite blinking of nonland permanents you control",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 77,
+            "name": "Infinite magecraft triggers",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        }
+      ],
+      "requires": [],
+      "legalities": {
+        "brawl": false,
+        "predh": false,
+        "legacy": true,
+        "modern": false,
+        "pauper": false,
+        "pioneer": false,
+        "vintage": true,
+        "standard": false,
+        "commander": true,
+        "premodern": false,
+        "oathbreaker": true,
+        "pauperCommander": false,
+        "pauperCommanderMain": false
+      },
+      "popularity": 36,
+      "bracketTag": "C",
+      "description": "Cast Splash Portal by paying its mana cost, blinking Abdel Adrian.\nAbdel Adrian leaves the battlefield, returning Eternal Witness and all other cards that were exiled with it to the battlefield.\nAbdel Adrian and Eternal Witness trigger.\nResolve the Eternal Witness trigger, returning Splash Portal from your graveyard to your hand.\nHolding priority, activate any number of nonland permanents you control by tapping them, adding at least enough mana to cast Splash Portal.\nResolve the Abdel Adrian trigger, exiling Eternal Witness and the mana-producing permanents until Abdel Adrian leaves the battlefield, and creating a 1/1 Soldier creature token for each permanent exiled this way.\nRepeat.",
+      "manaNeeded": "",
+      "variantCount": 30,
+      "manaValueNeeded": 0,
+      "easyPrerequisites": "",
+      "notablePrerequisites": "You have any number of other nonland permanents that enter the battlefield untapped, and that can collectively tap to produce enough mana to cast Splash Portal exiled by Abdel Adrian.\nEternal Witness exiled by Abdel Adrian.\nYou have enough mana to cast Splash Portal."
+    },
+    {
+      "id": "372-4823-5895",
+      "of": [
+        {
+          "id": 28826
+        }
+      ],
+      "uses": [
+        {
+          "card": {
+            "id": 372,
+            "name": "Abdel Adrian, Gorion's Ward",
+            "spoiler": false,
+            "oracleId": "cab092f9-b7ff-43b9-935f-310869a4daf8",
+            "typeLine": "Legendary Creature — Human Warrior"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "B"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 5895,
+            "name": "Splash Portal",
+            "spoiler": false,
+            "oracleId": "29b537f5-4d9f-40ed-b38b-e8faa2b5af7d",
+            "typeLine": "Sorcery"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "H"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        },
+        {
+          "card": {
+            "id": 4823,
+            "name": "Timeless Witness",
+            "spoiler": false,
+            "oracleId": "a52a06aa-56fc-4845-bbcd-a54f16369b34",
+            "typeLine": "Creature — Human Shaman"
+          },
+          "quantity": 1,
+          "zoneLocations": [
+            "E"
+          ],
+          "exileCardState": "",
+          "mustBeCommander": false,
+          "libraryCardState": "",
+          "graveyardCardState": "",
+          "battlefieldCardState": ""
+        }
+      ],
+      "notes": "",
+      "prices": {
+        "tcgplayer": "0.84",
+        "cardmarket": "0.62",
+        "cardkingdom": "1.53"
+      },
+      "status": "OK",
+      "spoiler": false,
+      "identity": "GWU",
+      "includes": [
+        {
+          "id": 27481
+        },
+        {
+          "id": 28826
+        }
+      ],
+      "produces": [
+        {
+          "feature": {
+            "id": 3,
+            "name": "Infinite LTB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 4,
+            "name": "Infinite ETB",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 17,
+            "name": "Infinite storm count",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 21,
+            "name": "Infinite creature tokens",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 70,
+            "name": "Infinite blinking of nonland permanents you control",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        },
+        {
+          "feature": {
+            "id": 77,
+            "name": "Infinite magecraft triggers",
+            "status": "H",
+            "uncountable": true
+          },
+          "quantity": 1
+        }
+      ],
+      "requires": [],
+      "legalities": {
+        "brawl": false,
+        "predh": false,
+        "legacy": true,
+        "modern": false,
+        "pauper": false,
+        "pioneer": false,
+        "vintage": true,
+        "standard": false,
+        "commander": true,
+        "premodern": false,
+        "oathbreaker": true,
+        "pauperCommander": false,
+        "pauperCommanderMain": false
+      },
+      "popularity": 10,
+      "bracketTag": "C",
+      "description": "Cast Splash Portal by paying its mana cost, blinking Abdel Adrian.\nAbdel Adrian leaves the battlefield, returning Timeless Witness and all other cards that were exiled with it to the battlefield.\nAbdel Adrian and Timeless Witness trigger.\nResolve the Timeless Witness trigger, returning Splash Portal from your graveyard to your hand.\nHolding priority, activate any number of nonland permanents you control by tapping them, adding at least enough mana to cast Splash Portal.\nResolve the Abdel Adrian trigger, exiling Timeless Witness and the mana-producing permanents until Abdel Adrian leaves the battlefield, and creating a 1/1 Soldier creature token for each permanent exiled this way.\nRepeat.",
+      "manaNeeded": "",
+      "variantCount": 30,
+      "manaValueNeeded": 0,
+      "easyPrerequisites": "",
+      "notablePrerequisites": "You have any number of other nonland permanents that enter the battlefield untapped, and that can collectively tap to produce enough mana to cast Splash Portal exiled by Abdel Adrian.\nTimeless Witness exiled by Abdel Adrian.\nYou have enough mana to cast Splash Portal."
+    }
+  ]
+}
