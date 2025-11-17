@@ -25,12 +25,6 @@ export default function ManaTracker({ className = "" }: ManaTrackerProps) {
     setValues((prev) => ({ ...prev, [key]: Math.max(0, prev[key] + delta) }));
   };
 
-  const handleInputChange = (key: string, value: string) => {
-    const parsed = Number(value);
-    if (Number.isNaN(parsed)) return;
-    setValues((prev) => ({ ...prev, [key]: Math.max(0, parsed) }));
-  };
-
   const resetValues = () => {
     setValues(
       COLORS.reduce<Record<string, number>>((acc, c) => {
@@ -41,44 +35,34 @@ export default function ManaTracker({ className = "" }: ManaTrackerProps) {
   };
 
   return (
-    <div className={`flex items-center gap-1 ${className}`}>
+    <div className={`flex items-center gap-2 ${className}`}>
       {COLORS.map((color) => (
-        <div key={color.key} className="flex flex-col items-center text-xs relative">
+        <div key={color.key} className="flex flex-col items-center text-xs">
           <button
-            className="text-sky-300 hover:text-white text-[10px]"
+            className="text-white hover:text-sky-300 text-xs opacity-40"
+            onClick={() => updateValue(color.key, -1)}
+          >
+            {values[color.key]}
+          </button>
+          <button
+            className="mt-1 focus:outline-none"
             onClick={() => updateValue(color.key, 1)}
           >
-            ▲
-          </button>
-          <div className="relative flex items-center justify-center h-4 w-8">
             <img
               src={color.icon}
               alt={color.label}
-              className="absolute inset-0 w-8 h-4 opacity-100"
+              className="w-4 h-4 select-none pointer-events-none"
             />
-            <input
-              value={values[color.key]}
-              onChange={(e) => handleInputChange(color.key, e.target.value)}
-              className="relative text-center bg-transparent border-0 text-white text-sm font-semibold focus:outline-none"
-            />
-          </div>
-          <button
-            className="text-sky-300 hover:text-white text-[10px]"
-            onClick={() => updateValue(color.key, -1)}
-          >
-            ▼
           </button>
-          <div className="mt-1" />
         </div>
       ))}
       <div className="relative">
         <button
-          className="text-white text-xl px-2"
+          className="text-white text-xs px-2 leading-none"
           onClick={() => resetValues()}
         >
-          Reset
+          .
         </button>
-
       </div>
     </div>
   );

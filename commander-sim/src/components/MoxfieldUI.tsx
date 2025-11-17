@@ -13,6 +13,7 @@ import CommanderZone from "./zones/CommanderZone";
 import Battlefield from "./zones/Battlefield";
 import CardModal from "./CardModal";
 import ZoneViewer from "./ZoneViewer";
+import EngineManaTracker from "./EngineManaTracker";
 import { generateFilteredComboFile } from "../utils/ComboEngine";
 import { getDecision } from "../hooks/useDecisionAI";
 
@@ -444,6 +445,7 @@ const autoplayAI = async () => {
               <button className="px-2 py-1 bg-green-600 rounded" onClick={() => setLife((l) => l + 1)}>+</button>
             </div>
             <button onClick={handleTurn} className="px-2 py-1">Turn {turn}</button>
+            <EngineManaTracker cards={battlefield.map((c) => c.card)} />
           </div>
         </div>
 
