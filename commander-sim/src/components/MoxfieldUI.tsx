@@ -5,7 +5,6 @@ import { v4 as uuidv4 } from "uuid";
 import { parseDeckList } from "../utils/DeckParser";
 // useCardPreview gestisce il dettaglio della carta sotto il cursore (hover)
 import { useCardPreview } from "../hooks/UseCardPreview";
-import CardPreview from "../utils/CardPreview";
 import Hand from "./zones/Hand";
 import Graveyard from "./zones/Graveyard";
 import Library from "./zones/Library";
@@ -13,8 +12,21 @@ import Exile from "./zones/Exile";
 import CommanderZone from "./zones/CommanderZone";
 import Battlefield from "./zones/Battlefield";
 import CardModal from "./CardModal";
+import ZoneViewer from "./ZoneViewer";
 import { generateFilteredComboFile } from "../utils/ComboEngine";
 import { getDecision } from "../hooks/useDecisionAI";
+
+type ZoneKey = "library" | "graveyard" | "exile" | "hand" | "commander";
+type DragSourceZone = ZoneKey | "battlefield";
+
+const CARD_WIDTH = 128;
+const CARD_HEIGHT = 180;
+
+const clampCoordinate = (
+  value: number,
+  size: number,
+  containerSize: number
+) => Math.max(0, Math.min(value, Math.max(0, containerSize - size)));
 
 // Tutti gli useState definiscono lo stato principale del gioco, tra cui:
 // - Zone del campo (mano, mazzo, cimitero, esilio, ecc.)
@@ -36,16 +48,56 @@ export default function MoxfieldUI() {
   const [battlefield, setBattlefield] = useState<{ id: string; card: string; x: number; y: number }[]>([]);
   const { hoverCardDetail, handleHover, handleLeave } = useCardPreview();
   const modalRef = useRef<HTMLDivElement | null>(null);
+  const [isLoadingDeck, setIsLoadingDeck] = useState(false);
+  const [zoneViewer, setZoneViewer] = useState<{
+    key: ZoneKey;
+    title: string;
+  } | null>(null);
 
   // Mappa base con le zone di gioco principali (senza battlefield)
 // Ogni zona ha uno stato (array di carte) e un setter
 
-  const zoneMap = {
-    library: { zone: library, setZone: setLibrary },
-    graveyard: { zone: graveyard, setZone: setGraveyard },
-    exile: { zone: exile, setZone: setExile },
-    hand: { zone: hand, setZone: setHand },
-    commander: { zone: commandZone, setZone: setCommandZone },
+  const zoneMap: Record<
+    ZoneKey,
+    {
+      zone: string[];
+      setZone: React.Dispatch<React.SetStateAction<string[]>>;
+      label: string;
+    }
+  > = {
+    library: { zone: library, setZone: setLibrary, label: "Library" },
+    graveyard: { zone: graveyard, setZone: setGraveyard, label: "Graveyard" },
+    exile: { zone: exile, setZone: setExile, label: "Exile" },
+    hand: { zone: hand, setZone: setHand, label: "Hand" },
+    commander: { zone: commandZone, setZone: setCommandZone, label: "Command" },
+  };
+
+  const setDragPayload = (
+    e: React.DragEvent<HTMLDivElement>,
+    name: string,
+    options?: {
+      offset?: { x: number; y: number };
+      sourceZone?: { zoneKey: DragSourceZone; index?: number };
+    }
+  ) => {
+    e.dataTransfer.setData("text/plain", name);
+    const target = e.currentTarget as HTMLElement;
+    const rect = target.getBoundingClientRect();
+    const defaultOffset = {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+    };
+    const offset = options?.offset ?? defaultOffset;
+    e.dataTransfer.setData("application/card-offset", JSON.stringify(offset));
+
+    if (options?.sourceZone) {
+      e.dataTransfer.setData(
+        "application/source-zone",
+        JSON.stringify(options.sourceZone)
+      );
+    } else {
+      e.dataTransfer.setData("application/source-zone", "");
+    }
   };
 
   // Resetta tutto e distribuisce le prime 7 carte in mano
@@ -72,32 +124,66 @@ export default function MoxfieldUI() {
   const handleDrop = (e: React.DragEvent<HTMLDivElement>, targetZone: string) => {
     const card = e.dataTransfer.getData("text/plain").trim();
     if (!card) return;
+    let sourceInfo: { zoneKey: DragSourceZone; index?: number } | undefined;
+    const sourceMeta = e.dataTransfer.getData("application/source-zone");
+    if (sourceMeta) {
+      try {
+        const parsed = JSON.parse(sourceMeta);
+        if (parsed?.zoneKey) {
+          sourceInfo = {
+            zoneKey: parsed.zoneKey as DragSourceZone,
+            index:
+              typeof parsed.index === "number" ? parsed.index : undefined,
+          };
+        }
+      } catch {
+        sourceInfo = undefined;
+      }
+    }
 
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const dropContainer =
+      (e.currentTarget as HTMLElement).closest(
+        `[data-drop-zone="${targetZone}"]`
+      ) ?? (e.currentTarget as HTMLElement);
+    const rect = dropContainer.getBoundingClientRect();
+    const relativeX = e.clientX - rect.left;
+    const relativeY = e.clientY - rect.top;
 
     switch (targetZone) {
       case "hand":
-        moveCard(card, setHand);
+        moveCard(card, setHand, false, sourceInfo);
         break;
       case "graveyard":
-        moveCard(card, setGraveyard);
+        moveCard(card, setGraveyard, false, sourceInfo);
         break;
       case "exile":
-        moveCard(card, setExile);
+        moveCard(card, setExile, false, sourceInfo);
         break;
       case "library":
-        removeCardFromAllZones(card);
+        removeCardFromAllZones(card, sourceInfo);
         setLibrary((prev) => [card, ...prev]);
         break;
       case "commander":
-        if (card === fullDeck[0]) moveCard(card, setCommandZone, true);
+        if (card === fullDeck[0]) moveCard(card, setCommandZone, true, sourceInfo);
         break;
-      case "battlefield":
-        removeCardFromAllZones(card);
+      case "battlefield": {
+        let offset = { x: 0, y: 0 };
+        try {
+          const stored = e.dataTransfer.getData("application/card-offset");
+          if (stored) offset = JSON.parse(stored);
+        } catch {
+          offset = { x: CARD_WIDTH / 2, y: CARD_HEIGHT / 2 };
+        }
+        const x = clampCoordinate(relativeX - offset.x, CARD_WIDTH, rect.width);
+        const y = clampCoordinate(
+          relativeY - offset.y,
+          CARD_HEIGHT,
+          rect.height
+        );
+        removeCardFromAllZones(card, sourceInfo);
         setBattlefield((prev) => [...prev, { id: uuidv4(), card, x, y }]);
         break;
+      }
     }
   };
 
@@ -107,21 +193,52 @@ export default function MoxfieldUI() {
   const moveCard = (
     card: string,
     setZone: React.Dispatch<React.SetStateAction<string[]>> | ((prev: string[]) => string[]),
-    overwrite: boolean = false
+    overwrite: boolean = false,
+    sourceInfo?: { zoneKey: DragSourceZone; index?: number }
   ) => {
-    removeCardFromAllZones(card);
+    removeCardFromAllZones(card, sourceInfo);
     if (typeof setZone === "function") {
       setZone((prev: string[]) => (overwrite ? [card] : [...prev, card]));
     }
   };
 
-  const removeCardFromAllZones = (card: string) => {
-    setHand((prev) => prev.filter((c) => c !== card));
-    setGraveyard((prev) => prev.filter((c) => c !== card));
-    setExile((prev) => prev.filter((c) => c !== card));
-    setLibrary((prev) => prev.filter((c) => c !== card));
-    setCommandZone((prev) => prev.filter((c) => c !== card));
-    setBattlefield((prev) => prev.filter((obj) => obj.card !== card));
+  const removeCardFromAllZones = (
+    card: string,
+    source?: { zoneKey: DragSourceZone; index?: number }
+  ) => {
+    const removeFromList = (
+      prev: string[],
+      zoneKey: DragSourceZone
+    ): string[] => {
+      const copy = [...prev];
+      const idx =
+        source?.zoneKey === zoneKey && source.index !== undefined
+          ? source.index
+          : copy.indexOf(card);
+      if (idx < 0 || idx >= copy.length) {
+        return prev;
+      }
+      copy.splice(idx, 1);
+      return copy;
+    };
+
+    setHand((prev) => removeFromList(prev, "hand"));
+    setGraveyard((prev) => removeFromList(prev, "graveyard"));
+    setExile((prev) => removeFromList(prev, "exile"));
+    setLibrary((prev) => removeFromList(prev, "library"));
+    setCommandZone((prev) => removeFromList(prev, "commander"));
+    setBattlefield((prev) => {
+      const copy = [...prev];
+      let idx = copy.findIndex((obj) => obj.card === card);
+      if (source?.zoneKey === "battlefield" && source.index !== undefined) {
+        idx = source.index;
+      }
+      if (idx < 0 || idx >= copy.length) {
+        return prev;
+      }
+      copy.splice(idx, 1);
+      return copy;
+    });
   };
 
   // Permette l'uso di menu interattivi per spostare tutte le carte da una zona all'altra
@@ -129,14 +246,15 @@ export default function MoxfieldUI() {
 // Usa la stringa `action` nel formato "move-[destinazione]"
 
   const handleZoneAction = (action: string, fromZone: string) => {
-    const from = zoneMap[fromZone];
+    const zoneKey = fromZone as ZoneKey;
+    const from = zoneMap[zoneKey];
     if (!from) return;
     if (action === "view") {
-      alert(`Carte in ${fromZone}: ${from.zone.join(", ") || "(vuoto)"}`);
+      setZoneViewer({ key: zoneKey, title: from.label });
       return;
     }
 
-    const toZoneKey = action.split("-")[1];
+    const toZoneKey = action.split("-")[1] as ZoneKey;
     const to = zoneMap[toZoneKey];
     if (!to) return;
 
@@ -166,26 +284,62 @@ export default function MoxfieldUI() {
 // genera le combo valide per il mazzo con `generateFilteredComboFile`
 
   const handleLoadDeck = async (input: string) => {
-    const cards = parseDeckList(input);
-    if (!cards || cards.length === 0) {
-      alert("Errore: il mazzo è vuoto o malformato.");
+    const trimmed = input.trim();
+    if (!trimmed) {
+      alert("Inserisci un deck o un link Moxfield.");
       return;
     }
-    localStorage.setItem("savedDeck", JSON.stringify(cards));
 
-    // Salva il mazzo su public/CurrentDeck.json
-    fetch("http://localhost:3001/save-deck", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(cards),
-    });
+    setIsLoadingDeck(true);
+    try {
+      let cards: string[] = [];
+      const isMoxfieldLink = /^https?:\/\/(?:www\.)?moxfield\.com\/decks\//i.test(trimmed);
 
-    // Filtra e salva le combo compatibili nel mazzo
-    await generateFilteredComboFile();
+      if (isMoxfieldLink) {
+        try {
+          const resp = await fetch("http://localhost:3001/fetch-moxfield-deck", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url: trimmed }),
+          });
+          if (!resp.ok) {
+            const message = await resp.text();
+            throw new Error(message);
+          }
+          const data = await resp.json();
+          cards = data.cards ?? [];
+        } catch (error) {
+          console.error("Errore caricamento Moxfield:", error);
+          const message =
+            error instanceof Error && error.message
+              ? error.message
+              : "Impossibile recuperare il deck da Moxfield.";
+          alert(message);
+          return;
+        }
+      } else {
+        cards = parseDeckList(trimmed);
+      }
 
-    // Inizializza lo stato di gioco
-    setFullDeck(cards);
-    initializeGameState(cards);
+      if (!cards || cards.length === 0) {
+        alert("Errore: il mazzo è vuoto o malformato.");
+        return;
+      }
+      localStorage.setItem("savedDeck", JSON.stringify(cards));
+
+      fetch("http://localhost:3001/save-deck", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(cards),
+      });
+
+      await generateFilteredComboFile();
+
+      setFullDeck(cards);
+      initializeGameState(cards);
+    } finally {
+      setIsLoadingDeck(false);
+    }
   };
 
     useEffect(() => {
@@ -293,34 +447,117 @@ const autoplayAI = async () => {
           </div>
         </div>
 
-        <Battlefield cards={battlefield} onDrop={handleDrop} onDragStart={(e, name) => e.dataTransfer.setData("text/plain", name)} onHover={handleHover} onLeave={handleLeave} onLoadDeckClick={handleLoadDeck} showMenu={showMenu} toggleMenu={() => setShowMenu(prev => !prev)}/>
+        <Battlefield
+          cards={battlefield}
+          onDrop={handleDrop}
+          onDragStart={(e, name) =>
+            setDragPayload(e, name, {
+              sourceZone: { zoneKey: "battlefield" },
+            })
+          }
+          onHover={handleHover}
+          onLeave={handleLeave}
+          onLoadDeckClick={handleLoadDeck}
+          showMenu={showMenu}
+          toggleMenu={() => setShowMenu((prev) => !prev)}
+        />
 
         <div className="flex justify-between gap-4 p-3 bg-zinc-900 items-start">
-          <Hand cards={hand} onDrop={handleDrop} onDragStart={(e, name) => e.dataTransfer.setData("text/plain", name)} onHover={handleHover} onLeave={handleLeave} onZoneAction={handleZoneAction} />
+          <Hand
+            cards={hand}
+            onDrop={handleDrop}
+            onDragStart={(e, name) =>
+              setDragPayload(e, name, { sourceZone: { zoneKey: "hand" } })
+            }
+            onHover={handleHover}
+            onLeave={handleLeave}
+            onZoneAction={handleZoneAction}
+          />
 
           <div className="flex gap-2 items-start">
-            <Graveyard cards={graveyard} onDrop={handleDrop} onDragStart={(e, name) => e.dataTransfer.setData("text/plain", name)} onHover={handleHover} onLeave={handleLeave} onZoneAction={handleZoneAction}/>
-            <Exile cards={exile} onDrop={handleDrop} onDragStart={(e, name) => e.dataTransfer.setData("text/plain", name)} onHover={handleHover} onLeave={handleLeave} onZoneAction={handleZoneAction}/>
-            <Library cards={library} image="src/assets/sleeve.png" onDrop={handleDrop} onDragStart={(e, name) => e.dataTransfer.setData("text/plain", name)} onHover={handleHover} onLeave={handleLeave} onClick={handleDraw} onZoneAction={handleZoneAction}/>
-            <CommanderZone cards={commandZone} commanderTax={commanderTax} onIncreaseTax={() => setCommanderTax((prev) => prev + 2)} onDrop={handleDrop} onDragStart={(e, name) => e.dataTransfer.setData("text/plain", name)} onHover={handleHover} onLeave={handleLeave} />
+            <Graveyard
+              cards={graveyard}
+              onDrop={handleDrop}
+              onDragStart={(e, name) =>
+                setDragPayload(e, name, { sourceZone: { zoneKey: "graveyard" } })
+              }
+              onHover={handleHover}
+              onLeave={handleLeave}
+              onZoneAction={handleZoneAction}
+            />
+            <Exile
+              cards={exile}
+              onDrop={handleDrop}
+              onDragStart={(e, name) =>
+                setDragPayload(e, name, { sourceZone: { zoneKey: "exile" } })
+              }
+              onHover={handleHover}
+              onLeave={handleLeave}
+              onZoneAction={handleZoneAction}
+            />
+            <Library
+              cards={library}
+              image="src/assets/sleeve.png"
+              onDrop={handleDrop}
+              onDragStart={(e, name) =>
+                setDragPayload(e, name, { sourceZone: { zoneKey: "library" } })
+              }
+              onHover={handleHover}
+              onLeave={handleLeave}
+              onClick={handleDraw}
+              onZoneAction={handleZoneAction}
+            />
+            <CommanderZone
+              cards={commandZone}
+              commanderTax={commanderTax}
+              onIncreaseTax={() => setCommanderTax((prev) => prev + 2)}
+              onDrop={handleDrop}
+              onDragStart={(e, name) =>
+                setDragPayload(e, name, { sourceZone: { zoneKey: "commander" } })
+              }
+              onHover={handleHover}
+              onLeave={handleLeave}
+            />
           </div>
         </div>
       </div>
 
-      {hoverCardDetail && (<div className="fixed top-24 right-[7vw] z-50 w-[28vw] max-w-sm"> <CardModal
-  ref={modalRef}
-  data={hoverCardDetail.data}
-  x={hoverCardDetail.x}
-  y={hoverCardDetail.y}
-    zoneState={{
-    H: hand,
-    B: battlefield.map(c => c.card),
-    G: graveyard,
-    E: exile,
-    C: commandZone,
-  }}
-/>
-</div>)}
+      {hoverCardDetail && (
+        <div className="fixed top-24 right-[7vw] z-50 w-[28vw] max-w-sm">
+          <CardModal
+            ref={modalRef}
+            data={hoverCardDetail.data}
+            zoneState={{
+              H: hand,
+              B: battlefield.map((c) => c.card),
+              G: graveyard,
+              E: exile,
+              C: commandZone,
+            }}
+          />
+        </div>
+      )}
+      {zoneViewer && (
+        <ZoneViewer
+          title={zoneViewer.title}
+          cards={zoneMap[zoneViewer.key]?.zone ?? []}
+          onClose={() => setZoneViewer(null)}
+          onDragStart={(e, name, index) =>
+            setDragPayload(e, name, {
+              offset: { x: CARD_WIDTH / 2, y: CARD_HEIGHT / 2 },
+              sourceZone: { zoneKey: zoneViewer.key, index },
+            })
+          }
+        />
+      )}
+      {isLoadingDeck && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="flex items-center gap-3 px-6 py-4 bg-zinc-900 rounded-2xl text-white shadow-2xl border border-zinc-700">
+            <span className="h-5 w-5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+            <span className="text-sm font-semibold">Caricamento mazzo...</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

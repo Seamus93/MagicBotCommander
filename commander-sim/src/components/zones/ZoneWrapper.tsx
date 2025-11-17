@@ -2,6 +2,7 @@
 import React from "react";
 import Card from "../Card";
 import ZoneMenu from "../ZoneMenu";
+import type { CardHoverHandler } from "../../types/cards";
 
 export interface ZoneWrapperProps {
   label: string;
@@ -9,7 +10,7 @@ export interface ZoneWrapperProps {
   cards?: string[]; // <-- può essere undefined
   onDrop: (e: React.DragEvent<HTMLDivElement>, zoneKey: string) => void;
   onDragStart: (e: React.DragEvent<HTMLDivElement>, name: string) => void;
-  onHover: (name: string, x: number, y: number) => void;
+  onHover: CardHoverHandler;
   onLeave: () => void;
   image?: string;
   availableTargets: string[];
@@ -36,32 +37,43 @@ export default function ZoneWrapper({
 }: ZoneWrapperProps) {
   const topCard = cards[cards.length - 1];
   
+  const labelMatch = label.match(/^(.*?)(\s*\(.*\))$/);
+  const primaryLabel = labelMatch ? labelMatch[1].trim() : label;
+  const suffixLabel = labelMatch ? labelMatch[2] : "";
+
   return (
     <div className="flex flex-col items-center relative py-2">
       {/* Titolo zona + menu */}
-      <div className="flex items-center gap-1 mb-1">
-        <div
-          className={`text-xs ${
-            zoneKey === "commander" ? "text-yellow-400 cursor-pointer" : "text-zinc-400"
-          }`}
+      <div className="flex items-center gap-1 mb-1 text-sm font-semibold">
+        <button
+          type="button"
+          className={`${
+            zoneKey === "commander"
+              ? "text-yellow-400"
+              : "text-white hover:text-sky-200"
+          } transition-colors`}
           onClick={onLabelClick}
         >
-          {label}
-        </div>
+          {primaryLabel}
+        </button>
+        {suffixLabel && (
+          <span className="text-sky-400 text-sm">{suffixLabel}</span>
+        )}
 
         {showZoneMenu && (
           <ZoneMenu
             zoneKey={zoneKey}
-            cards={cards}
             availableTargets={availableTargets}
             onAction={onZoneAction}
+            tone="light"
           />
         )}
       </div>
 
       {/* Contenitore carta */}
       <div
-        className="w-32 h-48 rounded overflow-hidden flex items-center justify-center bg-zinc-800"
+        className="w-32 h-48 p-1 rounded overflow-visible flex items-center justify-center bg-zinc-800"
+        data-drop-zone={zoneKey}
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => onDrop(e, zoneKey)}
         onClick={onLabelClick}
@@ -79,7 +91,11 @@ export default function ZoneWrapper({
             <div
               className="absolute inset-0"
               draggable
-              onDragStart={(e) => e.dataTransfer.setData("text/plain", cards[0])}
+              onDragStart={(e) => {
+                if (onDragStart) {
+                  onDragStart(e, cards[0]);
+                }
+              }}
             />
           )}
 

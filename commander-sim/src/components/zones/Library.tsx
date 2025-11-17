@@ -1,13 +1,14 @@
 // components/zones/Library.tsx
 import React from "react";
 import ZoneWrapper from "./ZoneWrapper";
+import type { CardHoverHandler } from "../../types/cards";
 
 interface Props {
   cards: string[];
-  image: "src/assets/sleeve.png";
+  image: string;
   onDrop: (e: React.DragEvent<HTMLDivElement>, zoneKey: string) => void;
   onDragStart: (e: React.DragEvent<HTMLDivElement>, name: string) => void;
-  onHover: (name: string, x: number, y: number) => void;
+  onHover: CardHoverHandler;
   onLeave: () => void;
   onClick?: () => void;
   onZoneAction: (action: string, fromZone: string) => void;

@@ -1,18 +1,20 @@
 // components/ZoneMenu.tsx
 import React, { useRef, useEffect, useState } from "react";
 
+type ZoneMenuTone = "default" | "light";
+
 interface ZoneMenuProps {
   zoneKey: string;
   onAction?: (action: string, fromZone: string) => void;
   availableTargets: string[];
-  cards: CardData[];
+  tone?: ZoneMenuTone;
 }
 
 export default function ZoneMenu({
   zoneKey,
   onAction,
   availableTargets,
-  cards,
+  tone = "default",
 }: ZoneMenuProps) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -34,12 +36,19 @@ export default function ZoneMenu({
     setOpen(false);
   };
 
+  const buttonColor =
+    tone === "light"
+      ? "text-zinc-200 hover:text-white"
+      : "text-zinc-400 hover:text-white";
+
   return (
     <div className="relative inline-block" ref={menuRef}>
       <button
-        onClick={() => setOpen(!open)}
-        className="text-zinc-400 hover:text-white text-md"
-      >⋮</button>
+        onClick={() => setOpen((prev) => !prev)}
+        className={`ml-1 text-xs leading-none transition-colors ${buttonColor}`}
+      >
+        ▼
+      </button>
 
       {open && (
         <div className="absolute top-full left-2 mt-1 w-56 bg-zinc-800/90 text-sm border border-zinc-600 rounded-lg shadow-lg z-20 grid grid-cols-1 gap-1 p-2">
