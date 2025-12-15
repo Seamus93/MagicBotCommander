@@ -14,44 +14,64 @@ export type GameState = {
 
 export async function getDecision(gameState: GameState): Promise<string> {
   const prompt = generatePromptFromState(gameState);
-  console.log("[AI] Sto per lanciare la fetch...");
+  console.log("[AI] Sto per lanciare Puter.js...");
   const start = Date.now();
   try {
-    const controller = new AbortController();
-    const timeoutMs = 15 * 60 * 1000;
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    
+    if (!window.puter?.ai?.chat) {
+      throw new Error(
+        "Puter.js non inizializzato. Assicurati che lo script sia caricato."
+      );
+    }
 
-    const response = await fetch("http://localhost:11434/api/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model: "mistral:7b-instruct",
-        prompt,
-        stream: false,
-      }),
+    const response = await window.puter.ai.chat(prompt, {
+      model: "gpt-5.1",
+      temperature: 0.4,
+      max_tokens: 600,
     });
 
     const duration = ((Date.now() - start) / 1000).toFixed(2);
-    clearTimeout(timeout);
+    console.log(`[AI] Risposta ricevuta in ${duration} secondi.`);
 
-    if (!response.ok) {
-      throw new Error(`Risposta HTTP non valida: ${response.status}`);
+    if (
+      typeof response === "object" &&
+      response !== null &&
+      "success" in response &&
+      // @ts-expect-error dinamico
+      response.success === false
+    ) {
+      const errorMessage =
+        // @ts-expect-error dinamico
+        response.error || "Errore sconosciuto di Puter.";
+      throw new Error(errorMessage);
     }
 
-    console.log(`[AI] Risposta ricevuta in ${duration} secondi.`);
-    const data = await response.json();
-    console.log("[AI] Risposta AI:", data.response);
+    const extractMessage = (): string | undefined => {
+      if (typeof response === "string") return response;
+      if (!response) return undefined;
+      // @ts-expect-error dinamico
+      if (typeof response.message === "string") return response.message;
+      // @ts-expect-error dinamico
+      if (response.message?.content) {
+        // @ts-expect-error dinamico
+        return typeof response.message.content === "string"
+          ? // @ts-expect-error dinamico
+            response.message.content
+          : JSON.stringify(response.message.content);
+      }
+      // @ts-expect-error dinamico
+      if (typeof response.text === "string") return response.text;
+      return undefined;
+    };
+
+    const message = extractMessage();
 
     return `${
-      data.response?.trim() || "Nessuna risposta dall'AI."
+      message?.trim() || "Nessuna risposta dall'AI."
     }\nTempo impiegato: ${duration} secondi.`;
-
   } catch (err) {
     const duration = ((Date.now() - start) / 1000).toFixed(2);
     console.error(
-      `[AI] Errore nella chiamata a Ollama (dopo ${duration} s):`,
+      `[AI] Errore nella chiamata a Puter (dopo ${duration} s):`,
       err
     );
     return `Errore durante la richiesta all'AI. (${duration} s)`;

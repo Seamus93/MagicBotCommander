@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "start-all": "concurrently \"npm run dev\" \"node server.cjs\""
+    "all": "concurrently \"npm run dev\" \"node server.cjs\"",
+    "train": "node --loader ts-node/esm --experimental-specifier-resolution=node sim/run-batch.ts"
   },
   "dependencies": {
     "body-parser": "^2.2.0",
@@ -32,6 +33,7 @@
     "globals": "^16.2.0",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.1",
+    "ts-node": "^10.9.2",
     "typescript": "~5.8.3",
     "typescript-eslint": "^8.34.1",
     "vite": "^7.0.0"
