@@ -1,6 +1,6 @@
 // Moxfield UI layout with full drag-and-drop support between all zones and zone menus
 
-import React, { useState, useEffect,useRef} from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { v4 as uuidv4 } from "uuid";
 import { parseDeckList } from "../utils/DeckParser";
 // useCardPreview gestisce il dettaglio della carta sotto il cursore (hover)
@@ -122,7 +122,7 @@ export default function MoxfieldUI() {
 // Calcola coordinate X/Y per posizionamento nel campo (battlefield)
 // Usa `moveCard()` per spostamenti semplici e `removeCardFromAllZones()` per rimozione globale
 
-  const handleDrop = (e: React.DragEvent<HTMLDivElement>, targetZone: string) => {
+  const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>, targetZone: string) => {
     const card = e.dataTransfer.getData("text/plain").trim();
     if (!card) return;
     let sourceInfo: { zoneKey: DragSourceZone; index?: number } | undefined;
@@ -186,7 +186,40 @@ export default function MoxfieldUI() {
         break;
       }
     }
-  };
+  }, [fullDeck]);
+
+  const handleBattlefieldDragStart = useCallback(
+    (e: React.DragEvent<HTMLDivElement>, name: string) =>
+      setDragPayload(e, name, {
+        sourceZone: { zoneKey: "battlefield" },
+      }),
+    []
+  );
+  const handleHandDragStart = useCallback(
+    (e: React.DragEvent<HTMLDivElement>, name: string) =>
+      setDragPayload(e, name, { sourceZone: { zoneKey: "hand" } }),
+    []
+  );
+  const handleGraveyardDragStart = useCallback(
+    (e: React.DragEvent<HTMLDivElement>, name: string) =>
+      setDragPayload(e, name, { sourceZone: { zoneKey: "graveyard" } }),
+    []
+  );
+  const handleExileDragStart = useCallback(
+    (e: React.DragEvent<HTMLDivElement>, name: string) =>
+      setDragPayload(e, name, { sourceZone: { zoneKey: "exile" } }),
+    []
+  );
+  const handleLibraryDragStart = useCallback(
+    (e: React.DragEvent<HTMLDivElement>, name: string) =>
+      setDragPayload(e, name, { sourceZone: { zoneKey: "library" } }),
+    []
+  );
+  const handleCommanderDragStart = useCallback(
+    (e: React.DragEvent<HTMLDivElement>, name: string) =>
+      setDragPayload(e, name, { sourceZone: { zoneKey: "commander" } }),
+    []
+  );
 
   // moveCard rimuove la carta da tutte le zone e la aggiunge nella destinazione
 // removeCardFromAllZones è una utility che pulisce tutte le zone da una specifica carta
@@ -415,6 +448,15 @@ const autoplayAI = async () => {
     }
   }, [notification]);
 
+  const handleZoneViewerDragStart = useCallback(
+    (e: React.DragEvent<HTMLDivElement>, name: string, index: number) =>
+      setDragPayload(e, name, {
+        offset: { x: CARD_WIDTH / 2, y: CARD_HEIGHT / 2 },
+        sourceZone: { zoneKey: zoneViewer?.key ?? "hand", index },
+      }),
+    [zoneViewer?.key]
+  );
+
   return (
     <div className="relative flex h-screen w-full bg-zinc-900 text-white">
       <div className="absolute top-24 right-4 flex flex-col gap-2 p-5 z-10">
@@ -452,11 +494,7 @@ const autoplayAI = async () => {
         <Battlefield
           cards={battlefield}
           onDrop={handleDrop}
-          onDragStart={(e, name) =>
-            setDragPayload(e, name, {
-              sourceZone: { zoneKey: "battlefield" },
-            })
-          }
+          onDragStart={handleBattlefieldDragStart}
           onHover={handleHover}
           onLeave={handleLeave}
           onLoadDeckClick={handleLoadDeck}
@@ -468,9 +506,7 @@ const autoplayAI = async () => {
           <Hand
             cards={hand}
             onDrop={handleDrop}
-            onDragStart={(e, name) =>
-              setDragPayload(e, name, { sourceZone: { zoneKey: "hand" } })
-            }
+            onDragStart={handleHandDragStart}
             onHover={handleHover}
             onLeave={handleLeave}
             onZoneAction={handleZoneAction}
@@ -480,9 +516,7 @@ const autoplayAI = async () => {
             <Graveyard
               cards={graveyard}
               onDrop={handleDrop}
-              onDragStart={(e, name) =>
-                setDragPayload(e, name, { sourceZone: { zoneKey: "graveyard" } })
-              }
+              onDragStart={handleGraveyardDragStart}
               onHover={handleHover}
               onLeave={handleLeave}
               onZoneAction={handleZoneAction}
@@ -490,9 +524,7 @@ const autoplayAI = async () => {
             <Exile
               cards={exile}
               onDrop={handleDrop}
-              onDragStart={(e, name) =>
-                setDragPayload(e, name, { sourceZone: { zoneKey: "exile" } })
-              }
+              onDragStart={handleExileDragStart}
               onHover={handleHover}
               onLeave={handleLeave}
               onZoneAction={handleZoneAction}
@@ -501,9 +533,7 @@ const autoplayAI = async () => {
               cards={library}
               image="src/assets/sleeve.png"
               onDrop={handleDrop}
-              onDragStart={(e, name) =>
-                setDragPayload(e, name, { sourceZone: { zoneKey: "library" } })
-              }
+              onDragStart={handleLibraryDragStart}
               onHover={handleHover}
               onLeave={handleLeave}
               onClick={handleDraw}
@@ -514,9 +544,7 @@ const autoplayAI = async () => {
               commanderTax={commanderTax}
               onIncreaseTax={() => setCommanderTax((prev) => prev + 2)}
               onDrop={handleDrop}
-              onDragStart={(e, name) =>
-                setDragPayload(e, name, { sourceZone: { zoneKey: "commander" } })
-              }
+              onDragStart={handleCommanderDragStart}
               onHover={handleHover}
               onLeave={handleLeave}
             />
@@ -544,12 +572,7 @@ const autoplayAI = async () => {
           title={zoneViewer.title}
           cards={zoneMap[zoneViewer.key]?.zone ?? []}
           onClose={() => setZoneViewer(null)}
-          onDragStart={(e, name, index) =>
-            setDragPayload(e, name, {
-              offset: { x: CARD_WIDTH / 2, y: CARD_HEIGHT / 2 },
-              sourceZone: { zoneKey: zoneViewer.key, index },
-            })
-          }
+          onDragStart={handleZoneViewerDragStart}
         />
       )}
       {isLoadingDeck && (

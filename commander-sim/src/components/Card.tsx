@@ -49,7 +49,7 @@ const resolveCombosForCard = async (cardName: string): Promise<ComboData[]> => {
   );
 };
 
-const Card: React.FC<CardProps> = ({
+const CardComponent: React.FC<CardProps> = ({
   name,
   x = 0,
   y = 0,
@@ -127,13 +127,18 @@ const Card: React.FC<CardProps> = ({
       modal.scrollTop += e.deltaY;
     }
   };
-
-  const wrapperClass = `w-32 h-auto rounded overflow-hidden bg-zinc-700 cursor-pointer relative flex-shrink-0 transition-transform duration-150 hover:scale-125 hover:z-50 hover:ring-4 hover:ring-blue-800/60 ${
+  const wrapperClass = `w-32 h-auto rounded overflow-hidden bg-zinc-700 cursor-pointer relative flex-shrink-0 transform-gpu transition-transform duration-150 ease-out hover:scale-125 hover:z-50 hover:ring-4 hover:ring-blue-800/60 ${
     absolute ? "absolute" : ""
   }`;
 
   const style = absolute
-    ? { left: x, top: y, zIndex: isHovered ? 1000 : undefined }
+    ? {
+        transform: `translate3d(${x}px, ${y}px, 0)`,
+        left: 0,
+        top: 0,
+        zIndex: isHovered ? 1000 : undefined,
+        willChange: "transform",
+      }
     : undefined;
 
   return (
@@ -150,9 +155,28 @@ const Card: React.FC<CardProps> = ({
         onDragOver?.(e);
       }}
     >
-      <img src={imageUrl} alt={name} className="w-full h-full object-contain" />
+      <img
+        src={imageUrl}
+        alt={name}
+        loading="lazy"
+        className="w-full h-full object-contain will-change-transform"
+      />
     </div>
   );
 };
+
+const Card = React.memo(CardComponent, (prev, next) => {
+  return (
+    prev.name === next.name &&
+    prev.x === next.x &&
+    prev.y === next.y &&
+    prev.absolute === next.absolute &&
+    prev.onDragStart === next.onDragStart &&
+    prev.onHover === next.onHover &&
+    prev.onLeave === next.onLeave &&
+    prev.onDrop === next.onDrop &&
+    prev.onDragOver === next.onDragOver
+  );
+});
 
 export default Card;

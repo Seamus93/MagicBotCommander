@@ -23,14 +23,33 @@ export async function getDecision(gameState: GameState): Promise<string> {
       );
     }
 
-    const response = await window.puter.ai.chat(prompt, {
-      model: "gpt-5.1",
-      temperature: 0.4,
-      max_tokens: 600,
-    });
+    const tryModels: Array<string | undefined> = [
+      "gpt-4o-mini", // modello gratuito e stabile
+      undefined, // lascia scegliere al provider
+    ];
+    let response: unknown;
+    let lastError: unknown;
+
+    for (const model of tryModels) {
+      try {
+        response = await window.puter.ai.chat(prompt, {
+          ...(model ? { model } : {}),
+          temperature: 0.4,
+          max_tokens: 600,
+        });
+        lastError = undefined;
+        break;
+      } catch (err) {
+        lastError = err;
+      }
+    }
 
     const duration = ((Date.now() - start) / 1000).toFixed(2);
     console.log(`[AI] Risposta ricevuta in ${duration} secondi.`);
+
+    if (lastError) {
+      throw lastError;
+    }
 
     if (
       typeof response === "object" &&
@@ -42,7 +61,9 @@ export async function getDecision(gameState: GameState): Promise<string> {
       const errorMessage =
         // @ts-expect-error dinamico
         response.error || "Errore sconosciuto di Puter.";
-      throw new Error(errorMessage);
+      throw new Error(
+        `${errorMessage} (suggerimento: disabilita AdBlock/uBlock, prova https e ripeti)`
+      );
     }
 
     const extractMessage = (): string | undefined => {
@@ -74,7 +95,13 @@ export async function getDecision(gameState: GameState): Promise<string> {
       `[AI] Errore nella chiamata a Puter (dopo ${duration} s):`,
       err
     );
-    return `Errore durante la richiesta all'AI. (${duration} s)`;
+    const friendly =
+      err instanceof Error
+        ? err.message
+        : typeof err === "string"
+          ? err
+          : "Errore sconosciuto";
+    return `Errore durante la richiesta all'AI: ${friendly}. (${duration} s)\nProva a disattivare estensioni che bloccano le richieste o a riaprire la pagina in incognito.`;
   }
 }
 

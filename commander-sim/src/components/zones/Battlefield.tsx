@@ -1,5 +1,5 @@
 // components/zones/Battlefield.tsx
-import React, { useState } from "react";
+import React, { useCallback, useState } from "react";
 import Card from "../Card";
 import type { CardHoverHandler } from "../../types/cards";
 import DeckLoadModal from "../DeckLoadModal";
@@ -22,7 +22,7 @@ interface Props {
   toggleMenu: () => void;
 }
 
-export default function Battlefield({
+function BattlefieldComponent({
   cards = [],
   onDrop,
   onDragStart,
@@ -33,13 +33,17 @@ export default function Battlefield({
   toggleMenu,
 }: Props) {
   const [deckInput, setDeckInput] = useState("");
+  const handleDrop = useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => onDrop(e, "battlefield"),
+    [onDrop]
+  );
 
   return (
     <div
       className="flex-1 relative p-4 bg-zinc-800 border-b border-zinc-700 overflow-hidden"
       data-drop-zone="battlefield"
       onDragOver={(e) => e.preventDefault()}
-      onDrop={(e) => onDrop(e, "battlefield")}
+      onDrop={handleDrop}
     >
       <div
         className="text-zinc-400 mb-1 cursor-pointer"
@@ -83,3 +87,6 @@ export default function Battlefield({
     </div>
   );
 }
+
+const Battlefield = React.memo(BattlefieldComponent);
+export default Battlefield;
