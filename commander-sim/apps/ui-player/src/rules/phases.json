@@ -1,0 +1,67 @@
+{
+  "phases": [
+    {
+      "name": "Fase Iniziale",
+      "steps": [
+        {
+          "name": "Sottofase di STAP",
+          "description": "Il giocatore attivo STAPpa tutte le permanenti che controlla, a meno che qualche effetto non dica il contrario."
+        },
+        {
+          "name": "Sottofase di Mantenimento",
+          "description": "Si risolvono le abilità che si innescano all'inizio del mantenimento e i giocatori possono lanciare istantanei o attivare abilità."
+        },
+        {
+          "name": "Sottofase di Acquisizione",
+          "description": "Il giocatore attivo pesca una carta (salvo effetti che lo impediscono). È il punto di innesco per abilità \"all'inizio della sottofase di acquisizione\"."
+        }
+      ]
+    },
+    {
+      "name": "Prima Fase Principale",
+      "description": "Il giocatore attivo può lanciare magie di qualsiasi tipo (se legali), giocare una terra e attivare abilità. È la fase tipica per sviluppare il board prima del combattimento."
+    },
+    {
+      "name": "Fase di Combattimento",
+      "steps": [
+        {
+          "name": "Sottofase di Inizio Combattimento",
+          "description": "Ultima opportunità per lanciare magie o attivare abilità prima di dichiarare gli attaccanti. Si innescano abilità \"all'inizio del combattimento\"."
+        },
+        {
+          "name": "Sottofase di Dichiarazione delle Creature Attaccanti",
+          "description": "Il giocatore attivo sceglie quali creature attaccano e contro chi/che cosa. Le creature scelte vengono TAPpate (salvo abilità). Si innescano abilità \"quando questa creatura attacca\"."
+        },
+        {
+          "name": "Sottofase di Dichiarazione delle Creature Bloccanti",
+          "description": "I giocatori in difesa scelgono i bloccanti legali. Si innescano abilità \"quando questa creatura blocca\" e si applicano restrizioni/obblighi di blocco."
+        },
+        {
+          "name": "Sottofase di Assegnazione del Danno da Combattimento",
+          "description": "Attaccanti e bloccanti assegnano il danno simultaneamente (due passaggi se c'è first strike/double strike). Il danno riduce i punti vita o distrugge le creature a seconda della loro forza/toughness."
+        },
+        {
+          "name": "Sottofase di Fine Combattimento",
+          "description": "Si risolvono abilità \"alla fine del combattimento\" e le creature vengono rimosse dal combattimento."
+        }
+      ]
+    },
+    {
+      "name": "Seconda Fase Principale",
+      "description": "Simile alla prima fase principale: il giocatore può lanciare magie sorcery-speed, giocare una terra se non l'ha ancora fatto e attivare abilità."
+    },
+    {
+      "name": "Fase Finale",
+      "steps": [
+        {
+          "name": "Sottofase Finale",
+          "description": "Si innescano gli effetti \"all'inizio della fase finale\". È l'ultima finestra per istantanei/abilità prima del cleanup."
+        },
+        {
+          "name": "Sottofase di Cancellazione",
+          "description": "Si scartano carte fino al limite di mano e tutti i danni vengono rimossi dalle creature. Gli effetti \"fino alla fine del turno\" terminano."
+        }
+      ]
+    }
+  ]
+}

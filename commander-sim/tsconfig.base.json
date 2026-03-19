@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "lib": ["ES2022"],
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "skipLibCheck": true,
+    "noEmit": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "baseUrl": ".",
+    "composite": true,
+    "paths": {
+      "@game-state/*": ["packages/game-state/src/*"],
+      "@rules/*": ["packages/rules/src/*"],
+      "@ai/*": ["packages/ai/src/*"],
+      "@db/*": ["packages/db/src/*"],
+      "@sim/*": ["packages/sim/src/*"],
+      "@neural/*": ["packages/neural/src/*"]
+    }
+  }
+}

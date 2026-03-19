@@ -1,0 +1,107 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model SimulationRun {
+  id           Int       @id @default(autoincrement())
+  createdAt    DateTime  @default(now())
+  episodes     Int
+  players      Int
+  maxTurns     Int?
+  policyPath   String?
+  archetypes   Json?
+  deckIds      Json?
+  episodesData Episode[]
+  policy       PolicyRecord[]
+}
+
+model Archetype {
+  id        Int       @id @default(autoincrement())
+  createdAt DateTime  @default(now())
+  name      String    @unique
+  category  String
+  goal      String?
+  flow      String?
+  keywords  String?
+  wincons   String?
+  weakness  String?
+  tags      String?
+}
+
+model Deck {
+  id         Int       @id @default(autoincrement())
+  createdAt  DateTime  @default(now())
+  sourceUrl  String?
+  name       String?
+  commander  String?
+  cards      Json
+  cardMetadata Json?
+  cardHash   String    @unique
+}
+
+model Episode {
+  id          Int             @id @default(autoincrement())
+  createdAt   DateTime        @default(now())
+  runId       Int
+  index       Int
+  winnerIndex Int?
+  turnCount   Int?
+  finalState  Json?
+  steps       EpisodeStep[]
+
+  run SimulationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, index])
+}
+
+model EpisodeStep {
+  id          Int      @id @default(autoincrement())
+  episodeId   Int
+  step        Int
+  playerIndex Int
+  agentId     String?
+  actionType  String
+  card        String?
+  state       Json
+  availableActions Json?
+  decisionMeta Json?
+  actionPayload Json?
+  reward        Int?
+  shapedReward  Float?  // Phase 2: reward intermedio da reward shaping
+  winnerIndex   Int?
+
+  episode Episode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+
+  @@index([episodeId])
+}
+
+// Phase 4 — statistiche win/loss per coppia di archetipi
+model MatchupStats {
+  id         Int    @id @default(autoincrement())
+  archetype1 String
+  archetype2 String
+  wins1      Int    @default(0)
+  wins2      Int    @default(0)
+  total      Int    @default(0)
+
+  @@unique([archetype1, archetype2])
+}
+
+model PolicyRecord {
+  id        Int      @id @default(autoincrement())
+  pattern   String
+  actionKey String
+  score     Float
+  visits    Int
+  updatedAt DateTime @default(now())
+  runId     Int?
+
+  run SimulationRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+
+  @@unique([pattern, actionKey])
+}

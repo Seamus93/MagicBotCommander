@@ -1,0 +1,18 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="gemFill" x1="87" y1="71" x2="170" y2="184" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF6DA6"/>
+      <stop offset="1" stop-color="#D9447E"/>
+    </linearGradient>
+  </defs>
+  <path d="M71 39C97 24 129 20 157 30C174 36 188 46 199 60C186 53 172 50 157 51C138 53 122 61 110 74C97 88 90 105 89 124C87 144 93 162 106 177C116 190 129 200 145 206C121 207 98 199 80 185C61 171 49 150 46 127C43 92 53 60 71 39Z" fill="#FCFCFD"/>
+  <path d="M96 42C119 34 144 35 166 43C183 50 197 62 205 79C201 74 194 69 186 66C180 63 173 60 168 54C167 58 168 64 172 72C164 67 155 62 146 59C149 64 153 70 159 78C145 70 130 67 116 70C101 73 88 82 79 94C70 106 66 121 67 137C68 151 73 163 82 175C71 167 62 156 57 142C50 124 51 104 58 85C65 65 78 50 96 42Z" fill="#FCFCFD"/>
+  <path d="M180 55C191 59 200 66 206 76C212 87 214 100 212 113C210 124 205 135 196 145C193 131 187 119 178 110C172 104 166 98 164 90C172 93 181 93 189 90C190 78 187 66 180 55Z" fill="#FCFCFD"/>
+  <circle cx="128" cy="128" r="67" fill="#42236E"/>
+  <circle cx="128" cy="128" r="53" fill="url(#gemFill)"/>
+  <path d="M128 83L165 102L157 146L128 173L91 154L83 110L128 83Z" stroke="#42236E" stroke-width="7" stroke-linejoin="round"/>
+  <path d="M128 83L128 173" stroke="#42236E" stroke-width="7"/>
+  <path d="M83 110L157 146" stroke="#42236E" stroke-width="7"/>
+  <path d="M91 154L165 102" stroke="#42236E" stroke-width="7"/>
+  <path d="M128 83L83 110L91 154L128 173L157 146L165 102L128 83Z" fill="none" stroke="#42236E" stroke-width="5" stroke-linejoin="round"/>
+</svg>

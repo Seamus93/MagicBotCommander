@@ -1,0 +1,300 @@
+import "dotenv/config";
+import { createServer } from "node:http";
+import express from "express";
+import cors from "cors";
+import { WebSocketServer, WebSocket } from "ws";
+import { SessionManager } from "./session/SessionManager.js";
+import type { GameMessage } from "./session/GameSession.js";
+import type { CardName, DeckCardMetadata } from "@game-state/types";
+import { getDeckById } from "@db/db";
+
+const PORT = Number(process.env.GAME_SERVER_PORT ?? 5300);
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+const server = createServer(app);
+const wss = new WebSocketServer({ server });
+const manager = new SessionManager();
+
+// Map from sessionId → Set of connected WebSocket clients
+const sessionClients = new Map<string, Set<WebSocket>>();
+
+async function safeGetDeckById(id: number) {
+  try {
+    return await getDeckById(id);
+  } catch {
+    return null;
+  }
+}
+
+function broadcast(sessionId: string, msg: GameMessage): void {
+  const clients = sessionClients.get(sessionId);
+  if (!clients) return;
+  const payload = JSON.stringify(msg);
+  for (const ws of clients) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(payload);
+    }
+  }
+}
+
+function makeDefaultAiDecks(): Array<{ deck: CardName[]; meta: DeckCardMetadata[]; commander: CardName }> {
+  const defaultDeck: CardName[] = [
+    ...Array(18).fill("Basic Land"),
+    ...Array(8).fill("Burn Spell"),
+    ...Array(8).fill("Wild Beast"),
+    ...Array(6).fill("Titanic Ogre"),
+  ];
+  return [
+    { deck: defaultDeck, meta: [], commander: "Commander" },
+    { deck: defaultDeck, meta: [], commander: "Commander" },
+    { deck: defaultDeck, meta: [], commander: "Commander" },
+  ];
+}
+
+// GET /game/sessions — list active sessions (for SpellTable viewer)
+app.get("/game/sessions", (_req, res) => {
+  res.json({ sessions: manager.getActiveSessions() });
+});
+
+// GET /game/decks — list available decks from database
+app.get("/game/decks", async (_req, res) => {
+  try {
+    const { getPrisma } = await import("@db/db");
+    const decks = await getPrisma().deck.findMany({
+      select: { id: true, name: true, commander: true, createdAt: true },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+    });
+    res.json({ decks });
+  } catch (err) {
+    res.json({ decks: [], error: "Could not load decks from database" });
+  }
+});
+
+// POST /game/create-ai-only — all 4 players are AI (for SpellTable viewer)
+app.post("/game/create-ai-only", async (req, res) => {
+  const body = req.body as { deckIds?: number[] };
+  const sessionId = `ai_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+
+  let allDecks: Array<{ deck: CardName[]; meta: DeckCardMetadata[]; commander?: CardName | null }>;
+
+  // If deckIds provided, load from database
+  if (body.deckIds && body.deckIds.length > 0) {
+    const loaded: Array<{ deck: CardName[]; meta: DeckCardMetadata[]; commander?: CardName | null }> = [];
+    for (const id of body.deckIds) {
+      const dbDeck = await safeGetDeckById(id);
+      if (dbDeck) {
+        loaded.push({
+          deck: dbDeck.cards as CardName[],
+          meta: (dbDeck.cardMetadata as DeckCardMetadata[]) ?? [],
+          commander: (dbDeck.commander as CardName | null) ?? ((dbDeck.cards as CardName[])[0] ?? null),
+        });
+      }
+    }
+    if (loaded.length === 0) {
+      // All IDs were invalid, fall back to default
+      allDecks = [...makeDefaultAiDecks(), makeDefaultAiDecks()[0]];
+    } else {
+      // Pad to 4 players by cycling through loaded decks
+      allDecks = [];
+      for (let i = 0; i < 4; i++) {
+        allDecks.push(loaded[i % loaded.length]);
+      }
+    }
+  } else {
+    allDecks = [...makeDefaultAiDecks(), makeDefaultAiDecks()[0]];
+  }
+
+  sessionClients.set(sessionId, new Set());
+
+  manager.createAllAi(sessionId, allDecks, (msg) => {
+    broadcast(sessionId, msg);
+  });
+
+  res.json({ sessionId });
+});
+
+// POST /game/create
+app.post("/game/create", async (req, res) => {
+  const body = req.body as {
+    humanDeckId?: number;
+    humanDeck?: CardName[];
+    humanDeckMeta?: DeckCardMetadata[];
+    aiDeckIds?: number[];
+    aiDecks?: CardName[][];
+  };
+  const sessionId = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+
+  // Load human deck — by ID from DB or by full card list, else default
+  let humanDeck: CardName[];
+  let humanDeckMeta: DeckCardMetadata[] = body.humanDeckMeta ?? [];
+  let humanCommander: CardName | null = body.humanDeck?.[0] ?? null;
+  if (body.humanDeckId) {
+    const dbDeck = await safeGetDeckById(body.humanDeckId);
+    humanDeck = dbDeck ? (dbDeck.cards as CardName[]) : body.humanDeck ?? [];
+    if (dbDeck && !humanDeckMeta.length) humanDeckMeta = (dbDeck.cardMetadata as DeckCardMetadata[]) ?? [];
+    if (dbDeck) humanCommander = (dbDeck.commander as CardName | null) ?? ((dbDeck.cards as CardName[])[0] ?? null);
+  } else {
+    humanDeck = body.humanDeck ?? [];
+  }
+  if (!humanDeck.length) {
+    humanDeck = [
+      ...Array(18).fill("Basic Land"),
+      ...Array(8).fill("Burn Spell"),
+      ...Array(8).fill("Wild Beast"),
+      ...Array(6).fill("Titanic Ogre"),
+    ];
+    humanCommander = "Commander";
+  }
+
+  // Load AI decks by ID, fall back to defaults
+  let aiDecks = makeDefaultAiDecks();
+  const loaded: Array<{ deck: CardName[]; meta: DeckCardMetadata[]; commander?: CardName | null }> = [];
+  if (body.aiDeckIds && body.aiDeckIds.length > 0) {
+    for (const id of body.aiDeckIds) {
+      const dbDeck = await safeGetDeckById(id);
+      if (dbDeck) {
+        loaded.push({
+          deck: dbDeck.cards as CardName[],
+          meta: (dbDeck.cardMetadata as DeckCardMetadata[]) ?? [],
+          commander: (dbDeck.commander as CardName | null) ?? ((dbDeck.cards as CardName[])[0] ?? null),
+        });
+      }
+    }
+  }
+  if (body.aiDecks && body.aiDecks.length > 0) {
+    for (const deck of body.aiDecks) {
+      if (Array.isArray(deck) && deck.length > 0) {
+        loaded.push({ deck: deck as CardName[], meta: [], commander: (deck as CardName[])[0] ?? null });
+      }
+    }
+  }
+  if (loaded.length > 0) {
+    aiDecks = [0, 1, 2].map((i) => loaded[i % loaded.length]);
+  }
+
+  sessionClients.set(sessionId, new Set());
+
+  manager.create(sessionId, humanDeck, humanDeckMeta, humanCommander, aiDecks, (msg) => {
+    broadcast(sessionId, msg);
+  });
+
+  res.json({ sessionId });
+});
+
+// GET /game/:id/state
+app.get("/game/:id/state", (req, res) => {
+  const session = manager.get(req.params.id);
+  if (!session) {
+    res.status(404).json({ error: "session not found" });
+    return;
+  }
+  const state = session.getFilteredState();
+  res.json({ state, status: session.status, winner: session.winner });
+});
+
+// POST /game/:id/action
+app.post("/game/:id/action", (req, res) => {
+  const session = manager.get(req.params.id);
+  if (!session) {
+    res.status(404).json({ error: "session not found" });
+    return;
+  }
+  const { decisionType, decision } = req.body as { decisionType: string; decision: unknown };
+  if (!decisionType || decision === undefined) {
+    res.status(400).json({ error: "decisionType and decision required" });
+    return;
+  }
+  session.submitDecision(decision);
+  res.json({ ok: true });
+});
+
+// POST /game/:id/concede
+app.post("/game/:id/concede", (req, res) => {
+  const session = manager.get(req.params.id);
+  if (!session) {
+    res.status(404).json({ error: "session not found" });
+    return;
+  }
+  session.concede();
+  res.json({ ok: true });
+});
+
+// WebSocket: ws://host/game/:id
+wss.on("connection", (ws, req) => {
+  const match = req.url?.match(/^\/game\/([^/?]+)/);
+  if (!match) {
+    ws.close(1008, "invalid path");
+    return;
+  }
+  const sessionId = match[1];
+  const session = manager.get(sessionId);
+  if (!session) {
+    ws.close(1008, "session not found");
+    return;
+  }
+
+  const clients = sessionClients.get(sessionId);
+  if (clients) clients.add(ws);
+
+  // For AllAiGameSession the simulation only starts when the first client
+  // connects, so the viewer always sees the game from turn 1.
+  session.startSimulation();
+  session.startDisconnectTimer();
+
+  // Send current state on connect
+  const currentState = session.getFilteredState();
+  if (currentState) {
+    ws.send(JSON.stringify({ type: "state_update", state: currentState }));
+  }
+
+  // Re-send pending decision if the engine is waiting for human input
+  const pendingWait = session.getLastWaitingMessage();
+  if (pendingWait) {
+    ws.send(JSON.stringify(pendingWait));
+  }
+
+  ws.on("message", (raw) => {
+    let msg: Record<string, unknown>;
+    try {
+      msg = JSON.parse(raw.toString()) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+
+    switch (msg.type) {
+      case "submit_action":
+        session.submitDecision(msg.action);
+        break;
+      case "submit_attack_plan":
+        session.submitDecision(msg.plan);
+        break;
+      case "submit_block_plan":
+        session.submitDecision(msg.plan);
+        break;
+      case "submit_mulligan":
+        session.submitDecision({ keep: msg.keep, bottomCards: msg.bottomCards });
+        break;
+      case "submit_target":
+        session.submitDecision(msg.targetIndex);
+        break;
+      case "submit_response":
+        session.submitDecision(msg.action ?? null);
+        break;
+      case "concede":
+        session.concede();
+        break;
+    }
+  });
+
+  ws.on("close", () => {
+    const c = sessionClients.get(sessionId);
+    if (c) c.delete(ws);
+  });
+});
+
+server.listen(PORT, () => {
+  console.log(`[game-server] listening on port ${PORT}`);
+});

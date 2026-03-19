@@ -1,0 +1,264 @@
+import type {
+  CardName,
+  DeckCardMetadata,
+  SimAction,
+  SimGameState,
+  StackEntry,
+} from "./types.js";
+
+const PERMANENT_CARD_TYPES = [
+  "land",
+  "creature",
+  "artifact",
+  "enchantment",
+  "planeswalker",
+  "battle",
+];
+
+export function normalizeCardName(card: string) {
+  if (typeof card !== "string") return "";
+  return card.trim().toLowerCase();
+}
+
+export function getCardMetadata(
+  state: SimGameState,
+  player: number,
+  card: CardName
+) {
+  const map = state.cardMetadata?.[player];
+  if (!map) return undefined;
+  const normalized = normalizeCardName(card);
+  if (map[normalized]) return map[normalized];
+  if (normalized.includes(" / ")) {
+    const variant = normalized.replace(/\s*\/\s*/g, " // ");
+    if (map[variant]) return map[variant];
+  }
+  if (normalized.includes("//")) {
+    const variant = normalized.replace(/\s*\/\/\s*/g, " / ");
+    if (map[variant]) return map[variant];
+  }
+  return undefined;
+}
+
+export function isLandCard(
+  state: SimGameState,
+  player: number,
+  card: CardName
+) {
+  const metadata = getCardMetadata(state, player, card);
+  if (metadata?.isLand !== undefined) return metadata.isLand;
+  if (metadata?.typeLine?.toLowerCase().includes("land")) return true;
+  const normalized = normalizeCardName(card);
+  if (!normalized) return false;
+  if (normalized.includes("land")) return true;
+  if (normalized === "plains") return true;
+  if (normalized === "island") return true;
+  if (normalized === "swamp") return true;
+  if (normalized === "mountain") return true;
+  if (normalized === "forest") return true;
+  if (normalized === "wastes") return true;
+  if (/^snow-covered (plains|island|swamp|mountain|forest)$/i.test(normalized)) {
+    return true;
+  }
+  return false;
+}
+
+export function isPermanentCard(card: CardName, metadata?: DeckCardMetadata) {
+  if (metadata?.isPermanent !== undefined) return metadata.isPermanent;
+  if (metadata?.typeLine) {
+    const typeLower = metadata.typeLine.toLowerCase();
+    if (typeLower.includes("instant") || typeLower.includes("sorcery")) {
+      return false;
+    }
+    return PERMANENT_CARD_TYPES.some((keyword) => typeLower.includes(keyword));
+  }
+  const lowered = card.toLowerCase();
+  if (lowered.includes("instant") || lowered.includes("sorcery")) return false;
+  return PERMANENT_CARD_TYPES.some((keyword) => lowered.includes(keyword));
+}
+
+export function isArtifactCard(card: CardName, metadata?: DeckCardMetadata) {
+  if (metadata?.isArtifact !== undefined) return metadata.isArtifact;
+  if (metadata?.typeLine) return metadata.typeLine.toLowerCase().includes("artifact");
+  return card.toLowerCase().includes("artifact");
+}
+
+export function cardNameMatches(
+  metadata: DeckCardMetadata | undefined,
+  cardName: CardName,
+  target: string
+) {
+  const targetLower = target.toLowerCase();
+  if (metadata?.name && metadata.name.toLowerCase() === targetLower) return true;
+  if (metadata?.aliases?.some((alias) => alias.toLowerCase() === targetLower)) {
+    return true;
+  }
+  return cardName.toLowerCase() === targetLower;
+}
+
+export function cardHasSubtype(
+  metadata: DeckCardMetadata | undefined,
+  subtype: string
+) {
+  const lower = subtype.toLowerCase();
+  if (!metadata?.typeLine) return false;
+  return metadata.typeLine.toLowerCase().includes(lower);
+}
+
+export function isBasicPlainsCard(
+  metadata: DeckCardMetadata | undefined,
+  cardName: CardName
+) {
+  const isNamedPlains = cardName.trim().toLowerCase() === "plains";
+  const typeLower = metadata?.typeLine?.toLowerCase() ?? "";
+  if (isNamedPlains) return true;
+  return typeLower.includes("basic") && typeLower.includes("plains");
+}
+
+export function countLands(state: SimGameState, player: number) {
+  const battlefield = state.battlefields[player] ?? [];
+  return battlefield.filter((card) => isLandCard(state, player, card)).length;
+}
+
+export function isInstantCard(
+  state: SimGameState,
+  player: number,
+  card: CardName,
+  metadata?: DeckCardMetadata
+) {
+  const info = metadata ?? getCardMetadata(state, player, card);
+  if (info?.typeLine?.toLowerCase().includes("instant")) return true;
+  if (card.toLowerCase().includes("instant")) return true;
+  return false;
+}
+
+export function isSorceryCard(
+  state: SimGameState,
+  player: number,
+  card: CardName,
+  metadata?: DeckCardMetadata
+) {
+  const info = metadata ?? getCardMetadata(state, player, card);
+  if (info?.typeLine?.toLowerCase().includes("sorcery")) return true;
+  if (card.toLowerCase().includes("sorcery")) return true;
+  return false;
+}
+
+export function isCounterspell(card: CardName, metadata?: DeckCardMetadata) {
+  const text = metadata?.oracleText?.toLowerCase() ?? "";
+  const name = card.toLowerCase();
+  return /counter\s+(?:up to\s+one\s+)?target/.test(text) || name.includes("counterspell");
+}
+
+export function getAvailableMana(
+  state: SimGameState,
+  playerIndex: number
+) {
+  const lands = (state.battlefields[playerIndex] ?? []).filter((c) =>
+    isLandCard(state, playerIndex, c)
+  ).length;
+  const artifactMana = state.artifactMana[playerIndex] ?? 0;
+  const spent = state.manaSpent?.[playerIndex] ?? 0;
+  return Math.max(0, lands + artifactMana - spent);
+}
+
+function getStackSpellMetadata(
+  state: SimGameState,
+  entry: StackEntry
+) {
+  if (entry.action.type !== "CAST_SPELL") return undefined;
+  return getCardMetadata(state, entry.casterIndex, entry.action.card);
+}
+
+function canCounterTarget(
+  state: SimGameState,
+  triggeringEntry: StackEntry,
+  metadata?: DeckCardMetadata
+) {
+  if (triggeringEntry.action.type !== "CAST_SPELL") return false;
+  const text = metadata?.oracleText?.toLowerCase() ?? "";
+  if (!/counter\s+(?:up to\s+one\s+)?target/.test(text)) return false;
+
+  const targetMetadata = getStackSpellMetadata(state, triggeringEntry);
+  if (!targetMetadata) return true;
+
+  if (/target creature spell/.test(text)) {
+    const typeLine = targetMetadata.typeLine?.toLowerCase() ?? "";
+    return typeLine.includes("creature") || targetMetadata.isCreature === true;
+  }
+  if (/target noncreature spell/.test(text)) {
+    const typeLine = targetMetadata.typeLine?.toLowerCase() ?? "";
+    return !typeLine.includes("creature") && targetMetadata.isCreature !== true;
+  }
+  if (/target instant spell/.test(text)) {
+    return isInstantCard(
+      state,
+      triggeringEntry.casterIndex,
+      triggeringEntry.action.card,
+      targetMetadata
+    );
+  }
+  if (/target sorcery spell/.test(text)) {
+    const typeLine = targetMetadata.typeLine?.toLowerCase() ?? "";
+    return typeLine.includes("sorcery");
+  }
+  if (/target artifact spell/.test(text)) {
+    return isArtifactCard(triggeringEntry.action.card, targetMetadata);
+  }
+  if (/target enchantment spell/.test(text)) {
+    const typeLine = targetMetadata.typeLine?.toLowerCase() ?? "";
+    return typeLine.includes("enchantment");
+  }
+
+  return true;
+}
+
+export function getAvailableInstants(
+  state: SimGameState,
+  playerIndex: number,
+  triggeringEntry?: StackEntry
+): SimAction[] {
+  const hand = state.hands[playerIndex] ?? [];
+  const totalMana = getAvailableMana(state, playerIndex);
+
+  return hand
+    .filter((card) => {
+      if (!isInstantCard(state, playerIndex, card)) return false;
+      const metadata = getCardMetadata(state, playerIndex, card);
+      const cmc = metadata?.manaValue ?? 0;
+      if (cmc > totalMana) return false;
+      if (!triggeringEntry) return true;
+      return canRespondWith(state, playerIndex, card, triggeringEntry, metadata);
+    })
+    .map((card) => {
+      const metadata = getCardMetadata(state, playerIndex, card);
+      return {
+        type: "CAST_SPELL" as const,
+        card,
+        targetStackId:
+          triggeringEntry && isCounterspell(card, metadata)
+            ? triggeringEntry.id
+            : undefined,
+      };
+    });
+}
+
+export function canRespondWith(
+  state: SimGameState,
+  player: number,
+  card: CardName,
+  triggeringEntry: StackEntry,
+  metadata?: DeckCardMetadata
+): boolean {
+  const typeLine = (metadata?.typeLine ?? "").toLowerCase();
+  const isInstant = typeLine.includes("instant") || card.toLowerCase().includes("instant");
+  if (!isInstant) return false;
+  if (triggeringEntry.casterIndex === player) return false;
+  if (isCounterspell(card, metadata)) {
+    return canCounterTarget(state, triggeringEntry, metadata);
+  }
+  return (
+    triggeringEntry.action.type === "CAST_SPELL" ||
+    triggeringEntry.action.type === "DECLARE_ATTACKERS"
+  );
+}

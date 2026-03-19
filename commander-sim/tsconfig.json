@@ -1,7 +1,16 @@
 {
   "files": [],
   "references": [
-    { "path": "./tsconfig.app.json" },
-    { "path": "./tsconfig.node.json" }
+    { "path": "./packages/game-state/tsconfig.json" },
+    { "path": "./packages/rules/tsconfig.json" },
+    { "path": "./packages/ai/tsconfig.json" },
+    { "path": "./packages/db/tsconfig.json" },
+    { "path": "./packages/neural/tsconfig.json" },
+    { "path": "./packages/sim/tsconfig.json" },
+    { "path": "./apps/ui-player/tsconfig.json" },
+    { "path": "./apps/ui-player/tsconfig.node.json" },
+    { "path": "./apps/ai-service/tsconfig.json" },
+    { "path": "./apps/sim-service/tsconfig.json" },
+    { "path": "./apps/api/tsconfig.json" }
   ]
 }

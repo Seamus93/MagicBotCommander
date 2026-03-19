@@ -1,0 +1,36 @@
+<svg width="220" height="240" viewBox="0 0 220 240" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bronzeOuter" x1="18" y1="40" x2="202" y2="214" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F6D1A8"/>
+      <stop offset="0.2" stop-color="#B98155"/>
+      <stop offset="0.5" stop-color="#684223"/>
+      <stop offset="0.78" stop-color="#C79A63"/>
+      <stop offset="1" stop-color="#3F2614"/>
+    </linearGradient>
+    <linearGradient id="bronzeInner" x1="32" y1="52" x2="188" y2="202" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7E0BE"/>
+      <stop offset="0.18" stop-color="#C68D58"/>
+      <stop offset="0.45" stop-color="#7A4E29"/>
+      <stop offset="0.72" stop-color="#C6905A"/>
+      <stop offset="1" stop-color="#4B2E18"/>
+    </linearGradient>
+    <linearGradient id="darkFill" x1="110" y1="16" x2="110" y2="184" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#191919"/>
+      <stop offset="1" stop-color="#050505"/>
+    </linearGradient>
+    <filter id="shadow" x="0" y="0" width="220" height="240" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#shadow)">
+    <path d="M110 6L174 70V138L110 214L46 138V70L110 6Z" fill="url(#bronzeOuter)"/>
+    <path d="M110 24L160 78V130L110 188L60 130V78L110 24Z" fill="url(#darkFill)" stroke="url(#bronzeInner)" stroke-width="5"/>
+
+    <path d="M28 102L64 84L108 168L74 186L28 102Z" fill="url(#bronzeOuter)"/>
+    <path d="M192 102L156 84L112 168L146 186L192 102Z" fill="url(#bronzeOuter)"/>
+
+    <path d="M58 144L110 198L162 144L182 160L110 234L38 160L58 144Z" fill="url(#bronzeInner)"/>
+    <path d="M74 150L110 188L146 150L160 160L110 214L60 160L74 150Z" fill="#0B0B0B" opacity="0.75"/>
+  </g>
+</svg>
