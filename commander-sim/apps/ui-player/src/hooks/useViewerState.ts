@@ -18,6 +18,7 @@ export interface ViewerState {
   libraryCount?: number;
   commandZone?: string[];
   handCount?: number;
+  hand?: string[];
   updatedAt?: string;
 }
 

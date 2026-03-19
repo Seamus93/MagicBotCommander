@@ -21,6 +21,9 @@ import DialogModal from "./DialogModal";
 import NumericPromptModal from "./NumericPromptModal";
 import { generateFilteredComboFile } from "../utils/ComboEngine";
 import { getDecision, type GameState } from "../hooks/useDecisionAI";
+import { useGameSession } from "../hooks/useGameSession";
+import { useSharedGameSession } from "../hooks/useSharedGameSession";
+import ActionPanel from "./game/ActionPanel";
 import moxOrb from "../assets/mox-o.svg";
 import importIcon from "../assets/import-icon.svg";
 
@@ -79,6 +82,7 @@ const clampCoordinate = (
 
 export default function MoxfieldUI() {
   const viewerControl = useViewerControl();
+  const sharedSession = useSharedGameSession(1000);
   const [notification, setNotification] = useState<{ message: string; type: "success" | "error" } | null>(null);
   const [aiDecisionText, setAiDecisionText] = useState<string | null>(null);
   const [dialog, setDialog] = useState<{
@@ -125,6 +129,18 @@ export default function MoxfieldUI() {
     max: number;
     onConfirm: (value: number) => void;
   } | null>(null);
+  const {
+    gameState,
+    pendingDecision,
+    isConnected: isGameSessionConnected,
+    submitAction,
+    submitAttackPlan,
+    submitBlockPlan,
+    submitMulligan,
+    submitTarget,
+    submitResponse,
+  } = useGameSession(sharedSession?.sessionId ?? null);
+  const aiPlayers = gameState?.players.filter((player) => !player.isHuman) ?? [];
 
   // Mappa base con le zone di gioco principali (senza battlefield)
 // Ogni zona ha uno stato (array di carte) e un setter
@@ -997,6 +1013,7 @@ const autoplayAI = async () => {
       libraryCount: library.length,
       commandZone: [...commandZone],
       handCount: hand.length,
+      hand: [...hand],
       updatedFrom: "moxfield-ui",
     };
 
@@ -1294,6 +1311,66 @@ const autoplayAI = async () => {
             </button>
           </div>
           <pre className="ai-decision-panel__body">{aiDecisionText}</pre>
+        </div>
+      )}
+      {sharedSession?.sessionId && (
+        <div className="fixed bottom-4 right-4 z-[55] w-[min(420px,calc(100vw-2rem))] rounded-2xl border border-white/12 bg-[#0f131bcc] p-3 text-white shadow-2xl backdrop-blur-md">
+          <div className="mb-2 flex items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold">Linked SpellTable Session</div>
+              <div className="text-[11px] text-gray-400">
+                {sharedSession.sessionId.slice(0, 10)}... {isGameSessionConnected ? "connected" : "connecting"}
+              </div>
+              {gameState && (
+                <div className="mt-1 text-[11px] text-gray-300">
+                  Turn {gameState.turn} | {gameState.phase} - {gameState.phaseStep} | Active P{gameState.playerIndex}
+                </div>
+              )}
+            </div>
+            <div className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-cyan-200">
+              Bridge
+            </div>
+          </div>
+
+          {pendingDecision && (
+            <div className="mb-3">
+              <ActionPanel
+                pendingDecision={pendingDecision}
+                onAction={submitAction}
+                onAttackPlan={submitAttackPlan}
+                onBlockPlan={submitBlockPlan}
+                onMulligan={submitMulligan}
+                onTarget={submitTarget}
+                onResponse={submitResponse}
+              />
+            </div>
+          )}
+
+          <div className="space-y-2">
+            {aiPlayers.map((player) => (
+              <div
+                key={player.index}
+                className="rounded-xl border border-white/8 bg-black/20 px-3 py-2"
+              >
+                <div className="mb-1 flex items-center justify-between text-xs">
+                  <span className="font-semibold text-gray-200">
+                    AI {player.position} | Life {player.life}
+                  </span>
+                  <span className="text-gray-400">
+                    Hand {player.handCount} | Lib {player.libraryCount}
+                  </span>
+                </div>
+                <div className="text-[11px] leading-4 text-gray-300">
+                  {player.hand?.length ? player.hand.join(", ") : "Hand unavailable"}
+                </div>
+              </div>
+            ))}
+            {aiPlayers.length === 0 && (
+              <div className="rounded-xl border border-white/8 bg-black/20 px-3 py-2 text-[11px] text-gray-400">
+                Waiting for AI state...
+              </div>
+            )}
+          </div>
         </div>
       )}
       {dialog && (

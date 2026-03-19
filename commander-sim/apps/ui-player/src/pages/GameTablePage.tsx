@@ -9,6 +9,7 @@ import CombatPanel from "../components/game/CombatPanel";
 import MulliganPanel from "../components/game/MulliganPanel";
 import PhaseTracker from "../components/game/PhaseTracker";
 import GameLog from "../components/game/GameLog";
+import { publishSharedGameSession } from "../hooks/useSharedGameSession";
 
 const GAME_SERVER_URL = (import.meta.env.VITE_GAME_SERVER_URL as string | undefined) ?? "http://localhost:5300";
 
@@ -196,6 +197,12 @@ export default function GameTablePage() {
     pendingDecision?.decisionType === "block_plan";
 
   const isMulliganDecision = pendingDecision?.decisionType === "mulligan";
+
+  useEffect(() => {
+    void publishSharedGameSession(sessionId, "game-table").catch(() => {
+      // Shared session bridge is optional.
+    });
+  }, [sessionId]);
 
   return (
     <div className="h-screen flex flex-col bg-gray-900 overflow-hidden">

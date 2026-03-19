@@ -50,7 +50,7 @@ export function serializeForViewer(
       exile: exileZone,
       libraryCount: state.libraries[i]?.length ?? 0,
       handCount: state.hands[i]?.length ?? 0,
-      hand: isViewer ? (state.hands[i] ?? []) : undefined,
+      hand: state.hands[i] ?? [],
       isHuman: isViewer,
     };
   });

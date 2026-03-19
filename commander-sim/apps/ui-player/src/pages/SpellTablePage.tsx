@@ -6,6 +6,7 @@ import GameLog from "../components/game/GameLog";
 import { useViewerState } from "../hooks/useViewerState";
 import { useViewerControl } from "../hooks/useViewerControl";
 import { useGameSession, type FilteredPlayerState, type PendingDecision } from "../hooks/useGameSession";
+import { publishSharedGameSession } from "../hooks/useSharedGameSession";
 
 const GAME_SERVER_URL =
   (import.meta.env.VITE_GAME_SERVER_URL as string | undefined) ??
@@ -144,6 +145,7 @@ function viewerToQuadrant(v: NonNullable<ReturnType<typeof useViewerState>>): Qu
     commandZone: v.commandZone,
     libraryCount: v.libraryCount ?? 0,
     handCount: v.handCount ?? 0,
+    hand: v.hand ?? [],
   };
 }
 
@@ -158,6 +160,7 @@ function aiToQuadrant(p: FilteredPlayerState): QuadrantPlayerData {
     exile: p.exile,
     libraryCount: p.libraryCount,
     handCount: p.handCount,
+    hand: p.hand ?? [],
   };
 }
 
@@ -696,6 +699,12 @@ export default function SpellTablePage() {
     if (!sessionId) return "No session";
     return isConnected ? "AI Live" : "AI Offline";
   }, [creatingSession, error, isConnected, sessionId]);
+
+  useEffect(() => {
+    void publishSharedGameSession(sessionId, "spelltable").catch(() => {
+      // Cross-UI bridge is optional during local dev.
+    });
+  }, [sessionId]);
 
   const renderSeat = (playerIndex: number) => {
     const player = playersByIndex.get(playerIndex);

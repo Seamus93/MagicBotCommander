@@ -24,6 +24,7 @@ export interface QuadrantPlayerData {
   commandZone?: string[];
   libraryCount: number;
   handCount: number;
+  hand?: string[];
 }
 
 interface PlayerQuadrantProps {
@@ -296,6 +297,7 @@ export default function PlayerQuadrant({
   const countersRef = useRef<HTMLDivElement | null>(null);
   const countersPanelRef = useRef<HTMLDivElement | null>(null);
   const creatures = player.creatures ?? [];
+  const handCards = player.hand ?? [];
   const creatureNames = new Set(creatures.map((c) => c.name));
   const nonCreatureBf = player.battlefield.filter((c) => !creatureNames.has(c));
   const typeMap = useCardTypeMap(nonCreatureBf);
@@ -582,6 +584,26 @@ export default function PlayerQuadrant({
       <div className="flex-1 min-h-0 overflow-hidden">
         <div className="flex h-full gap-3 overflow-auto px-3 pb-3 pt-11">
           <div className="flex min-w-0 flex-1 flex-col">
+            {player.hand && (
+              <Section
+                title={`Hand (${handCards.length})`}
+                className="mb-2"
+                cards={
+                  <div className="rounded-lg border border-white/8 bg-black/18 px-2 py-1.5 text-[10px] leading-4 text-gray-300">
+                    {handCards.length > 0 ? (
+                      handCards.map((card, index) => (
+                        <div key={`hand-${card}-${index}`} className="truncate" title={card}>
+                          {card}
+                        </div>
+                      ))
+                    ) : (
+                      <div className="italic text-gray-500">Empty</div>
+                    )}
+                  </div>
+                }
+              />
+            )}
+
             {creatures.length > 0 && (
               <Section
                 title={`Creatures (${creatures.length})`}

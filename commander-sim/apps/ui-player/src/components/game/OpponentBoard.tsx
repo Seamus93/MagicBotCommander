@@ -28,12 +28,15 @@ function buildBattlefieldCards(player: FilteredPlayerState) {
 
 export default function OpponentBoard({ player, compact = false }: OpponentBoardProps) {
   const battlefieldCards = buildBattlefieldCards(player);
+  const hand = player.hand ?? [];
 
   if (compact) {
     return (
       <div className="rounded border border-gray-600 bg-gray-800 p-2 text-xs text-white">
         <div className="mb-2 flex items-center justify-between">
-          <div className="font-bold text-yellow-400">P{player.index} {player.position}</div>
+          <div className="font-bold text-yellow-400">
+            P{player.index} {player.position}
+          </div>
           <div className="text-red-400">{player.life}</div>
         </div>
         {player.commander && (
@@ -53,8 +56,9 @@ export default function OpponentBoard({ player, compact = false }: OpponentBoard
             ))}
           </div>
         )}
-        <div className="text-gray-400">
-          Hand: {player.handCount} • Lib: {player.libraryCount}
+        <div className="text-gray-400">Hand: {player.handCount} | Lib: {player.libraryCount}</div>
+        <div className="mt-2 rounded bg-black/20 px-2 py-1 text-[10px] leading-4 text-gray-300">
+          {hand.length > 0 ? hand.join(", ") : "Hand unavailable"}
         </div>
       </div>
     );
@@ -71,6 +75,9 @@ export default function OpponentBoard({ player, compact = false }: OpponentBoard
         <span>Library: {player.libraryCount}</span>
         <span>GY: {player.graveyard.length}</span>
         <span>Ex: {player.exile.length}</span>
+      </div>
+      <div className="mb-3 rounded bg-black/20 px-2 py-1 text-[11px] leading-4 text-gray-300">
+        {hand.length > 0 ? hand.join(", ") : "Hand unavailable"}
       </div>
       {player.commander && (
         <div className="mb-3">

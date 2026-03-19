@@ -15,6 +15,11 @@ let latestViewerControl = {
   restartToken: null,
   updatedAt: null,
 };
+let latestViewerSession = {
+  sessionId: null,
+  source: null,
+  updatedAt: null,
+};
 
 app.use(cors());
 app.use(bodyParser.json());
@@ -254,6 +259,28 @@ app.post("/viewer-control/restart", (req, res) => {
     updatedAt: new Date().toISOString(),
   };
   res.json({ ok: true, control: latestViewerControl });
+});
+
+app.get("/viewer-session", (_req, res) => {
+  res.json({
+    ok: true,
+    session: latestViewerSession,
+  });
+});
+
+app.post("/viewer-session", (req, res) => {
+  latestViewerSession = {
+    sessionId:
+      typeof req.body?.sessionId === "string" && req.body.sessionId.trim()
+        ? req.body.sessionId.trim()
+        : null,
+    source:
+      typeof req.body?.source === "string" && req.body.source.trim()
+        ? req.body.source.trim()
+        : null,
+    updatedAt: new Date().toISOString(),
+  };
+  res.json({ ok: true, session: latestViewerSession });
 });
 
 app.post("/save-deck", (req, res) => {
