@@ -267,7 +267,8 @@ export async function simulateGame(
       if (mulliganCount >= maxMulligans) {
         log(`[Mulligan] Player ${p} forced keep after ${maxMulligans} mulligans`);
         // Still bottom down to (7 - maxMulligans) cards
-        const toBottom = state.hands[p].splice(maxMulligans);
+        const cardsToKeep = Math.max(0, 7 - maxMulligans);
+        const toBottom = state.hands[p].splice(cardsToKeep);
         state.libraries[p].push(...toBottom);
         options.onStateChange?.(cloneState(state), { type: "mulligan_done", player: p, mulliganCount: maxMulligans });
       }
@@ -292,7 +293,12 @@ export async function simulateGame(
         options.onStateChange?.(cloneState(state), { type: "phase_change", phase: step.phase, step: step.step });
         await pauseForPhase();
 
-        if (step.auto) {
+        const skipDrawStep =
+          turn === 1 &&
+          p === startingPlayerIndex &&
+          step.step === "Sottofase di Acquisizione";
+
+        if (step.auto && !skipDrawStep) {
           step.auto(state, p, log);
           if (step.step === "Sottofase di Acquisizione") {
             options.onStateChange?.(cloneState(state), { type: "draw", player: p });
