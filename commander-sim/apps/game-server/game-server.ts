@@ -198,7 +198,7 @@ app.post("/game/create", async (req, res) => {
     humanCommander = "Commander";
   }
 
-  // Load AI decks by ID, fall back to defaults
+  // Load AI decks by ID, fall back to the human deck for mirror games.
   let aiDecks = makeDefaultAiDecks();
   const loaded: Array<{ deck: CardName[]; meta: DeckCardMetadata[]; commander?: CardName | null }> = [];
   if (body.aiDeckIds && body.aiDeckIds.length > 0) {
@@ -222,6 +222,12 @@ app.post("/game/create", async (req, res) => {
   }
   if (loaded.length > 0) {
     aiDecks = [0, 1, 2].map((i) => loaded[i % loaded.length]);
+  } else if (humanDeck.length > 0) {
+    aiDecks = [0, 1, 2].map(() => ({
+      deck: [...humanDeck],
+      meta: [...humanDeckMeta],
+      commander: humanCommander,
+    }));
   }
 
   sessionClients.set(sessionId, new Set());

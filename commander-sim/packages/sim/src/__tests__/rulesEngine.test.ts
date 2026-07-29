@@ -337,9 +337,173 @@ describe("rules engine legal actions and stack", () => {
     applyAction(state, { type: "CAST_SPELL", card: "Strength Spell", targetId: "bear_1" }, 0, () => {});
 
     expect(state.lifeTotals[0]).toBe(43);
-    expect(state.creatures[0].filter((creature) => creature.name === "Token")).toHaveLength(2);
+    expect(state.creatures[0].filter((creature) => creature.name === "Soldier")).toHaveLength(2);
     expect(state.creatures[1][0]).toMatchObject({ power: 4, toughness: 4 });
     expect(state.permanents?.[1]?.[0].counters?.["+1/+1"]).toBe(2);
+  });
+
+  it("returns target creature cards from graveyard to hand and battlefield", () => {
+    const deadBear: DeckCardMetadata = {
+      name: "Dead Bear",
+      typeLine: "Creature - Bear",
+      manaValue: 2,
+      power: 2,
+      toughness: 2,
+      isCreature: true,
+      isPermanent: true,
+    };
+    const state = makeState([
+      deadBear,
+      meta({ name: "Raise Dead Variant", typeLine: "Sorcery", manaValue: 1, oracleText: "Return target creature card from your graveyard to your hand." }),
+      meta({ name: "Reanimate Variant", typeLine: "Sorcery", manaValue: 1, oracleText: "Return target creature card from your graveyard to the battlefield." }),
+    ]);
+    state.cardMetadata[0]["dead bear"] = deadBear;
+    state.graveyards[0] = ["Dead Bear"];
+
+    applyAction(state, { type: "CAST_SPELL", card: "Raise Dead Variant", targetGraveyardCard: "Dead Bear" }, 0, () => {});
+    expect(state.hands[0]).toContain("Dead Bear");
+    expect(state.graveyards[0]).not.toContain("Dead Bear");
+
+    state.hands[0] = state.hands[0].filter((cardName) => cardName !== "Dead Bear");
+    state.graveyards[0] = ["Dead Bear"];
+    applyAction(state, { type: "CAST_SPELL", card: "Reanimate Variant", targetGraveyardCard: "Dead Bear" }, 0, () => {});
+    expect(state.creatures[0].some((creature) => creature.name === "Dead Bear")).toBe(true);
+    expect(state.graveyards[0]).not.toContain("Dead Bear");
+  });
+
+  it("requires sacrifice additional costs before a spell is legal", () => {
+    const costly = meta({
+      name: "Costly Bargain",
+      typeLine: "Sorcery",
+      isSorcery: true,
+      manaValue: 1,
+      oracleText: "As an additional cost to cast this spell, sacrifice a creature.\nDraw two cards.",
+    });
+    const state = makeState([costly], ["Costly Bargain"]);
+    state.phase = "Prima Fase Principale";
+    state.phaseStep = "Prima Fase Principale";
+
+    const withoutCreature = generateActions(state, 0, {
+      landDropsUsedThisTurn: 0,
+      maxLandDrops: 1,
+      allowInstant: true,
+      allowSorcery: true,
+      allowLand: true,
+    });
+    expect(withoutCreature.some((action) => action.type === "CAST_SPELL" && action.card === "Costly Bargain")).toBe(false);
+
+    state.creatures[0] = [{ id: "fodder_1", name: "Fodder", power: 1, toughness: 1, tapped: false, summoningSickness: false }];
+    state.battlefields[0].push("Fodder");
+    state.permanents![0].push({
+      id: "perm_fodder",
+      cardName: "Fodder",
+      owner: 0,
+      controller: 0,
+      face: "Fodder",
+      tapped: false,
+      counters: {},
+      damageMarked: 0,
+      summoningSickness: false,
+    });
+    const withCreature = generateActions(state, 0, {
+      landDropsUsedThisTurn: 0,
+      maxLandDrops: 1,
+      allowInstant: true,
+      allowSorcery: true,
+      allowLand: true,
+    });
+    expect(withCreature.some((action) => action.type === "CAST_SPELL" && action.card === "Costly Bargain")).toBe(true);
+
+    applyAction(state, { type: "CAST_SPELL", card: "Costly Bargain" }, 0, () => {});
+    expect(state.creatures[0]).toHaveLength(0);
+    expect(state.graveyards[0]).toContain("Fodder");
+  });
+
+  it("resolves sacrifice effects for the appropriate controller", () => {
+    const state = makeState([
+      meta({ name: "Cruel Edict", typeLine: "Sorcery", manaValue: 2, oracleText: "Target player sacrifices a creature." }),
+    ]);
+    state.creatures[1] = [{ id: "victim_1", name: "Victim", power: 2, toughness: 2, tapped: false, summoningSickness: false }];
+    state.battlefields[1] = ["Victim"];
+    state.permanents![1] = [{
+      id: "perm_victim",
+      cardName: "Victim",
+      owner: 1,
+      controller: 1,
+      face: "Victim",
+      tapped: false,
+      counters: {},
+      damageMarked: 0,
+      summoningSickness: false,
+    }];
+
+    applyAction(state, { type: "CAST_SPELL", card: "Cruel Edict" }, 0, () => {});
+
+    expect(state.creatures[1]).toHaveLength(0);
+    expect(state.graveyards[1]).toContain("Victim");
+  });
+
+  it("stores generic named counters on PermanentState", () => {
+    const state = makeState([
+      meta({ name: "Charge Up", typeLine: "Sorcery", manaValue: 1, oracleText: "Put two charge counters on target permanent." }),
+    ]);
+    state.battlefields[1] = ["Mana Rock"];
+    state.permanents![1] = [{
+      id: "perm_rock",
+      cardName: "Mana Rock",
+      owner: 1,
+      controller: 1,
+      face: "Mana Rock",
+      tapped: false,
+      counters: {},
+      damageMarked: 0,
+    }];
+
+    applyAction(state, { type: "CAST_SPELL", card: "Charge Up", targetId: "perm_rock" }, 0, () => {});
+
+    expect(state.permanents?.[1]?.[0].counters?.charge).toBe(2);
+  });
+
+  it("creates tapped, attacking, and multiple tokens", () => {
+    const state = makeState([
+      meta({ name: "Zombie Mob", typeLine: "Sorcery", manaValue: 3, oracleText: "Create three tapped 2/2 black Zombie creature tokens." }),
+      meta({ name: "Ambush Crew", typeLine: "Sorcery", manaValue: 2, oracleText: "Create a 1/1 red Pirate creature token that's tapped and attacking." }),
+    ]);
+
+    applyAction(state, { type: "CAST_SPELL", card: "Zombie Mob" }, 0, () => {});
+    applyAction(state, { type: "CAST_SPELL", card: "Ambush Crew" }, 0, () => {});
+
+    const tokens = state.creatures[0].filter((creature) => creature.name === "Zombie" || creature.name === "Pirate");
+    expect(tokens.filter((creature) => creature.name === "Zombie")).toHaveLength(3);
+    expect(tokens.every((creature) => creature.tapped)).toBe(true);
+    expect(tokens.find((creature) => creature.name === "Pirate")).toMatchObject({ power: 1, toughness: 1, tapped: true });
+  });
+
+  it("does not require a graveyard target for optional up to one effects", () => {
+    const state = makeState([
+      meta({
+        name: "Optional Return",
+        typeLine: "Sorcery",
+        isSorcery: true,
+        manaValue: 1,
+        oracleText: "You may return up to one target permanent card from your graveyard to your hand.",
+      }),
+    ], ["Optional Return"]);
+    state.phase = "Prima Fase Principale";
+    state.phaseStep = "Prima Fase Principale";
+    state.graveyards[0] = [];
+
+    const actions = generateActions(state, 0, {
+      landDropsUsedThisTurn: 0,
+      maxLandDrops: 1,
+      allowInstant: true,
+      allowSorcery: true,
+      allowLand: true,
+    });
+
+    expect(actions.some((action) => action.type === "CAST_SPELL" && action.card === "Optional Return")).toBe(true);
+    applyAction(state, { type: "CAST_SPELL", card: "Optional Return" }, 0, () => {});
+    expect(state.graveyards[0]).toContain("Optional Return");
   });
 
   it("continuous cost reducer only works while source is on battlefield", () => {

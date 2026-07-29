@@ -3,6 +3,7 @@ import type {
   BlockAssignment,
   BlockDecision,
   CardName,
+  CostDescriptor,
   DeckCardMetadata,
   DecisionMetadata,
   GameEvent,
@@ -831,7 +832,7 @@ async function passPriority(
     }
 
     if (response.type === "CAST_SPELL") {
-      castSpellToStack(state, opponentIndex, response.card, log);
+      castSpellToStack(state, opponentIndex, response, log);
       onStateChange?.(cloneState(state), { type: "action_applied", player: opponentIndex, action: response });
       await pauseForAction();
     }
@@ -882,7 +883,8 @@ export async function resolveStackWithPriority(
         entry.action.card,
         log,
         entry.action.face,
-        entry.action.targetId
+        entry.action.targetId,
+        entry.action.targetGraveyardCard
       );
     }
     applyStateBasedActions(state, log);
@@ -926,6 +928,12 @@ function resolveEffectDescriptors(
         break;
       case "RETURN_TO_HAND":
         resolveReturnToHandEffect(state, player, effect, log);
+        break;
+      case "RETURN_FROM_GRAVEYARD_TO_HAND":
+        returnFromGraveyard(state, player, effect, entry, log, "hand");
+        break;
+      case "RETURN_FROM_GRAVEYARD_TO_BATTLEFIELD":
+        returnFromGraveyard(state, player, effect, entry, log, "battlefield");
         break;
       case "MILL":
         millCards(state, player, effect.amount ?? 1, log, entry.sourceCard);
@@ -1038,6 +1046,29 @@ function resolveReturnToHandEffect(
   log(`Player ${target.controller}'s ${target.card} returns to hand`);
 }
 
+function returnFromGraveyard(
+  state: SimGameState,
+  player: number,
+  effect: NonNullable<StackEntry["effects"]>[number],
+  entry: StackEntry,
+  log: (msg: string) => void,
+  destination: "hand" | "battlefield"
+) {
+  const target = findGraveyardTarget(state, player, effect, entry);
+  if (!target) {
+    if (effect.optional) return;
+    return fizzleObject(state, entry.sourceCard ?? "effect", log, "graveyard target is no longer legal");
+  }
+  state.graveyards[target.owner].splice(target.index, 1);
+  if (destination === "hand") {
+    state.hands[target.owner].push(target.card);
+    log(`${entry.sourceCard ?? "Effect"} returns ${target.card} from graveyard to Player ${target.owner}'s hand`);
+    return;
+  }
+  putCardOntoBattlefieldFromZone(state, target.owner, target.card, log);
+  log(`${entry.sourceCard ?? "Effect"} returns ${target.card} from graveyard to the battlefield`);
+}
+
 function millCards(
   state: SimGameState,
   player: number,
@@ -1059,22 +1090,34 @@ function createEffectToken(
   source?: CardName
 ) {
   const token = effect.token ?? { name: "Token", power: 1, toughness: 1 };
-  const count = Math.max(1, token.count ?? effect.amount ?? 1);
+  const count = Math.max(1, typeof token.count === "number" ? token.count : effect.amount ?? 1);
   for (let i = 0; i < count; i++) {
-    const creature = createTokenPermanent(state, player, {
-      name: token.name,
-      power: token.power,
-      toughness: token.toughness,
-    });
     state.battlefields[player].push(token.name);
+    const isCreatureToken = token.types?.some((type) => type.toLowerCase() === "creature") ||
+      token.power !== undefined ||
+      token.toughness !== undefined;
+    let permanentId: string | undefined;
+    if (isCreatureToken) {
+      const creature = createTokenPermanent(state, player, {
+        name: token.name,
+        power: token.power ?? 1,
+        toughness: token.toughness ?? 1,
+        tapped: token.tapped || token.attacking,
+      });
+      permanentId = creature.id;
+    }
+    if (token.types?.some((type) => type.toLowerCase() === "artifact")) {
+      state.artifacts[player] ??= [];
+      state.artifacts[player].push(token.name);
+    }
     addPermanentState(state, {
       cardName: token.name,
       owner: player,
       controller: player,
       face: token.name,
-      tapped: false,
+      tapped: token.tapped || token.attacking || false,
       token: true,
-      summoningSickness: true,
+      summoningSickness: isCreatureToken,
     });
     dispatchRulesEvent(state, {
       type: "PERMANENT_ENTERED",
@@ -1082,11 +1125,11 @@ function createEffectToken(
       controller: player,
       card: token.name,
       face: token.name,
-      permanentId: creature.id,
+      permanentId,
       sourceCard: source,
     }, log, { name: token.name, typeLine: "Token Creature", isCreature: true, isPermanent: true });
   }
-  log(`${source ?? "Effect"} creates ${count} ${token.power}/${token.toughness} ${token.name} token(s)`);
+  log(`${source ?? "Effect"} creates ${count} ${token.name} token(s)`);
 }
 
 function resolveCounterEffect(
@@ -1099,24 +1142,18 @@ function resolveCounterEffect(
 ) {
   const amount = Math.max(1, effect.amount ?? 1) * direction;
   const counterType = effect.counterType ?? "+1/+1";
-  const target = entry.action.type === "CAST_SPELL" && entry.action.targetId
-    ? findCreatureTargetById(state, entry.action.targetId)
-    : selectCreatureTarget(state, player, { friendlyOnly: effect.target !== "targetCreature" });
+  const target = findCounterTarget(state, player, effect, entry);
   if (!target) return fizzleObject(state, entry.sourceCard ?? "effect", log, "counter target is no longer legal");
 
-  const permanent = state.permanents?.[target.controller]?.find(
-    (candidate) =>
-      candidate.id === target.creature.id ||
-      candidate.cardName === target.creature.name ||
-      candidate.face === target.creature.name
-  );
+  const permanent = target.permanent;
   if (permanent) {
     permanent.counters ??= {};
     permanent.counters[counterType] = Math.max(0, (permanent.counters[counterType] ?? 0) + amount);
   }
-  if (counterType === "+1/+1") {
-    target.creature.power = Math.max(0, target.creature.power + amount);
-    target.creature.toughness = Math.max(0, target.creature.toughness + amount);
+  if ((counterType === "+1/+1" || counterType === "-1/-1") && target.creature) {
+    const statDelta = counterType === "+1/+1" ? amount : -amount;
+    target.creature.power = Math.max(0, target.creature.power + statDelta);
+    target.creature.toughness = Math.max(0, target.creature.toughness + statDelta);
   }
   log(`${entry.sourceCard ?? "Effect"} ${direction > 0 ? "adds" : "removes"} ${Math.abs(amount)} ${counterType} counter(s)`);
 }
@@ -1178,15 +1215,198 @@ function searchLibraryToZone(
   log(`${source ?? "Effect"} searches ${card} to ${toZone}`);
 }
 
+function findGraveyardTarget(
+  state: SimGameState,
+  player: number,
+  effect: NonNullable<StackEntry["effects"]>[number],
+  entry: StackEntry
+): { owner: number; card: CardName; index: number } | null {
+  const owner = effect.controller === "opponent"
+    ? findNextOpponent(state, player) ?? player
+    : player;
+  const graveyard = state.graveyards[owner] ?? [];
+  const namedTarget = entry.action.type === "CAST_SPELL" ? entry.action.targetGraveyardCard : undefined;
+  if (namedTarget) {
+    const index = graveyard.findIndex((card) => card === namedTarget);
+    if (index >= 0 && graveyardCardMatches(state, owner, graveyard[index], effect)) {
+      return { owner, card: graveyard[index], index };
+    }
+    return null;
+  }
+  const index = graveyard.findIndex((card) => graveyardCardMatches(state, owner, card, effect));
+  return index >= 0 ? { owner, card: graveyard[index], index } : null;
+}
+
+function graveyardCardMatches(
+  state: SimGameState,
+  owner: number,
+  card: CardName,
+  effect: Pick<NonNullable<StackEntry["effects"]>[number], "cardType" | "subtype">
+) {
+  const metadata = getCardMetadata(state, owner, card);
+  const text = `${metadata?.typeLine ?? ""} ${card}`.toLowerCase();
+  if (effect.cardType && effect.cardType !== "card") {
+    if (effect.cardType === "permanent") {
+      if (!isPermanentCard(card, metadata)) return false;
+    } else if (!text.includes(effect.cardType)) {
+      return false;
+    }
+  }
+  if (effect.subtype && !text.includes(effect.subtype.toLowerCase())) return false;
+  return true;
+}
+
+function putCardOntoBattlefieldFromZone(
+  state: SimGameState,
+  player: number,
+  card: CardName,
+  log: (msg: string) => void
+) {
+  const metadata = getCardMetadata(state, player, card);
+  if (isCreatureCard(card, metadata)) {
+    summonCreature(state, player, getSpellPermanentName(card, metadata), log, metadata);
+    addPermanentState(state, {
+      cardName: card,
+      owner: player,
+      controller: player,
+      face: getSpellPermanentName(card, metadata),
+      tapped: false,
+      summoningSickness: true,
+    });
+    dispatchRulesEvent(state, {
+      type: "PERMANENT_ENTERED",
+      player,
+      controller: player,
+      card,
+      face: getSpellPermanentName(card, metadata),
+    }, log, metadata);
+    return;
+  }
+  placePermanent(state, player, card, metadata, log);
+}
+
+function findCounterTarget(
+  state: SimGameState,
+  player: number,
+  effect: NonNullable<StackEntry["effects"]>[number],
+  entry: StackEntry
+): { controller: number; permanent?: PermanentState; creature?: CreaturePermanent } | null {
+  if (entry.action.type === "CAST_SPELL" && entry.action.targetId) {
+    const permanent = findPermanentTargetById(state, entry.action.targetId);
+    if (permanent) return permanent;
+  }
+  if (effect.target === "targetPermanent") {
+    const permanent = selectPermanentStateTarget(state, player);
+    return permanent;
+  }
+  const creature = selectCreatureTarget(state, player, { friendlyOnly: false });
+  if (!creature) return null;
+  return {
+    controller: creature.controller,
+    creature: creature.creature,
+    permanent: state.permanents?.[creature.controller]?.find(
+      (candidate) => candidate.cardName === creature.creature.name || candidate.face === creature.creature.name
+    ),
+  };
+}
+
+function findPermanentTargetById(
+  state: SimGameState,
+  targetId: string
+): { controller: number; permanent?: PermanentState; creature?: CreaturePermanent } | null {
+  const creature = findCreatureTargetById(state, targetId);
+  if (creature) {
+    return {
+      controller: creature.controller,
+      creature: creature.creature,
+      permanent: state.permanents?.[creature.controller]?.find(
+        (candidate) => candidate.id === targetId || candidate.cardName === creature.creature.name || candidate.face === creature.creature.name
+      ),
+    };
+  }
+  for (let controller = 0; controller < state.permanents!.length; controller++) {
+    const permanent = state.permanents?.[controller]?.find((candidate) => candidate.id === targetId);
+    if (permanent) return { controller, permanent };
+  }
+  return null;
+}
+
+function selectPermanentStateTarget(
+  state: SimGameState,
+  player: number
+): { controller: number; permanent?: PermanentState } | null {
+  for (let controller = 0; controller < state.permanents!.length; controller++) {
+    if (controller === player) continue;
+    const permanent = state.permanents?.[controller]?.[0];
+    if (permanent) return { controller, permanent };
+  }
+  return null;
+}
+
 function sacrificePermanent(
   state: SimGameState,
   player: number,
   effect: NonNullable<StackEntry["effects"]>[number],
   log: (msg: string) => void
 ) {
-  const target = selectEffectPermanentTarget(state, player, { ...effect, target: "self" });
+  const target = selectSacrificeTarget(state, player, effect);
   if (!target) return;
-  removeBattlefieldCard(state, target.controller, target.card, log);
+  sacrificeBattlefieldPermanent(state, target.controller, target.card, log);
+}
+
+function selectSacrificeTarget(
+  state: SimGameState,
+  player: number,
+  effect: NonNullable<StackEntry["effects"]>[number]
+): { controller: number; card: string } | null {
+  const controller = effect.controller === "opponent"
+    ? findNextOpponent(state, player) ?? player
+    : player;
+  return selectControlledPermanentByType(state, controller, effect.cardType ?? "permanent");
+}
+
+function selectControlledPermanentByType(
+  state: SimGameState,
+  controller: number,
+  cardType: NonNullable<NonNullable<StackEntry["effects"]>[number]["cardType"]> | NonNullable<CostDescriptor["cardType"]>
+): { controller: number; card: string } | null {
+  const battlefield = state.battlefields[controller] ?? [];
+  for (const card of battlefield) {
+    const metadata = getCardMetadata(state, controller, card);
+    if (
+      cardType === "creature" &&
+      !isCreatureCard(card, metadata) &&
+      !state.creatures[controller]?.some((creature) => creature.name === card)
+    ) continue;
+    if (cardType === "artifact" && !isArtifactCard(card, metadata)) continue;
+    if (cardType === "enchantment" && !(metadata?.typeLine ?? "").toLowerCase().includes("enchantment")) continue;
+    if (cardType === "permanent" && !isPermanentCard(card, metadata)) continue;
+    return { controller, card };
+  }
+  return null;
+}
+
+function sacrificeBattlefieldPermanent(
+  state: SimGameState,
+  controller: number,
+  card: string,
+  log: (msg: string) => void
+) {
+  const creature = state.creatures[controller]?.find((candidate) => candidate.name === card);
+  if (creature) {
+    destroyCreatureWithEvents(state, controller, creature.id, log);
+    log(`Player ${controller} sacrifices ${card}`);
+    return;
+  }
+  removePermanentFromBattlefieldOnly(state, controller, card);
+  state.graveyards[controller].push(card);
+  dispatchRulesEvent(state, {
+    type: "PERMANENT_LEFT",
+    controller,
+    card,
+    sourceCard: card,
+  }, log, getCardMetadata(state, controller, card));
+  log(`Player ${controller} sacrifices ${card}`);
 }
 
 function findEffectPlayerTarget(
@@ -1253,13 +1473,15 @@ function ensureExileZones(state: SimGameState): CardName[][] {
 function castSpellToStack(
   state: SimGameState,
   player: number,
-  card: string,
+  action: Extract<SimAction, { type: "CAST_SPELL" }>,
   log: (msg: string) => void
 ) {
+  const card = action.card;
   const idx = state.hands[player].indexOf(card);
   if (idx >= 0) {
     state.hands[player].splice(idx, 1);
   }
+  payAdditionalCosts(state, player, getCardMetadata(state, player, card), log);
   spendManaForSpell(state, player, card);
   emitRulesEvent(state, {
     type: "SPELL_CAST",
@@ -1337,7 +1559,7 @@ async function processActionWindow(
     // Phase 2: cattura prev/next snapshot attorno ad applyAction
     const prevSnap = captureSnapshot(state);
     if (enableStack && action.type === "CAST_SPELL") {
-      castSpellToStack(state, player, action.card, log);
+      castSpellToStack(state, player, action, log);
       onStateChange?.(cloneState(state), { type: "action_applied", player, action });
       await pauseForAction();
 
@@ -1818,6 +2040,69 @@ function isOwnMainPhaseWithEmptyStack(state: SimGameState, player: number) {
   );
 }
 
+function parsedCosts(metadata?: DeckCardMetadata): CostDescriptor[] {
+  if (!metadata) return [];
+  return parseCardRules(metadata).abilities.flatMap((ability) => ability.costs ?? []);
+}
+
+function canPayAdditionalCosts(
+  state: SimGameState,
+  player: number,
+  metadata?: DeckCardMetadata
+) {
+  for (const cost of parsedCosts(metadata)) {
+    if (cost.type !== "SACRIFICE") continue;
+    let available = 0;
+    for (let i = 0; i < (cost.amount ?? 1); i++) {
+      const target = selectControlledPermanentByType(state, player, cost.cardType ?? "permanent");
+      if (target) available++;
+    }
+    if (available < (cost.amount ?? 1)) return false;
+  }
+  return true;
+}
+
+function payAdditionalCosts(
+  state: SimGameState,
+  player: number,
+  metadata: DeckCardMetadata | undefined,
+  log: (msg: string) => void
+) {
+  for (const cost of parsedCosts(metadata)) {
+    if (cost.type !== "SACRIFICE") continue;
+    for (let i = 0; i < (cost.amount ?? 1); i++) {
+      const target = selectControlledPermanentByType(state, player, cost.cardType ?? "permanent");
+      if (!target) continue;
+      sacrificeBattlefieldPermanent(state, target.controller, target.card, log);
+    }
+  }
+}
+
+function findDefaultGraveyardTargetForCard(
+  state: SimGameState,
+  player: number,
+  metadata?: DeckCardMetadata
+) {
+  if (!metadata) return undefined;
+  const ability = parseCardRules(metadata).abilities.find((candidate) =>
+    candidate.targets?.some((target) => target.zone === "graveyard")
+  );
+  const effect = ability?.effects.find((candidate) => candidate.fromZone === "graveyard");
+  if (!effect) return undefined;
+  return findGraveyardTarget(
+    state,
+    player,
+    effect,
+    {
+      id: "target_probe",
+      action: { type: "CAST_SPELL", card: metadata.name },
+      casterIndex: player,
+      resolved: false,
+      responses: [],
+    }
+  )?.card;
+}
+
 export function canPlayLand(
   state: SimGameState,
   player: number,
@@ -1853,6 +2138,13 @@ export function canCastSpell(
     ? true
     : sorceryTiming && context.allowSorcery && isOwnMainPhaseWithEmptyStack(state, player);
   if (!timingLegal) return false;
+  if (!canPayAdditionalCosts(state, player, metadata)) return false;
+  const graveyardTarget = findDefaultGraveyardTargetForCard(state, player, metadata);
+  const requiresMissingGraveyardTarget = parseCardRules(metadata ?? { name: card }).abilities.some((ability) =>
+    ability.targets?.some((target) => target.zone === "graveyard" && target.required !== false) &&
+    !graveyardTarget
+  );
+  if (requiresMissingGraveyardTarget) return false;
 
   const cost = getSpellCost(card, state, player);
   return cost <= getAvailableMana(state, player);
@@ -1888,7 +2180,12 @@ export function generateActions(
       if (isCounterspell(card, metadata)) return;
       const cost = getSpellCost(card, state, player);
       if (cost <= availableMana) {
-        actions.push({ type: "CAST_SPELL", card, face: metadata?.spellFace?.name });
+        actions.push({
+          type: "CAST_SPELL",
+          card,
+          face: metadata?.spellFace?.name,
+          targetGraveyardCard: findDefaultGraveyardTargetForCard(state, player, metadata),
+        });
       }
     });
 
@@ -1946,8 +2243,9 @@ export function applyAction(
     case "CAST_SPELL": {
       const idx = state.hands[player].indexOf(action.card);
       if (idx >= 0) state.hands[player].splice(idx, 1);
+      payAdditionalCosts(state, player, getCardMetadata(state, player, action.card), log);
       spendManaForSpell(state, player, action.card);
-      resolveSpell(state, player, action.card, log, action.face, action.targetId);
+      resolveSpell(state, player, action.card, log, action.face, action.targetId, action.targetGraveyardCard);
       break;
     }
     case "DECLARE_ATTACKERS":
@@ -1965,7 +2263,8 @@ function resolveSpell(
   card: string,
   log: (msg: string) => void,
   face?: string,
-  targetId?: string
+  targetId?: string,
+  targetGraveyardCard?: CardName
 ) {
   const metadata = getCardMetadata(state, player, card);
   const spellName = face ?? getSpellPermanentName(card, metadata);
@@ -2011,7 +2310,7 @@ function resolveSpell(
     return;
   }
 
-  if (resolveSpellEffectsFromRegistry(state, player, card, metadata, log, targetId)) {
+  if (resolveSpellEffectsFromRegistry(state, player, card, metadata, log, targetId, targetGraveyardCard)) {
     return;
   }
 
@@ -2037,7 +2336,8 @@ function resolveSpellEffectsFromRegistry(
   card: CardName,
   metadata: DeckCardMetadata | undefined,
   log: (msg: string) => void,
-  targetId?: string
+  targetId?: string,
+  targetGraveyardCard?: CardName
 ) {
   if (!metadata) return false;
   const parsed = parseCardRules(metadata);
@@ -2049,7 +2349,7 @@ function resolveSpellEffectsFromRegistry(
       state,
       {
         id: `effect_${Date.now()}`,
-        action: { type: "CAST_SPELL", card, targetId },
+        action: { type: "CAST_SPELL", card, targetId, targetGraveyardCard },
         casterIndex: player,
         resolved: true,
         responses: [],

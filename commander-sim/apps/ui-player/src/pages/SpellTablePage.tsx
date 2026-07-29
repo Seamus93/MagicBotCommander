@@ -372,7 +372,9 @@ function DeckLobby({ onStart, myDeckId, myCommander, myFullDeck }: DeckLobbyProp
                   value={selections[i] ?? ""}
                   onChange={(e) => setSlot(i as 0 | 1 | 2, e.target.value)}
                 >
-                  <option value="">Default (Basic Deck)</option>
+                  <option value="">
+                    {canUseViewerDeck || myDeckId ? "Default (your deck)" : "Default (Basic Deck)"}
+                  </option>
                   {canUseViewerDeck && (
                     <option value={viewerDeckOptionValue}>
                       Current deck - {myCommander}
@@ -443,6 +445,14 @@ function DeckLobby({ onStart, myDeckId, myCommander, myFullDeck }: DeckLobbyProp
                 }
                 const parsed = Number(selection);
                 if (!Number.isNaN(parsed)) aiDeckIds.push(parsed);
+              }
+
+              if (aiDeckIds.length === 0 && aiDecks.length === 0) {
+                if (myDeckId) {
+                  aiDeckIds.push(myDeckId, myDeckId, myDeckId);
+                } else if (myFullDeck?.length) {
+                  aiDecks.push([...myFullDeck], [...myFullDeck], [...myFullDeck]);
+                }
               }
 
               onStart({

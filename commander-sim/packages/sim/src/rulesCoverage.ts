@@ -146,16 +146,42 @@ export function analyzeRepositoryRulesCoverage(
 
 function bucketUnsupportedFragment(fragment: string) {
   const text = fragment.toLowerCase();
-  if (text.includes("attacks") || text.includes("attacking")) return "ATTACK_TRIGGER";
-  if (text.includes("graveyard") || text.includes("return")) return "GRAVEYARD_RETURN";
-  if (text.includes("counter")) return "ADD_COUNTER";
-  if (text.includes("land") && text.includes("enters")) return "LAND_ENTERED_TRIGGER";
   if (text.includes("combat damage")) return "COMBAT_DAMAGE_TRIGGER";
-  if (text.includes("draw")) return "DRAW_TRIGGER";
+  if (/^(flying|first strike|double strike|deathtouch|haste|hexproof|indestructible|lifelink|menace|reach|trample|vigilance|ward)/.test(text)) return "KEYWORD_STATIC";
+  if (text.includes("changeling")) return "MECHANIC_CHANGELING";
+  if (text.includes("transmute")) return "MECHANIC_TRANSMUTE";
+  if (text.includes("exhaust")) return "MECHANIC_EXHAUST";
+  if (text.includes("base power and toughness")) return "SET_BASE_POWER_TOUGHNESS";
+  if (text.includes("destroy all creatures") || text.includes("destroy each creature")) return "SWEEPER_DESTROY";
+  if (text.startsWith("untap") || text.includes(" untap ")) return "UNTAP_EFFECT";
+  if (text.includes("equal to the life lost")) return "LIFE_LOST_SCALING";
+  if (text.includes("from among them") || text.includes("bottom of your library")) return "LIBRARY_SELECTION";
+  if (text.includes("attacks") || text.includes("attacking")) return "ATTACK_TRIGGER";
+  if (text.includes("blocks") || text.includes("blocking")) return "BLOCK_TRIGGER";
+  if (text.includes("graveyard") || /\breturn\b/.test(text)) return "GRAVEYARD_RETURN";
   if (text.includes("sacrifice")) return "SACRIFICE";
-  if (text.includes("mill")) return "MILL";
+  if (text.includes("counter")) return "ADD_COUNTER";
   if (text.includes("create") && text.includes("token")) return "CREATE_TOKEN_COMPLEX";
-  return "UNKNOWN_ORACLE_TEXT";
+  if (text.includes("land") && text.includes("enters")) return "LAND_ENTERED_TRIGGER";
+  if (text.includes("draw")) return "DRAW_TRIGGER";
+  if (text.includes("mill")) return "MILL";
+  if (text.includes("search")) return "SEARCH";
+  if (text.includes("reveal")) return "REVEAL";
+  if (text.includes("copy")) return "COPY";
+  if (text.includes("exile") && text.includes("return")) return "EXILE_THEN_RETURN";
+  if (text.includes("control")) return "CONTROL";
+  if (text.includes("cast")) return "CAST_TRIGGER";
+  if (text.includes("target")) return "TARGET_EFFECT";
+  if (text.includes("choose")) return "CHOOSE";
+  if (text.includes("may")) return "MAY_OPTIONAL";
+  if (text.includes("for each")) return "FOR_EACH";
+  if (text.includes("until end of turn")) return "UNTIL_END_OF_TURN";
+  if (text.includes("unless")) return "UNLESS_CONDITION";
+  if (/\bif\b/.test(text)) return "IF_CONDITION";
+  if (text.startsWith("whenever")) return "WHENEVER_TRIGGER";
+  if (text.startsWith("when")) return "WHEN_TRIGGER";
+  if (text.startsWith("at the beginning")) return "AT_BEGINNING_TRIGGER";
+  return "UNCLASSIFIED_ORACLE_TEXT";
 }
 
 function detectUnsupportedMechanic(fragment: string) {

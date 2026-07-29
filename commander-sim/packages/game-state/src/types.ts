@@ -106,6 +106,8 @@ export type EffectPrimitiveType =
   | "DESTROY"
   | "EXILE"
   | "RETURN_TO_HAND"
+  | "RETURN_FROM_GRAVEYARD_TO_HAND"
+  | "RETURN_FROM_GRAVEYARD_TO_BATTLEFIELD"
   | "MILL"
   | "CREATE_TOKEN"
   | "ADD_COUNTER"
@@ -120,12 +122,36 @@ export interface EffectDescriptor {
   type: EffectPrimitiveType;
   amount?: number;
   target?: "self" | "opponent" | "targetCreature" | "targetPermanent" | "eachOpponent" | "eachPlayer";
-  token?: { name: string; power: number; toughness: number; count?: number };
+  optional?: boolean;
+  token?: {
+    name: string;
+    power?: number;
+    toughness?: number;
+    count?: number | "X";
+    countMode?: "fixed" | "x" | "forEach";
+    countSubject?: string;
+    types?: string[];
+    subtypes?: string[];
+    colors?: string[];
+    tapped?: boolean;
+    attacking?: boolean;
+    abilities?: string[];
+  };
   counterType?: string;
   fromZone?: "library" | "graveyard" | "battlefield" | "hand";
   toZone?: "hand" | "battlefield" | "graveyard" | "exile" | "library";
   subtype?: string;
+  cardType?: "creature" | "artifact" | "enchantment" | "permanent" | "card";
+  controller?: "self" | "opponent" | "any";
   tapped?: boolean;
+}
+
+export interface CostDescriptor {
+  type: "SACRIFICE";
+  amount?: number;
+  cardType?: "creature" | "artifact" | "enchantment" | "permanent";
+  subtype?: string;
+  controller?: "self";
 }
 
 export type ConditionDescriptor =
@@ -145,8 +171,13 @@ export type ConditionDescriptor =
 
 export interface TargetRequirement {
   type: "PLAYER" | "CREATURE" | "PERMANENT" | "CARD_IN_GRAVEYARD" | "SPELL";
+  zone?: "battlefield" | "graveyard" | "stack" | "hand" | "player";
   controller?: "self" | "opponent" | "any";
+  owner?: "self" | "opponent" | "any";
+  cardType?: "creature" | "artifact" | "enchantment" | "permanent" | "card";
+  subtype?: string;
   required?: boolean;
+  optional?: boolean;
 }
 
 export interface TriggerDescriptor {
@@ -158,6 +189,7 @@ export interface ParsedAbility {
   kind: "TRIGGERED" | "ACTIVATED" | "STATIC" | "REPLACEMENT" | "SPELL_EFFECT";
   trigger?: TriggerDescriptor;
   conditions?: ConditionDescriptor[];
+  costs?: CostDescriptor[];
   effects: EffectDescriptor[];
   targets?: TargetRequirement[];
   sourceFragment?: string;
@@ -255,7 +287,7 @@ export interface HandSizeModifier {
 
 export type SimAction =
   | { type: "PLAY_LAND"; card: CardName; face?: string }
-  | { type: "CAST_SPELL"; card: CardName; face?: string; targetStackId?: string; targetId?: string; targetPlayer?: number }
+  | { type: "CAST_SPELL"; card: CardName; face?: string; targetStackId?: string; targetId?: string; targetPlayer?: number; targetGraveyardCard?: CardName }
   | { type: "PASS_TURN" }
   | { type: "ATTACK_CHOICE"; card: CardName; mode: "ATTACK" | "HOLD" }
   | { type: "BLOCK_CHOICE"; card: CardName; targetId: string | null }

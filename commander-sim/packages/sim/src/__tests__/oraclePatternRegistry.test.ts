@@ -157,14 +157,14 @@ describe("OraclePatternRegistry", () => {
       {
         name: "Deck A",
         cardMetadata: [
-          card({ name: "Grave Card", oracleText: "Return target creature card from your graveyard to the battlefield." }),
+          card({ name: "Copy Card", oracleText: "Copy target spell." }),
           card({ name: "Known Card", oracleText: "Draw a card." }),
         ],
       },
       {
         name: "Deck B",
         cardMetadata: [
-          card({ name: "Grave Card 2", oracleText: "Return target creature card from your graveyard to the battlefield." }),
+          card({ name: "Copy Card 2", oracleText: "Copy target spell." }),
         ],
       },
     ]);
@@ -172,10 +172,109 @@ describe("OraclePatternRegistry", () => {
     expect(report.decksAnalyzed).toBe(2);
     expect(report.supportedPatternFrequency.DRAW_CARDS).toBe(1);
     expect(report.topMissingCapabilities[0]).toMatchObject({
-      capability: "GRAVEYARD_RETURN",
+      capability: "COPY",
       affectedCards: 2,
       affectedDecks: 2,
     });
     expect(calculateDeckRulesCoverage([{ name: "Known Card", oracleText: "Draw a card." }]).fullCount).toBe(1);
+  });
+
+  it("parses graveyard return patterns cross-card", () => {
+    const toHand = parseCardRules(card({
+      name: "Raise Dead Variant",
+      typeLine: "Sorcery",
+      oracleText: "Return target creature card from your graveyard to your hand.",
+    }));
+    const toBattlefield = parseCardRules(card({
+      name: "Reanimate Variant",
+      typeLine: "Sorcery",
+      oracleText: "Return target creature card from your graveyard to the battlefield.",
+    }));
+
+    expect(toHand.abilities[0]?.effects[0]).toMatchObject({
+      type: "RETURN_FROM_GRAVEYARD_TO_HAND",
+      fromZone: "graveyard",
+      toZone: "hand",
+      cardType: "creature",
+    });
+    expect(toBattlefield.abilities[0]?.effects[0]).toMatchObject({
+      type: "RETURN_FROM_GRAVEYARD_TO_BATTLEFIELD",
+      fromZone: "graveyard",
+      toZone: "battlefield",
+      cardType: "creature",
+    });
+  });
+
+  it("parses sacrifice costs separately from sacrifice effects", () => {
+    const cost = parseCardRules(card({
+      name: "Costly Bargain",
+      typeLine: "Sorcery",
+      oracleText: "As an additional cost to cast this spell, sacrifice a creature.",
+    }));
+    const effect = parseCardRules(card({
+      name: "Cruel Edict",
+      typeLine: "Sorcery",
+      oracleText: "Target player sacrifices a creature.",
+    }));
+
+    expect(cost.abilities[0]?.costs?.[0]).toMatchObject({ type: "SACRIFICE", cardType: "creature" });
+    expect(cost.abilities[0]?.effects).toEqual([]);
+    expect(effect.abilities[0]?.effects[0]).toMatchObject({ type: "SACRIFICE", cardType: "creature", controller: "opponent" });
+  });
+
+  it("parses generic counters and complex token descriptors", () => {
+    const counters = parseCardRules(card({
+      name: "Counter Study",
+      typeLine: "Sorcery",
+      oracleText: "Put two charge counters on target permanent.\nRemove a lore counter from target permanent.",
+    }));
+    const tokens = parseCardRules(card({
+      name: "Token Study",
+      typeLine: "Sorcery",
+      oracleText: "Create three tapped 2/2 black Zombie creature tokens.\nCreate one Treasure token.\nCreate a 1/1 red Pirate creature token that's tapped and attacking.",
+    }));
+
+    expect(counters.abilities.map((ability) => ability.effects[0])).toEqual([
+      expect.objectContaining({ type: "ADD_COUNTER", counterType: "charge", target: "targetPermanent" }),
+      expect.objectContaining({ type: "REMOVE_COUNTER", counterType: "lore", target: "targetPermanent" }),
+    ]);
+    expect(tokens.abilities[0]?.effects[0].token).toMatchObject({
+      count: 3,
+      colors: ["B"],
+      power: 2,
+      toughness: 2,
+      tapped: true,
+    });
+    expect(tokens.abilities[1]?.effects[0].token).toMatchObject({
+      name: "Treasure",
+      types: ["Artifact"],
+      subtypes: ["Treasure"],
+    });
+    expect(tokens.abilities[2]?.effects[0].token).toMatchObject({
+      attacking: true,
+      tapped: true,
+    });
+  });
+
+  it("marks may and up to one graveyard targets as optional", () => {
+    const parsed = parseCardRules(card({
+      name: "Optional Return",
+      typeLine: "Sorcery",
+      oracleText: "You may return up to one target permanent card from your graveyard to your hand.",
+    }));
+
+    expect(parsed.abilities[0]?.effects[0]).toMatchObject({ optional: true, cardType: "permanent" });
+    expect(parsed.abilities[0]?.targets?.[0]).toMatchObject({ zone: "graveyard", required: false, optional: true });
+  });
+
+  it("keeps coverage partial when recognized token quantity needs runtime approximation", () => {
+    const coverage = classifyCardRulesCoverage(card({
+      name: "Many Bodies",
+      typeLine: "Sorcery",
+      oracleText: "Create a 1/1 white Soldier creature token for each creature you control.",
+    }));
+
+    expect(coverage.recognizedPatterns).toContain("CREATE_TOKEN");
+    expect(coverage.coverage).toBe("PARTIAL");
   });
 });
