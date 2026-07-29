@@ -5,6 +5,7 @@ export type CardName = string;
 export interface CardFaceMetadata {
   name: string;
   typeLine?: string;
+  manaCost?: string;
   oracleText?: string;
   manaValue?: number;
   power?: number;
@@ -13,10 +14,16 @@ export interface CardFaceMetadata {
   colorIdentity?: string[];
   isLand?: boolean;
   isCreature?: boolean;
+  isInstant?: boolean;
+  isSorcery?: boolean;
+  isArtifact?: boolean;
+  isEnchantment?: boolean;
+  isPlaneswalker?: boolean;
   isPermanent?: boolean;
   entersTapped?: boolean;
   producesMana?: boolean;
   manaProduction?: number;
+  keywords?: string[];
 }
 
 export interface DeckCardMetadata {
@@ -29,24 +36,115 @@ export interface DeckCardMetadata {
   isLand?: boolean;
   isCreature?: boolean;
   isArtifact?: boolean;
+  isInstant?: boolean;
+  isSorcery?: boolean;
+  keywords?: string[];
   isPermanent?: boolean;
   manaProduction?: number;
   producesMana?: boolean;
   entersTapped?: boolean;
+  faces?: CardFaceMetadata[];
   landFace?: CardFaceMetadata;
   spellFace?: CardFaceMetadata;
+  unsupportedEffect?: boolean;
+  rulesCoverage?: RulesCoverageLevel;
   aliases?: string[];
   colors?: string[];
   colorIdentity?: string[];
 }
 
-export type TriggerType = "OPPONENT_LAND_ADVANTAGE" | "OPPONENT_NONPLAY_LAND";
+export type RulesCoverageLevel = "FULL" | "PARTIAL" | "UNSUPPORTED";
+
+export interface PermanentState {
+  id: string;
+  cardName: CardName;
+  owner: number;
+  controller: number;
+  face?: string;
+  tapped: boolean;
+  token?: boolean;
+  counters?: Record<string, number>;
+  damageMarked?: number;
+  summoningSickness?: boolean;
+}
+
+export type RulesEventType =
+  | "PERMANENT_ENTERED"
+  | "PERMANENT_LEFT"
+  | "CREATURE_DIED"
+  | "LAND_PLAYED"
+  | "SPELL_CAST"
+  | "SPELL_RESOLVED"
+  | "CARD_DRAWN"
+  | "DAMAGE_DEALT"
+  | "LIFE_GAINED"
+  | "TURN_STARTED"
+  | "UPKEEP_STARTED"
+  | "ATTACKER_DECLARED"
+  | "BLOCKER_DECLARED";
+
+export interface RulesEvent {
+  type: RulesEventType;
+  player?: number;
+  controller?: number;
+  sourceCard?: CardName;
+  card?: CardName;
+  face?: string;
+  permanentId?: string;
+  amount?: number;
+  targetPlayer?: number;
+  targetPermanentId?: string;
+  data?: Record<string, unknown>;
+}
+
+export type EffectPrimitiveType =
+  | "DRAW_CARDS"
+  | "DISCARD"
+  | "GAIN_LIFE"
+  | "LOSE_LIFE"
+  | "DEAL_DAMAGE"
+  | "DESTROY"
+  | "EXILE"
+  | "RETURN_TO_HAND"
+  | "MILL"
+  | "CREATE_TOKEN"
+  | "ADD_COUNTER"
+  | "REMOVE_COUNTER"
+  | "TAP"
+  | "UNTAP"
+  | "ADD_MANA"
+  | "SEARCH_LIBRARY"
+  | "SACRIFICE";
+
+export interface EffectDescriptor {
+  type: EffectPrimitiveType;
+  amount?: number;
+  target?: "self" | "opponent" | "targetCreature" | "targetPermanent" | "eachOpponent" | "eachPlayer";
+  token?: { name: string; power: number; toughness: number; count?: number };
+  counterType?: string;
+}
+
+export type TriggerType =
+  | "OPPONENT_LAND_ADVANTAGE"
+  | "OPPONENT_NONPLAY_LAND"
+  | "ETB"
+  | "LTB"
+  | "DIES"
+  | "CAST"
+  | "DRAW"
+  | "UPKEEP"
+  | "ATTACK"
+  | "DAMAGE";
 
 export interface RegisteredTrigger {
   id: string;
   controller: number;
   sourceCard: CardName;
   type: TriggerType;
+  eventType?: RulesEventType;
+  condition?: string;
+  effects?: EffectDescriptor[];
+  targetRequirements?: string[];
   data?: Record<string, unknown>;
 }
 
@@ -56,6 +154,10 @@ export interface StackEntry {
   casterIndex: number;
   resolved: boolean;
   responses: StackEntry[];
+  kind?: "spell" | "triggeredAbility" | "activatedAbility";
+  sourceCard?: CardName;
+  effects?: EffectDescriptor[];
+  targets?: Array<{ type: "player" | "creature" | "permanent" | "stack"; id: string | number }>;
 }
 
 export interface SimGameState {
@@ -65,6 +167,7 @@ export interface SimGameState {
   libraries: CardName[][];
   hands: CardName[][];
   battlefields: CardName[][];
+  permanents?: PermanentState[][];
   graveyards: CardName[][];
   commanders: CardName[];
   creatures: CreaturePermanent[][];
@@ -80,6 +183,12 @@ export interface SimGameState {
   costReducers: Record<number, CostReducer[]>;
   handSizeModifiers: Record<number, HandSizeModifier[]>;
   drawHistory: Record<number, number>;
+  rulesEvents?: RulesEvent[];
+  rulesMetrics?: {
+    unsupportedEffects: number;
+    stateBasedActions: number;
+    fizzledObjects: number;
+  };
   stack: StackEntry[];
 }
 
@@ -103,8 +212,8 @@ export interface HandSizeModifier {
 }
 
 export type SimAction =
-  | { type: "PLAY_LAND"; card: CardName }
-  | { type: "CAST_SPELL"; card: CardName; targetStackId?: string }
+  | { type: "PLAY_LAND"; card: CardName; face?: string }
+  | { type: "CAST_SPELL"; card: CardName; face?: string; targetStackId?: string; targetId?: string; targetPlayer?: number }
   | { type: "PASS_TURN" }
   | { type: "ATTACK_CHOICE"; card: CardName; mode: "ATTACK" | "HOLD" }
   | { type: "BLOCK_CHOICE"; card: CardName; targetId: string | null }

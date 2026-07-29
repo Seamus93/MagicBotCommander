@@ -89,6 +89,7 @@ function faceMetadata(face: any) {
   return {
     name: face?.name,
     typeLine,
+    manaCost: typeof face?.mana_cost === "string" ? face.mana_cost : undefined,
     oracleText,
     manaValue: typeof face?.mana_value === "number" ? face.mana_value : undefined,
     power: parseStat(face?.power),
@@ -97,10 +98,16 @@ function faceMetadata(face: any) {
     colorIdentity: Array.isArray(face?.color_identity) ? face.color_identity : undefined,
     isLand: typeLower.includes("land"),
     isCreature: typeLower.includes("creature"),
+    isInstant: typeLower.includes("instant"),
+    isSorcery: typeLower.includes("sorcery"),
+    isArtifact: typeLower.includes("artifact"),
+    isEnchantment: typeLower.includes("enchantment"),
+    isPlaneswalker: typeLower.includes("planeswalker"),
     isPermanent: PERMANENT_TYPES.some((token) => typeLower.includes(token)),
     entersTapped: detectUnconditionalEntersTapped(oracleText),
     producesMana: manaProduction !== undefined,
     manaProduction,
+    keywords: Array.isArray(face?.keywords) ? face.keywords : undefined,
   };
 }
 
@@ -171,8 +178,10 @@ export async function fetchCardMetadata(name: string): Promise<DeckCardMetadata 
       manaProduction: landFace?.manaProduction ?? detectManaProduction(oracleText),
       producesMana: landFace?.producesMana ?? (detectManaProduction(oracleText) !== undefined),
       entersTapped: landFace?.entersTapped ?? detectUnconditionalEntersTapped(oracleText),
+      faces,
       landFace,
       spellFace,
+      unsupportedEffect: undefined,
       colors: Array.isArray(data.colors) ? data.colors : undefined,
       colorIdentity: Array.isArray(data.color_identity) ? data.color_identity : undefined,
     };

@@ -1,6 +1,7 @@
 import type {
   CardName,
   DeckCardMetadata,
+  PermanentState,
   SimAction,
   SimGameState,
   StackEntry,
@@ -84,6 +85,20 @@ export function getSpellPermanentName(card: CardName, metadata?: DeckCardMetadat
   return metadata?.spellFace?.name ?? metadata?.name ?? card;
 }
 
+export function activeFaceMetadata(
+  metadata: DeckCardMetadata | undefined,
+  face?: string
+) {
+  if (!metadata || !face) return metadata;
+  const normalized = normalizeCardName(face);
+  return metadata.faces?.find((candidate) => normalizeCardName(candidate.name) === normalized) ??
+    (metadata.landFace && normalizeCardName(metadata.landFace.name) === normalized
+      ? metadata.landFace
+      : metadata.spellFace && normalizeCardName(metadata.spellFace.name) === normalized
+        ? metadata.spellFace
+        : metadata);
+}
+
 export function isLandCard(
   state: SimGameState,
   player: number,
@@ -119,6 +134,25 @@ export function isCastableSpellCard(
   return !isLandCard(state, player, card);
 }
 
+export function isInstantLike(metadata?: DeckCardMetadata, face?: string) {
+  const active = activeFaceMetadata(metadata, face);
+  const typeLine = active?.typeLine?.toLowerCase() ?? metadata?.typeLine?.toLowerCase() ?? "";
+  return active?.isInstant === true || typeLine.includes("instant");
+}
+
+export function isSorceryLike(metadata?: DeckCardMetadata, face?: string) {
+  const active = activeFaceMetadata(metadata, face);
+  const typeLine = active?.typeLine?.toLowerCase() ?? metadata?.typeLine?.toLowerCase() ?? "";
+  return active?.isSorcery === true || typeLine.includes("sorcery");
+}
+
+export function hasFlash(metadata?: DeckCardMetadata, face?: string) {
+  const active = activeFaceMetadata(metadata, face);
+  const text = `${active?.oracleText ?? ""}\n${metadata?.oracleText ?? ""}`;
+  const keywords = new Set([...(active?.keywords ?? []), ...(metadata?.faces?.flatMap((item) => item.keywords ?? []) ?? [])]);
+  return keywords.has("Flash") || /\bflash\b/i.test(text);
+}
+
 function detectUnconditionalEntersTapped(text?: string) {
   if (!text) return undefined;
   const sentence = text
@@ -139,6 +173,25 @@ export function landEntersTapped(metadata?: DeckCardMetadata) {
     detectUnconditionalEntersTapped(metadata?.landFace?.oracleText) ??
     detectUnconditionalEntersTapped(metadata?.oracleText) ??
     false
+  );
+}
+
+export function getPermanentCardNames(state: SimGameState, player: number) {
+  const permanents = state.permanents?.[player];
+  if (permanents?.length) return permanents.map((permanent) => permanent.face ?? permanent.cardName);
+  return state.battlefields[player] ?? [];
+}
+
+export function getPermanentStateForCard(
+  state: SimGameState,
+  player: number,
+  card: CardName
+): PermanentState | undefined {
+  const normalized = normalizeCardName(card);
+  return state.permanents?.[player]?.find(
+    (permanent) =>
+      normalizeCardName(permanent.face ?? permanent.cardName) === normalized ||
+      normalizeCardName(permanent.cardName) === normalized
   );
 }
 
@@ -233,6 +286,16 @@ export function getAvailableMana(
   state: SimGameState,
   playerIndex: number
 ) {
+  const permanentLands = state.permanents?.[playerIndex]?.filter((permanent) => {
+    if (permanent.tapped) return false;
+    return isLandCard(state, playerIndex, permanent.face ?? permanent.cardName);
+  });
+  if (permanentLands?.length || state.permanents?.[playerIndex]?.length) {
+    const artifactMana = state.artifactMana[playerIndex] ?? 0;
+    const spent = state.manaSpent?.[playerIndex] ?? 0;
+    return Math.max(0, (permanentLands?.length ?? 0) + artifactMana - spent);
+  }
+
   const tapped = { ...(state.tappedPermanents?.[playerIndex] ?? {}) };
   const lands = (state.battlefields[playerIndex] ?? []).filter((card) => {
     if (!isLandCard(state, playerIndex, card)) return false;
@@ -310,9 +373,9 @@ export function getAvailableInstants(
 
   return hand
     .filter((card) => {
-      if (!isInstantCard(state, playerIndex, card)) return false;
       const metadata = getCardMetadata(state, playerIndex, card);
-      const cmc = metadata?.manaValue ?? 0;
+      if (!isInstantCard(state, playerIndex, card, metadata) && !hasFlash(metadata)) return false;
+      const cmc = metadata?.spellFace?.manaValue ?? metadata?.manaValue ?? 0;
       if (cmc > totalMana) return false;
       if (!triggeringEntry) return true;
       return canRespondWith(state, playerIndex, card, triggeringEntry, metadata);

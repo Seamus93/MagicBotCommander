@@ -435,6 +435,13 @@ function placeLandFromEffect(
   options?: { cause?: LandEntryCause; tapped?: boolean; description?: string }
 ): LandEvent {
   state.battlefields[player].push(card);
+  if (options?.tapped) {
+    const key = card.trim().toLowerCase();
+    state.tappedPermanents ??= {};
+    state.tappedPermanents[player] ??= {};
+    state.tappedPermanents[player][key] =
+      (state.tappedPermanents[player][key] ?? 0) + 1;
+  }
   if (options?.description) {
     log(options.description);
   } else {

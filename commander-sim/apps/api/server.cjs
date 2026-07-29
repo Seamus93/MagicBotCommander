@@ -89,6 +89,7 @@ const metadataFromFace = (face = {}) => {
   return {
     name: face.name,
     typeLine,
+    manaCost: typeof face.mana_cost === "string" ? face.mana_cost : undefined,
     oracleText,
     manaValue: typeof face.mana_value === "number" ? face.mana_value : undefined,
     power: parseStat(face.power),
@@ -97,10 +98,16 @@ const metadataFromFace = (face = {}) => {
     colorIdentity: Array.isArray(face.color_identity) ? face.color_identity : undefined,
     isLand: typeLower.includes("land") || undefined,
     isCreature: typeLower.includes("creature") || undefined,
+    isInstant: typeLower.includes("instant") || undefined,
+    isSorcery: typeLower.includes("sorcery") || undefined,
+    isArtifact: typeLower.includes("artifact") || undefined,
+    isEnchantment: typeLower.includes("enchantment") || undefined,
+    isPlaneswalker: typeLower.includes("planeswalker") || undefined,
     isPermanent: PERMANENT_TYPES.some((type) => typeLower.includes(type)) || undefined,
     entersTapped: detectUnconditionalEntersTapped(oracleText),
     producesMana: manaProduction !== undefined || undefined,
     manaProduction,
+    keywords: Array.isArray(face.keywords) ? face.keywords : undefined,
   };
 };
 
@@ -128,6 +135,7 @@ const metadataFromScryfallCard = (card, originalName) => {
     manaProduction,
     producesMana: manaProduction !== undefined || undefined,
     entersTapped: landFace?.entersTapped ?? detectUnconditionalEntersTapped(oracleText),
+    faces,
     landFace,
     spellFace,
     colors: Array.isArray(card.colors) ? card.colors : undefined,
@@ -284,6 +292,7 @@ const extractSectionMetadata = (section = {}) => {
       manaProduction,
       producesMana: manaProduction !== undefined || undefined,
       entersTapped: landFace?.entersTapped ?? detectUnconditionalEntersTapped(oracleText),
+      faces,
       landFace,
       spellFace,
       colors: Array.isArray(card.colors) ? card.colors : undefined,

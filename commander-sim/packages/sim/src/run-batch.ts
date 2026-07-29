@@ -31,6 +31,10 @@ import { ExperienceReplayBuffer } from "@neural/experienceReplay.js";
 import { saveModel } from "@neural/modelManager.js";
 import { CurriculumScheduler } from "./curriculum.js";
 import type { TrainingScenario } from "./curriculum.js";
+import {
+  calculateDeckRulesCoverage,
+  formatDeckRulesCoverage,
+} from "./rulesCoverage.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -262,6 +266,16 @@ async function main() {
   decks.forEach((d, i) =>
     console.log(`  Deck[${i}] "${d.name ?? "?"}" → archetype=${deckArchetypes[i]}`)
   );
+  const minRulesCoverage = Number(process.env.MIN_RULES_COVERAGE_FOR_TRAINING ?? "0.90");
+  for (const deck of decks) {
+    const coverage = calculateDeckRulesCoverage(deck.cardMetadata ?? []);
+    const line = `${formatDeckRulesCoverage(coverage)} deck="${deck.name ?? deck.id ?? "unknown"}"`;
+    if (coverage.effectiveCoverage < minRulesCoverage) {
+      console.warn(`${line} BELOW MIN_RULES_COVERAGE_FOR_TRAINING=${minRulesCoverage}`);
+    } else {
+      console.log(line);
+    }
+  }
   // Mostra l'assegnamento del primo episodio come esempio
   const previewAssignment = assignDecksForEpisode(decks, deckArchetypes, matchupMode, 0, PLAYER_COUNT);
   console.log(`[batch] Esempio ep.0: ${previewAssignment.map((a, p) => `P${p}=${a.archetype}`).join(", ")}`);
