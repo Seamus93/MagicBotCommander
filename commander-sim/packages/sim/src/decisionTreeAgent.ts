@@ -14,6 +14,7 @@ import type { AttackPlan, BlockPlan } from "./combatEvaluator.js";
 export interface DecisionTreeAgentOptions extends LearningAgentOptions {
   confidenceThreshold?: number;
   minVisits?: number;
+  confidenceK?: number;
 }
 
 /**
@@ -33,7 +34,7 @@ export class DecisionTreeAgent extends LearningAgent {
   decideAction(
     state: SimGameState,
     availableActions: SimAction[]
-  ): AgentDecision {
+  ): AgentDecision | Promise<AgentDecision> {
     if (availableActions.length === 0) {
       return {
         action: { type: "PASS_TURN" },
@@ -52,10 +53,12 @@ export class DecisionTreeAgent extends LearningAgent {
       return {
         action: deterministic.action,
         metadata: {
-          source: "decision_tree",
+          source: deterministic.source,
           pattern: deterministic.pattern,
           actionKey: deterministic.key,
-          confidence: deterministic.score,
+          expectedReward: deterministic.expectedReward,
+          confidence: deterministic.confidence,
+          visits: deterministic.visits,
         },
       };
     }
@@ -109,6 +112,10 @@ export class DecisionTreeAgent extends LearningAgent {
         pattern: entry.pattern,
         key: entry.key,
         score: entry.score,
+        expectedReward: entry.expectedReward,
+        confidence: entry.confidence,
+        visits: entry.visits,
+        source: entry.source,
         record: entry.record,
       }))
     )?.choice ?? null;
@@ -119,22 +126,21 @@ export class DecisionTreeAgent extends LearningAgent {
   ): ScoredChoice<T> | null {
     let best: ScoredChoice<T> | null = null;
     for (const candidate of scored) {
-      const record = candidate.record;
-      if (!record) continue;
-      if (record.visits < this.minVisits) continue;
-      const avg = record.score / record.visits;
-      if (avg < this.confidenceThreshold) continue;
+      if (candidate.source !== "exact" && candidate.source !== "fuzzy") continue;
+      if (candidate.visits < this.minVisits) continue;
+      if (candidate.confidence < this.confidenceThreshold) continue;
 
       if (!best) {
         best = candidate;
         continue;
       }
 
-      const bestRecord = best.record!;
-      const bestAvg = bestRecord.score / bestRecord.visits;
-      if (avg > bestAvg) {
+      if (candidate.expectedReward > best.expectedReward) {
         best = candidate;
-      } else if (avg === bestAvg && record.visits > bestRecord.visits) {
+      } else if (
+        candidate.expectedReward === best.expectedReward &&
+        candidate.visits > best.visits
+      ) {
         best = candidate;
       }
     }

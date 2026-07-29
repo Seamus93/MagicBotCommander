@@ -47,6 +47,7 @@ const ENABLE_RICH_FEATURES = process.env.ENABLE_RICH_FEATURES !== "false";
 const ENABLE_FUZZY_MATCHING = process.env.ENABLE_FUZZY_MATCHING !== "false";
 // Minimum exact visits before trusting exact score over fuzzy score
 const MIN_EXACT_VISITS = 3;
+const DEFAULT_CONFIDENCE_K = 50;
 
 // Phase 4 — archetype ID encoding for feature extraction
 const ARCHETYPE_IDS: Readonly<Record<string, number>> = {
@@ -85,6 +86,7 @@ export interface LearningAgentOptions {
   id: string;
   store: PatternStore;
   epsilon?: number;
+  confidenceK?: number;
   /** Phase 4 — archetipo del mazzo di questo agente (es. "AGGRO") */
   archetype?: string;
   /** Phase 4 — archetipi degli avversari, usati come feature */
@@ -101,6 +103,10 @@ export type ScoredChoice<T> = {
   pattern: string;
   key: string;
   score: number;
+  expectedReward: number;
+  confidence: number;
+  visits: number;
+  source: "exact" | "fuzzy" | "heuristic" | "explore";
   record?: PatternRecord;
 };
 
@@ -109,6 +115,10 @@ export type ScoredAction = {
   pattern: string;
   key: string;
   score: number;
+  expectedReward: number;
+  confidence: number;
+  visits: number;
+  source: "exact" | "fuzzy" | "heuristic" | "explore";
   record?: PatternRecord;
 };
 
@@ -117,15 +127,17 @@ export class LearningAgent implements SimAgent {
   protected readonly store: PatternStore;
   protected readonly epsilon: number;
   protected readonly history: DecisionTrace[] = [];
+  protected readonly confidenceK: number;
   // Phase 4 — archetype-aware policy
   protected archetype: string | undefined;
   protected opponentArchetypes: string[];
   protected readonly archetypePolicy: ArchetypePolicy | undefined;
 
-  constructor({ id, store, epsilon = 0.1, archetype, opponentArchetypes }: LearningAgentOptions) {
+  constructor({ id, store, epsilon = 0.1, confidenceK, archetype, opponentArchetypes }: LearningAgentOptions) {
     this.id = id;
     this.store = store;
     this.epsilon = epsilon;
+    this.confidenceK = confidenceK ?? DEFAULT_CONFIDENCE_K;
     this.archetype = archetype;
     this.opponentArchetypes = opponentArchetypes ?? [];
     this.archetypePolicy = archetype ? new ArchetypePolicy(store) : undefined;
@@ -143,7 +155,7 @@ export class LearningAgent implements SimAgent {
   decideAction(
     state: SimGameState,
     availableActions: SimAction[]
-  ): AgentDecision {
+  ): AgentDecision | Promise<AgentDecision> {
     if (availableActions.length === 0) {
       return {
         action: { type: "PASS_TURN" },
@@ -157,10 +169,12 @@ export class LearningAgent implements SimAgent {
     return {
       action: choice.action,
       metadata: {
-        source: explored ? "explore" : "policy",
+        source: explored ? "explore" : choice.source,
         pattern: choice.pattern,
         actionKey: choice.key,
-        confidence: choice.score,
+        expectedReward: choice.expectedReward,
+        confidence: explored ? 0 : choice.confidence,
+        visits: choice.visits,
       },
     };
   }
@@ -349,7 +363,7 @@ export class LearningAgent implements SimAgent {
         : null;
     }
 
-    if (respondScore > passScore && availableInstants.length > 0) {
+    if (respondScore.score > passScore.score && availableInstants.length > 0) {
       this.history.push({ pattern, actionKey: respondKey });
       return this.pickBestResponse(state, triggeringEntry, availableInstants);
     }
@@ -366,9 +380,12 @@ export class LearningAgent implements SimAgent {
     const playerIndex = state.playerIndex;
     const availableMana = getAvailableMana(state, playerIndex);
     const hasLandDrop = availableActions.some((candidate) => candidate.type === "PLAY_LAND");
-    const reserveCounterCost = this.getCheapestCounterCost(state, state.hands[playerIndex] ?? []);
-    const representedCounterCost =
-      reserveCounterCost ?? this.getRepresentedCounterCost(state, playerIndex);
+    const reserveInteractionCost = this.getCheapestInteractionCost(state, state.hands[playerIndex] ?? []);
+    const representedInteractionCost =
+      reserveInteractionCost ?? this.getRepresentedInteractionCost(state, playerIndex);
+    const phase = `${state.phase ?? ""} ${state.phaseStep ?? ""}`.toLowerCase();
+    const isPreCombatMain = phase.includes("prima fase principale");
+    const isPostCombatMain = phase.includes("seconda fase principale");
 
     return availableActions.map((action) => {
       const pattern = patternFromFeatures({
@@ -376,51 +393,64 @@ export class LearningAgent implements SimAgent {
         actionHash: this.hashAction(action),
       });
       const key = actionToKey(action.type, "card" in action ? action.card : "");
-      const record = this.store.get(pattern, key);
-
-      let score: number;
-      if (this.archetypePolicy && this.archetype) {
-        // Phase 4 — archetype-aware: specific → global → fuzzy cascade
-        score = this.archetypePolicy.scoreFor(this.archetype, pattern, key);
-      } else {
-        score = this.resolvePatternScore(pattern, key);
-      }
-
+      const policy = this.resolvePatternScore(pattern, key);
+      let heuristic = 0;
       if (action.type === "PLAY_LAND") {
-        score += 0.35;
-        if (representedCounterCost !== null) {
-          score += reserveCounterCost !== null ? 0.85 : 0.55;
-        }
+        heuristic += 0.22;
+        if (representedInteractionCost !== null) heuristic += reserveInteractionCost !== null ? 0.08 : 0.04;
       } else if (action.type === "CAST_SPELL") {
         const metadata = getCardMetadata(state, playerIndex, action.card);
         const manaValue = metadata?.manaValue ?? 3;
-        score += isPermanentCard(action.card, metadata) ? 0.4 : 0.25;
-        score += Math.min(0.15, manaValue / 20);
-        if (representedCounterCost !== null) {
+        const remainingMana = Math.max(0, availableMana - manaValue);
+        const efficiency = availableMana > 0 ? Math.min(1, manaValue / availableMana) : 0;
+        heuristic += (efficiency - 0.5) * 0.18;
+        heuristic -= Math.min(0.18, remainingMana * 0.025);
+        if (isPermanentCard(action.card, metadata)) {
+          heuristic += this.boardDevelopmentBias(state, playerIndex, action.card);
+        }
+        heuristic += this.interactionBias(action.card, metadata);
+        heuristic += this.cardAdvantageBias(metadata?.oracleText);
+        if (isPreCombatMain && this.isCombatTrickOrRemoval(action.card, metadata)) {
+          heuristic -= 0.04;
+        }
+        if (isPostCombatMain && isPermanentCard(action.card, metadata)) {
+          heuristic += 0.04;
+        }
+        heuristic -= this.overcommitRisk(state, playerIndex, action.card);
+        if (representedInteractionCost !== null) {
           const remainingMana = Math.max(0, availableMana - manaValue);
-          if (remainingMana < representedCounterCost) {
-            score -= reserveCounterCost !== null ? 0.8 : 0.55;
+          if (remainingMana < representedInteractionCost) {
+            heuristic -= reserveInteractionCost !== null ? 0.22 : 0.14;
           } else {
-            score += 0.1;
+            heuristic += 0.05;
           }
         }
       } else if (action.type === "PASS_TURN") {
         const otherPlayableActions = availableActions.filter(
           (candidate) => candidate.type !== "PASS_TURN"
         ).length;
-        if (otherPlayableActions > 0) {
-          score -= 0.5;
-        }
-        if (representedCounterCost !== null && availableMana >= representedCounterCost) {
+        if (otherPlayableActions > 0) heuristic -= 0.12;
+        if (representedInteractionCost !== null && availableMana >= representedInteractionCost) {
           if (hasLandDrop) {
-            score += reserveCounterCost !== null ? 0.15 : 0.05;
+            heuristic += reserveInteractionCost !== null ? 0.06 : 0.03;
           } else {
-            score += reserveCounterCost !== null ? 1.05 : 0.65;
+            heuristic += reserveInteractionCost !== null ? 0.24 : 0.16;
           }
         }
       }
 
-      return { action, pattern, key, score, record };
+      const score = this.blendPolicyAndHeuristic(policy, heuristic);
+      return {
+        action,
+        pattern,
+        key,
+        score,
+        expectedReward: policy.expectedReward,
+        confidence: policy.confidence,
+        visits: policy.visits,
+        source: policy.source,
+        record: policy.record,
+      };
     });
   }
 
@@ -437,21 +467,21 @@ export class LearningAgent implements SimAgent {
     return bestCounter ?? availableInstants[0];
   }
 
-  private getCheapestCounterCost(
+  private getCheapestInteractionCost(
     state: SimGameState,
     cards: CardName[]
   ): number | null {
     let best: number | null = null;
     for (const card of cards) {
       const metadata = getCardMetadata(state, state.playerIndex, card);
-      if (!isCounterspell(card, metadata)) continue;
+      if (!this.isInteractionSpell(card, metadata)) continue;
       const cost = metadata?.manaValue ?? 0;
       best = best === null ? cost : Math.min(best, cost);
     }
     return best;
   }
 
-  private getRepresentedCounterCost(
+  private getRepresentedInteractionCost(
     state: SimGameState,
     playerIndex: number
   ): number | null {
@@ -462,7 +492,7 @@ export class LearningAgent implements SimAgent {
     let best: number | null = null;
     for (const card of candidates) {
       const metadata = getCardMetadata(state, playerIndex, card);
-      if (!isCounterspell(card, metadata)) continue;
+      if (!this.isInteractionSpell(card, metadata)) continue;
       const cost = metadata?.manaValue ?? 2;
       best = best === null ? cost : Math.min(best, cost);
     }
@@ -493,16 +523,21 @@ export class LearningAgent implements SimAgent {
       const pattern = this.buildCombatPattern("combat_target:", features);
       const key = `target:${opponentIndex}`;
       const heuristic =
-        (opponentIndex === heuristicTarget ? 20 : 0) +
-        (myReadyPower >= targetLife ? 50 : 0) +
-        threat / 10 -
-        blockers;
+        (opponentIndex === heuristicTarget ? 0.18 : 0) +
+        (myReadyPower >= targetLife ? 0.45 : 0) +
+        clamp(threat / 80, 0, 0.25) -
+        blockers * 0.04;
+      const policy = this.resolvePatternScore(pattern, key, heuristic);
       return {
         choice: opponentIndex,
         pattern,
         key,
-        score: this.resolvePatternScore(pattern, key, heuristic),
-        record: this.store.get(pattern, key),
+        score: policy.score,
+        expectedReward: policy.expectedReward,
+        confidence: policy.confidence,
+        visits: policy.visits,
+        source: policy.source,
+        record: policy.record,
       };
     });
   }
@@ -527,12 +562,17 @@ export class LearningAgent implements SimAgent {
       };
       const pattern = this.buildCombatPattern("combat_attack:", features);
       const key = `target:${plan.targetPlayer}|attackers:${serializeIds(plan.attackers)}`;
+      const policy = this.resolvePatternScore(pattern, key, normalizePlanScore(plan.score));
       return {
         choice: plan,
         pattern,
         key,
-        score: this.resolvePatternScore(pattern, key, plan.score),
-        record: this.store.get(pattern, key),
+        score: policy.score,
+        expectedReward: policy.expectedReward,
+        confidence: policy.confidence,
+        visits: policy.visits,
+        source: policy.source,
+        record: policy.record,
       };
     });
   }
@@ -557,12 +597,17 @@ export class LearningAgent implements SimAgent {
       };
       const pattern = this.buildCombatPattern("combat_block:", features);
       const key = `assignments:${serializePlanAssignments(plan.assignments)}`;
+      const policy = this.resolvePatternScore(pattern, key, normalizePlanScore(plan.score));
       return {
         choice: plan,
         pattern,
         key,
-        score: this.resolvePatternScore(pattern, key, plan.score),
-        record: this.store.get(pattern, key),
+        score: policy.score,
+        expectedReward: policy.expectedReward,
+        confidence: policy.confidence,
+        visits: policy.visits,
+        source: policy.source,
+        record: policy.record,
       };
     });
   }
@@ -588,7 +633,7 @@ export class LearningAgent implements SimAgent {
     }
   }
 
-  protected pickChoice<T extends { score: number }>(
+  protected pickChoice<T extends { score: number; source?: "exact" | "fuzzy" | "heuristic" | "explore" }>(
     scored: T[]
   ): { choice: T; explored: boolean } {
     if (!scored.length) {
@@ -597,7 +642,7 @@ export class LearningAgent implements SimAgent {
     const explore = Math.random() < this.epsilon;
     if (explore) {
       return {
-        choice: scored[Math.floor(Math.random() * scored.length)],
+        choice: { ...scored[Math.floor(Math.random() * scored.length)], source: "explore" },
         explored: true,
       };
     }
@@ -611,19 +656,158 @@ export class LearningAgent implements SimAgent {
     pattern: string,
     key: string,
     heuristic = 0
-  ): number {
-    const record = this.store.get(pattern, key);
-
-    let learnedScore = 0;
-    if (record && record.visits >= MIN_EXACT_VISITS) {
-      learnedScore = record.score / record.visits;
-    } else if (ENABLE_FUZZY_MATCHING) {
-      learnedScore = this.store.fuzzyScore(pattern, key);
-    } else if (record && record.visits > 0) {
-      learnedScore = record.score / record.visits;
+  ): {
+    score: number;
+    expectedReward: number;
+    confidence: number;
+    visits: number;
+    source: "exact" | "fuzzy" | "heuristic";
+    record?: PatternRecord;
+  } {
+    const exactPattern = this.archetypePolicy && this.archetype
+      ? `${this.archetype}::${pattern}`
+      : pattern;
+    let record = this.store.get(exactPattern, key);
+    if (!record && exactPattern !== pattern) {
+      record = this.store.get(pattern, key);
     }
 
-    return learnedScore + heuristic / 100;
+    if (record && record.visits >= MIN_EXACT_VISITS) {
+      const expectedReward = record.score / record.visits;
+      const confidence = this.confidenceFromRecord(record);
+      return {
+        score: this.blendPolicyAndHeuristic(
+          { expectedReward, confidence, visits: record.visits, source: "exact", record },
+          heuristic
+        ),
+        expectedReward,
+        confidence,
+        visits: record.visits,
+        source: "exact",
+        record,
+      };
+    }
+
+    if (ENABLE_FUZZY_MATCHING) {
+      const fuzzy = this.store.fuzzyRecord(pattern, key);
+      if (fuzzy) {
+        const expectedReward = fuzzy.scorePerVisit;
+        const confidence = this.confidenceFromVisits(fuzzy.visits) * 0.85;
+        return {
+          score: this.blendPolicyAndHeuristic(
+            { expectedReward, confidence, visits: fuzzy.visits, source: "fuzzy", record: fuzzy },
+            heuristic
+          ),
+          expectedReward,
+          confidence,
+          visits: fuzzy.visits,
+          source: "fuzzy",
+          record: fuzzy,
+        };
+      }
+    } else if (record && record.visits > 0) {
+      const expectedReward = record.score / record.visits;
+      const confidence = this.confidenceFromRecord(record);
+      return {
+        score: this.blendPolicyAndHeuristic(
+          { expectedReward, confidence, visits: record.visits, source: "exact", record },
+          heuristic
+        ),
+        expectedReward,
+        confidence,
+        visits: record.visits,
+        source: "exact",
+        record,
+      };
+    }
+
+    return {
+      score: heuristic,
+      expectedReward: 0,
+      confidence: 0,
+      visits: 0,
+      source: "heuristic",
+    };
+  }
+
+  protected confidenceFromVisits(visits: number): number {
+    return visits / (visits + this.confidenceK);
+  }
+
+  protected confidenceFromRecord(record: PatternRecord): number {
+    const base = this.confidenceFromVisits(record.visits);
+    if (
+      record.rewardSquaredSum === undefined ||
+      record.visits <= 1
+    ) {
+      return base;
+    }
+    const mean = record.score / record.visits;
+    const variance = Math.max(
+      0,
+      record.rewardSquaredSum / record.visits - mean * mean
+    );
+    const standardError = Math.sqrt(variance / record.visits);
+    return clamp(base * (1 - Math.min(0.5, standardError)), 0, 1);
+  }
+
+  private blendPolicyAndHeuristic(
+    policy: { expectedReward: number; confidence: number; visits: number; source: "exact" | "fuzzy" | "heuristic"; record?: PatternRecord },
+    heuristic: number
+  ): number {
+    if (policy.source === "heuristic" || policy.visits <= 0) return clamp(heuristic, -1, 1);
+    const policyWeight = policy.visits >= MIN_EXACT_VISITS
+      ? clamp(0.35 + policy.confidence * 0.6, 0.35, 0.95)
+      : clamp(policy.confidence, 0.05, 0.25);
+    return policy.expectedReward * policyWeight + clamp(heuristic, -1, 1) * (1 - policyWeight);
+  }
+
+  private boardDevelopmentBias(state: SimGameState, playerIndex: number, card: string): number {
+    const metadata = getCardMetadata(state, playerIndex, card);
+    const myCreatures = state.creatures[playerIndex]?.length ?? 0;
+    const avgOppCreatures = average(
+      state.creatures
+        .filter((_, index) => index !== playerIndex)
+        .map((creatures) => creatures.length)
+    );
+    if (metadata?.isCreature) {
+      return myCreatures < avgOppCreatures ? 0.14 : 0.06;
+    }
+    const text = `${metadata?.oracleText ?? ""} ${metadata?.typeLine ?? ""}`.toLowerCase();
+    if (/draw|token|treasure|add .*mana|whenever|at the beginning/.test(text)) return 0.08;
+    return 0.03;
+  }
+
+  private cardAdvantageBias(text?: string): number {
+    const lower = text?.toLowerCase() ?? "";
+    if (/draw (?:two|three|four|\d+)/.test(lower)) return 0.12;
+    if (/draw a card|return .* from your graveyard|create .* token/.test(lower)) return 0.06;
+    return 0;
+  }
+
+  private interactionBias(card: string, metadata?: ReturnType<typeof getCardMetadata>): number {
+    if (this.isInteractionSpell(card, metadata)) return 0.1;
+    return 0;
+  }
+
+  private overcommitRisk(state: SimGameState, playerIndex: number, card: string): number {
+    const metadata = getCardMetadata(state, playerIndex, card);
+    if (!isPermanentCard(card, metadata)) return 0;
+    const myPermanents = (state.battlefields[playerIndex]?.length ?? 0) + (state.creatures[playerIndex]?.length ?? 0);
+    const handSize = state.hands[playerIndex]?.length ?? 0;
+    return myPermanents >= 10 && handSize <= 2 ? 0.1 : 0;
+  }
+
+  private isCombatTrickOrRemoval(card: string, metadata?: ReturnType<typeof getCardMetadata>): boolean {
+    const text = `${metadata?.oracleText ?? ""} ${card}`.toLowerCase();
+    return /destroy|exile|damage to target creature|counter target|target creature gets|prevent/.test(text);
+  }
+
+  private isInteractionSpell(card: string, metadata?: ReturnType<typeof getCardMetadata>): boolean {
+    if (isCounterspell(card, metadata)) return true;
+    const text = `${metadata?.oracleText ?? ""} ${card}`.toLowerCase();
+    const instant = metadata?.typeLine?.toLowerCase().includes("instant") ?? false;
+    return instant && /counter target|destroy target|exile target|damage to target|prevent|return target/.test(text);
   }
 
   private buildCombatPattern(prefix: string, features: Record<string, number>) {
@@ -758,4 +942,17 @@ function serializePlanAssignments(assignments: Map<string, string[]>) {
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([attackerId, blockerIds]) => `${attackerId}:${[...blockerIds].sort().join(",")}`)
     .join("|");
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function average(values: number[]): number {
+  if (!values.length) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function normalizePlanScore(score: number): number {
+  return clamp(score / 20, -1, 1);
 }

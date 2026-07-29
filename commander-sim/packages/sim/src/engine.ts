@@ -20,6 +20,7 @@ import {
   captureSnapshot,
   shapeReward,
   discountRewards,
+  terminalRewardForPlayer,
   REWARD_SHAPING_ENABLED,
   REWARD_GAMMA,
   type StateSnapshot,
@@ -43,6 +44,10 @@ import {
   isArtifactCard,
   isPermanentCard,
   isInstantCard,
+  isCastableSpellCard,
+  getLandPermanentName,
+  getSpellPermanentName,
+  landEntersTapped,
   getAvailableInstants,
   getAvailableMana,
   isCounterspell,
@@ -99,6 +104,7 @@ const TURN_STRUCTURE: TurnStepConfig[] = [
     auto: (state, player) => {
       readyCreaturesForTurn(state, player);
       state.manaSpent[player] = 0;
+      untapPermanentsForTurn(state, player);
     },
   },
   {
@@ -180,6 +186,25 @@ interface StepSnapshotEntry {
   action: SimAction;
 }
 
+interface TurnContext {
+  landDropsUsedThisTurn: number;
+  maxLandDrops: number;
+}
+
+function tapPermanent(state: SimGameState, player: number, card: CardName) {
+  const key = card.trim().toLowerCase();
+  if (!key) return;
+  state.tappedPermanents ??= {};
+  state.tappedPermanents[player] ??= {};
+  state.tappedPermanents[player][key] =
+    (state.tappedPermanents[player][key] ?? 0) + 1;
+}
+
+export function untapPermanentsForTurn(state: SimGameState, player: number) {
+  state.tappedPermanents ??= {};
+  state.tappedPermanents[player] = {};
+}
+
 export async function simulateGame(
   agents: SimAgent[],
   options: SimulationOptions = {}
@@ -200,6 +225,7 @@ export async function simulateGame(
   const snapshotEntries: StepSnapshotEntry[] = [];
 
   let winnerIndex: number | null = null;
+  let missedLandDropOpportunity = 0;
 
   // Phase 6A — London Mulligan phase
   const ENABLE_MULLIGAN = process.env.ENABLE_MULLIGAN !== "false";
@@ -285,7 +311,10 @@ export async function simulateGame(
       state.playerIndex = p;
       await yieldToIO();
       options.onStateChange?.(cloneState(state), { type: "turn_start", turn, player: p });
-      const turnContext = { landPlayedThisTurn: false };
+      const turnContext: TurnContext = {
+        landDropsUsedThisTurn: 0,
+        maxLandDrops: normalizeMaxLandDrops(options.maxLandDrops),
+      };
 
       for (const step of TURN_STRUCTURE) {
         state.phase = step.phase;
@@ -355,6 +384,17 @@ export async function simulateGame(
           break;
         }
       }
+
+      if (
+        winnerIndex === null &&
+        hasLandDropCapacity(turnContext) &&
+        hasPlayableLandInHand(state, p)
+      ) {
+        missedLandDropOpportunity++;
+        log(
+          `[Metrics] Player ${p} ended turn ${turn} with an unused legal land drop`
+        );
+      }
     }
   }
 
@@ -368,7 +408,11 @@ export async function simulateGame(
   agents.forEach((agent, agentIdx) => {
     if (!isLearningAgent(agent)) return;
 
-    const terminalReward = winnerIndex === null ? 0 : winnerIndex === agentIdx ? 1 : -1;
+    const terminalReward = terminalRewardForPlayer(
+      winnerIndex,
+      agentIdx,
+      state.lifeTotals
+    );
 
     if (REWARD_SHAPING_ENABLED && snapshotEntries.length > 0) {
       const agentEntries = snapshotEntries.filter((e) => e.playerIndex === agentIdx);
@@ -399,7 +443,13 @@ export async function simulateGame(
     }
   }
 
-  return { winnerIndex, history, turns: state.turn, finalState: cloneState(state) };
+  return {
+    winnerIndex,
+    history,
+    turns: state.turn,
+    finalState: cloneState(state),
+    metrics: { missedLandDropOpportunity },
+  };
 }
 
 async function executeCombatPhase(
@@ -658,7 +708,7 @@ async function processActionWindow(
   player: number,
   history: SimulationResult["history"],
   log: (message: string) => void,
-  context: { landPlayedThisTurn: boolean },
+  context: TurnContext,
   rules: ActionWindowRules,
   snapshotEntries: StepSnapshotEntry[],
   onStateChange?: (state: SimGameState, event: GameEvent) => void,
@@ -669,7 +719,8 @@ async function processActionWindow(
 
   for (let count = 0; count < MAX_ACTIONS_PER_WINDOW; count++) {
     const available = generateActions(state, player, {
-      landPlayedThisTurn: context.landPlayedThisTurn,
+      landDropsUsedThisTurn: context.landDropsUsedThisTurn,
+      maxLandDrops: context.maxLandDrops,
       allowInstant: rules.allowInstant,
       allowSorcery: rules.allowSorcery,
       allowLand: rules.allowLand,
@@ -679,9 +730,22 @@ async function processActionWindow(
     if (availableSnapshot.length === 1 && !requiresManualPass) break;
 
     const snapshot = cloneState(state);
-    const decision = await Promise.resolve(
-      agents[player].decideAction(snapshot, availableSnapshot)
+    const forcedLandDrop = selectForcedSecondMainLandDrop(
+      state,
+      context,
+      availableSnapshot
     );
+    const decision = forcedLandDrop
+      ? {
+          action: forcedLandDrop,
+          metadata: {
+            source: "heuristic" as const,
+            reasoning: "strategic_land_drop_invariant",
+          },
+        }
+      : await Promise.resolve(
+          agents[player].decideAction(snapshot, availableSnapshot)
+        );
     const action = decision.action;
     history.push({
       playerIndex: player,
@@ -692,8 +756,9 @@ async function processActionWindow(
       metadata: decision.metadata,
     });
 
-    context.landPlayedThisTurn =
-      context.landPlayedThisTurn || action.type === "PLAY_LAND";
+    if (action.type === "PLAY_LAND") {
+      context.landDropsUsedThisTurn++;
+    }
 
     // Phase 2: cattura prev/next snapshot attorno ad applyAction
     const prevSnap = captureSnapshot(state);
@@ -1023,6 +1088,12 @@ export function createInitialState(
         entry.aliases?.forEach((alias) => {
           map[alias.toLowerCase()] = entry;
         });
+        if (entry.landFace?.name) {
+          map[entry.landFace.name.toLowerCase()] = entry;
+        }
+        if (entry.spellFace?.name) {
+          map[entry.spellFace.name.toLowerCase()] = entry;
+        }
       });
       return map;
     });
@@ -1049,6 +1120,9 @@ export function createInitialState(
     artifacts,
     artifactMana,
     manaSpent,
+    tappedPermanents: Object.fromEntries(
+      Array.from({ length: players }, (_, idx) => [idx, {}])
+    ),
     cardMetadata: metadataMaps,
     triggers: [],
     triggerCounter: 1,
@@ -1078,10 +1152,42 @@ function drawCard(state: SimGameState, player: number) {
 }
 
 interface ActionGenerationContext {
-  landPlayedThisTurn: boolean;
+  landDropsUsedThisTurn: number;
+  maxLandDrops: number;
   allowInstant: boolean;
   allowSorcery: boolean;
   allowLand: boolean;
+}
+
+function normalizeMaxLandDrops(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 1;
+  return Math.max(0, Math.floor(value));
+}
+
+function hasLandDropCapacity(context: TurnContext): boolean {
+  return context.landDropsUsedThisTurn < context.maxLandDrops;
+}
+
+function hasPlayableLandInHand(state: SimGameState, player: number): boolean {
+  return (state.hands[player] ?? []).some((card) => isLandCard(state, player, card));
+}
+
+function isSecondMainPhase(state: SimGameState): boolean {
+  return (
+    state.phase === "Seconda Fase Principale" ||
+    state.phaseStep === "Seconda Fase Principale"
+  );
+}
+
+function selectForcedSecondMainLandDrop(
+  state: SimGameState,
+  context: TurnContext,
+  availableActions: SimAction[]
+): SimAction | null {
+  if (!isSecondMainPhase(state) || !hasLandDropCapacity(context)) return null;
+  return (
+    availableActions.find((action) => action.type === "PLAY_LAND") ?? null
+  );
 }
 
 function generateActions(
@@ -1092,7 +1198,10 @@ function generateActions(
   const actions: SimAction[] = [{ type: "PASS_TURN" }];
   const hand = state.hands[player];
 
-  if (context.allowLand && !context.landPlayedThisTurn) {
+  if (
+    context.allowLand &&
+    context.landDropsUsedThisTurn < context.maxLandDrops
+  ) {
     hand
       .filter((card) => isLandCard(state, player, card))
       .forEach((card) => {
@@ -1104,17 +1213,10 @@ function generateActions(
     return actions;
   }
 
-  const landMana = state.battlefields[player].filter((card) =>
-    isLandCard(state, player, card)
-  ).length;
-  const artifactMana = state.artifactMana?.[player] ?? 0;
-  const availableMana = Math.max(
-    0,
-    landMana + artifactMana - (state.manaSpent?.[player] ?? 0)
-  );
+  const availableMana = getAvailableMana(state, player);
 
   hand
-    .filter((card) => !isLandCard(state, player, card))
+    .filter((card) => isCastableSpellCard(state, player, card))
     .forEach((card) => {
       const metadata = getCardMetadata(state, player, card);
       if (isCounterspell(card, metadata)) return;
@@ -1133,7 +1235,7 @@ function generateActions(
   return actions;
 }
 
-function applyAction(
+export function applyAction(
   state: SimGameState,
   action: SimAction,
   player: number,
@@ -1143,11 +1245,18 @@ function applyAction(
     case "PLAY_LAND": {
       const idx = state.hands[player].indexOf(action.card);
       if (idx >= 0) state.hands[player].splice(idx, 1);
-      state.battlefields[player].push(action.card);
-      log(`Player ${player} plays land ${action.card}`);
       const metadata = getCardMetadata(state, player, action.card);
-      handleLandEntered(state, player, action.card, log, "play");
-      handlePermanentEntersBattlefield(state, player, action.card, metadata, log);
+      const landName = getLandPermanentName(action.card, metadata);
+      state.battlefields[player].push(landName);
+      if (landEntersTapped(metadata)) {
+        tapPermanent(state, player, landName);
+      }
+      log(
+        `Player ${player} plays land ${landName}` +
+          (landEntersTapped(metadata) ? " tapped" : "")
+      );
+      handleLandEntered(state, player, landName, log, "play");
+      handlePermanentEntersBattlefield(state, player, landName, metadata, log);
       break;
     }
     case "CAST_SPELL": {
@@ -1173,13 +1282,24 @@ function resolveSpell(
   log: (msg: string) => void
 ) {
   const metadata = getCardMetadata(state, player, card);
+  const spellName = getSpellPermanentName(card, metadata);
   if (isCreatureCard(card, metadata)) {
-    summonCreature(state, player, card, log, metadata);
+    summonCreature(state, player, spellName, log, metadata?.spellFace ? {
+      ...metadata,
+      name: spellName,
+      typeLine: metadata.spellFace.typeLine ?? metadata.typeLine,
+      oracleText: metadata.spellFace.oracleText ?? metadata.oracleText,
+      manaValue: metadata.spellFace.manaValue ?? metadata.manaValue,
+      power: metadata.spellFace.power ?? metadata.power,
+      toughness: metadata.spellFace.toughness ?? metadata.toughness,
+      isLand: false,
+      isCreature: metadata.spellFace.isCreature ?? metadata.isCreature,
+    } : metadata);
     return;
   }
 
   if (isPermanentCard(card, metadata)) {
-    placePermanent(state, player, card, metadata, log);
+    placePermanent(state, player, spellName, metadata, log);
     return;
   }
 
@@ -1571,18 +1691,19 @@ function enforceHandSizeLimit(
 
 function getSpellCost(card: string, state: SimGameState, player: number) {
   const metadata = getCardMetadata(state, player, card);
-  if (typeof metadata?.manaValue === "number" && metadata.manaValue > 0) {
-    return applyCostReductions(state, player, card, metadata, metadata.manaValue);
+  const spellManaValue = metadata?.spellFace?.manaValue ?? metadata?.manaValue;
+  if (typeof spellManaValue === "number" && spellManaValue > 0) {
+    return applyCostReductions(state, player, card, metadata, spellManaValue);
   }
   if (isBurnSpell(card)) return 2;
   if (metadata?.isCreature || isCreatureCard(card, metadata)) {
-    if (typeof metadata?.manaValue === "number") {
+    if (typeof spellManaValue === "number") {
       return applyCostReductions(
         state,
         player,
         card,
         metadata,
-        metadata.manaValue || 3
+        spellManaValue || 3
       );
     }
     return applyCostReductions(

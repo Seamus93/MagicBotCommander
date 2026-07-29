@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { PatternStore } from "@sim/patterns";
 import type { DeckCardMetadata, SimulationResult } from "@game-state/types";
 import { buildStateDigest } from "@game-state/stateDigest";
@@ -7,13 +7,99 @@ const prisma = new PrismaClient();
 
 export const getPrisma = () => prisma;
 
+const toJson = (value: unknown): Prisma.InputJsonValue =>
+  JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+
+const toNullableJson = (
+  value: unknown | null | undefined
+): Prisma.InputJsonValue | typeof Prisma.JsonNull =>
+  value === null || value === undefined ? Prisma.JsonNull : toJson(value);
+
 type EpisodeStepStorageMode = "off" | "digest" | "full";
 
-function getEpisodeStepStorageMode(): EpisodeStepStorageMode {
-  const raw = (process.env.EPISODE_STEP_STORAGE ?? "digest").toLowerCase();
+export interface EpisodeReplayDecision {
+  storeEpisode: boolean;
+  storeSteps: boolean;
+  storageMode: EpisodeStepStorageMode;
+  reason: "sample" | "anomaly" | "disabled";
+}
+
+export interface PolicyFlushStats {
+  recordsUpdated: number;
+  approximatePolicyBytes: number;
+}
+
+export function getEpisodeStepStorageMode(): EpisodeStepStorageMode {
+  const raw = (process.env.EPISODE_STEP_STORAGE ?? "off").toLowerCase();
   if (raw === "off" || raw === "none" || raw === "false") return "off";
   if (raw === "full") return "full";
   return "digest";
+}
+
+export function getEpisodeSampleRate(): number {
+  const parsed = Number(process.env.EPISODE_SAMPLE_RATE ?? 0.01);
+  if (!Number.isFinite(parsed)) return 0.01;
+  return Math.max(0, Math.min(1, parsed));
+}
+
+export function shouldSaveAnomalousEpisodes(): boolean {
+  return process.env.SAVE_ANOMALOUS_EPISODES !== "false";
+}
+
+export function isAnomalousEpisode(result: SimulationResult): boolean {
+  if ((result.metrics?.missedLandDropOpportunity ?? 0) > 0) return true;
+  if (result.turns >= Number(process.env.MAX_TURNS_ANOMALY_THRESHOLD ?? 40)) return true;
+  const passCount = result.history.filter((entry) => entry.action.type === "PASS_TURN").length;
+  if (passCount >= Number(process.env.PASS_LOOP_ANOMALY_THRESHOLD ?? 30)) return true;
+  return result.history.some((entry) => {
+    if ((entry.metadata?.confidence ?? 0) >= 0.8 && (entry.shapedReward ?? 0) < -0.25) return true;
+    if ((entry.metadata?.expectedReward ?? 0) >= 0.5 && (entry.shapedReward ?? 0) < -0.25) return true;
+    if (entry.metadata?.source === "heuristic" && (entry.metadata.visits ?? 0) >= 100) return true;
+    if ((entry.metadata?.confidence ?? 1) < 0.05 && entry.metadata?.source !== "heuristic") return true;
+    if (
+      entry.state.phaseStep === "Seconda Fase Principale" &&
+      entry.action.type === "PASS_TURN" &&
+      entry.availableActions.some((action) => action.type === "PLAY_LAND")
+    ) {
+      return true;
+    }
+    return false;
+  });
+}
+
+export function shouldPersistEpisodeReplay(
+  result: SimulationResult,
+  _episodeIndex: number,
+  random = Math.random
+): EpisodeReplayDecision {
+  const storageMode = getEpisodeStepStorageMode();
+  const anomalous = shouldSaveAnomalousEpisodes() && isAnomalousEpisode(result);
+  if (anomalous) {
+    return {
+      storeEpisode: true,
+      storeSteps: storageMode !== "off",
+      storageMode,
+      reason: "anomaly",
+    };
+  }
+
+  const sampleRate = getEpisodeSampleRate();
+  const sampled = sampleRate >= 1 || (sampleRate > 0 && random() < sampleRate);
+  if (sampled) {
+    return {
+      storeEpisode: true,
+      storeSteps: storageMode !== "off",
+      storageMode,
+      reason: "sample",
+    };
+  }
+
+  return {
+    storeEpisode: false,
+    storeSteps: false,
+    storageMode,
+    reason: "disabled",
+  };
 }
 
 export async function createSimulationRun(params: {
@@ -30,8 +116,8 @@ export async function createSimulationRun(params: {
       players: params.players,
       maxTurns: params.maxTurns ?? null,
       policyPath: params.policyPath ?? null,
-      archetypes: params.archetypes ?? null,
-      deckIds: params.deckIds ?? null,
+      archetypes: toNullableJson(params.archetypes),
+      deckIds: toNullableJson(params.deckIds),
     },
   });
 }
@@ -39,10 +125,12 @@ export async function createSimulationRun(params: {
 export async function persistEpisode(
   runId: number,
   episodeIndex: number,
-  result: SimulationResult
+  result: SimulationResult,
+  decision: EpisodeReplayDecision = shouldPersistEpisodeReplay(result, episodeIndex)
 ) {
-  const mode = getEpisodeStepStorageMode();
-  const shouldStoreSteps = mode !== "off";
+  if (!decision.storeEpisode) return null;
+  const mode = decision.storageMode;
+  const shouldStoreSteps = decision.storeSteps;
   const storeFullSteps = mode === "full";
 
   const steps = shouldStoreSteps
@@ -59,10 +147,10 @@ export async function persistEpisode(
           agentId: entry.agentId ?? null,
           actionType: entry.action.type,
           card: "card" in entry.action ? entry.action.card ?? null : null,
-          state: storeFullSteps ? entry.state : buildStateDigest(entry.state),
-          availableActions: storeFullSteps ? entry.availableActions : null,
-          decisionMeta: storeFullSteps ? (entry.metadata ?? null) : null,
-          actionPayload: storeFullSteps ? entry.action : null,
+          state: toJson(storeFullSteps ? entry.state : buildStateDigest(entry.state)),
+          availableActions: storeFullSteps ? toJson(entry.availableActions) : Prisma.JsonNull,
+          decisionMeta: storeFullSteps ? toNullableJson(entry.metadata) : Prisma.JsonNull,
+          actionPayload: storeFullSteps ? toJson(entry.action) : Prisma.JsonNull,
           reward,
           shapedReward: entry.shapedReward ?? null, // Phase 2
           winnerIndex: result.winnerIndex,
@@ -76,7 +164,7 @@ export async function persistEpisode(
       index: episodeIndex,
       winnerIndex: result.winnerIndex,
       turnCount: result.turns,
-      finalState: result.finalState,
+      finalState: storeFullSteps ? toJson(result.finalState) : toJson(buildStateDigest(result.finalState)),
       ...(shouldStoreSteps ? { steps: { createMany: { data: steps } } } : {}),
     },
   });
@@ -84,10 +172,13 @@ export async function persistEpisode(
 
 export async function upsertPolicyRecords(
   runId: number | null,
-  store: PatternStore
-) {
-  const records = store.entries();
-  if (!records.length) return;
+  store: PatternStore,
+  options: { dirtyOnly?: boolean } = {}
+): Promise<PolicyFlushStats> {
+  const records = options.dirtyOnly ? store.dirtyEntries() : store.entries();
+  if (!records.length) {
+    return { recordsUpdated: 0, approximatePolicyBytes: 0 };
+  }
 
   await prisma.$transaction(
     records.map((record) =>
@@ -101,6 +192,9 @@ export async function upsertPolicyRecords(
         update: {
           score: record.score,
           visits: record.visits,
+          rewardSquaredSum: record.rewardSquaredSum ?? null,
+          winCount: record.winCount ?? 0,
+          lossCount: record.lossCount ?? 0,
           runId,
           updatedAt: new Date(),
         },
@@ -109,11 +203,19 @@ export async function upsertPolicyRecords(
           actionKey: record.actionKey,
           score: record.score,
           visits: record.visits,
+          rewardSquaredSum: record.rewardSquaredSum ?? null,
+          winCount: record.winCount ?? 0,
+          lossCount: record.lossCount ?? 0,
           runId,
         },
       })
     )
   );
+  store.markClean(records);
+  return {
+    recordsUpdated: records.length,
+    approximatePolicyBytes: approximateJsonBytes(records),
+  };
 }
 
 export async function loadPolicyStore(): Promise<PatternStore> {
@@ -123,10 +225,55 @@ export async function loadPolicyStore(): Promise<PatternStore> {
       actionKey: true,
       score: true,
       visits: true,
+      rewardSquaredSum: true,
+      winCount: true,
+      lossCount: true,
+      updatedAt: true,
     },
   });
 
-  return new PatternStore(records);
+  return new PatternStore(records.map((record) => ({
+    pattern: record.pattern,
+    actionKey: record.actionKey,
+    score: record.score,
+    visits: record.visits,
+    rewardSquaredSum: record.rewardSquaredSum ?? undefined,
+    winCount: record.winCount,
+    lossCount: record.lossCount,
+    lastUpdated: record.updatedAt.toISOString(),
+  })));
+}
+
+export async function updateSimulationRunSummary(
+  runId: number,
+  aggregateMetrics: unknown,
+  storageStats: unknown
+) {
+  return prisma.simulationRun.update({
+    where: { id: runId },
+    data: {
+      aggregateMetrics: toNullableJson(aggregateMetrics),
+      storageStats: toNullableJson(storageStats),
+    },
+  });
+}
+
+export async function prunePolicyRecords(params: {
+  minVisits: number;
+  maxAgeDays: number;
+  minRecentAgeDays?: number;
+}): Promise<number> {
+  const minRecentAgeDays = params.minRecentAgeDays ?? 7;
+  const cutoff = new Date(Date.now() - params.maxAgeDays * 24 * 60 * 60 * 1000);
+  const recentCutoff = new Date(Date.now() - minRecentAgeDays * 24 * 60 * 60 * 1000);
+  const result = await prisma.policyRecord.deleteMany({
+    where: {
+      visits: { lt: params.minVisits },
+      updatedAt: { lt: cutoff, not: { gt: recentCutoff } },
+      score: { gte: -0.02, lte: 0.02 },
+    },
+  });
+  return result.count;
 }
 
 export async function getPolicyStoreVersion(): Promise<{
@@ -199,8 +346,8 @@ export async function upsertDeck(params: {
       sourceUrl: params.sourceUrl ?? null,
       name: params.name ?? null,
       commander: params.commander ?? null,
-      cards: params.cards,
-      cardMetadata: params.cardMetadata ?? null,
+      cards: toJson(params.cards),
+      cardMetadata: toNullableJson(params.cardMetadata),
       cardHash: hash,
     },
   });
@@ -218,7 +365,7 @@ export async function updateDeckMetadata(
   if (!id) return;
   await prisma.deck.update({
     where: { id },
-    data: { cardMetadata: metadata },
+    data: { cardMetadata: toJson(metadata) },
   });
 }
 
@@ -235,4 +382,8 @@ function createDeckHash(cards: string[]): string {
     hash |= 0;
   }
   return `deck_${Math.abs(hash)}`;
+}
+
+function approximateJsonBytes(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
 }

@@ -1,13 +1,14 @@
-import React from "react";
-
 interface DeckLoadModalProps {
   value: string;
   onChange: (value: string) => void;
   onConfirm: () => void;
   onCancel: () => void;
+  onDeleteCurrentDeck?: () => void;
   className?: string;
   error?: string | null;
   cloudflareBlock?: boolean;
+  currentDeckId?: number | null;
+  isDeletingDeck?: boolean;
 }
 
 export default function DeckLoadModal({
@@ -15,9 +16,12 @@ export default function DeckLoadModal({
   onChange,
   onConfirm,
   onCancel,
+  onDeleteCurrentDeck,
   className,
   error,
   cloudflareBlock,
+  currentDeckId,
+  isDeletingDeck,
 }: DeckLoadModalProps) {
   return (
     <div
@@ -46,7 +50,15 @@ export default function DeckLoadModal({
           )}
         </div>
       )}
-      <div className="flex justify-end gap-2">
+      <div className="flex justify-between gap-2">
+        <button
+          onClick={onDeleteCurrentDeck}
+          disabled={!currentDeckId || isDeletingDeck}
+          className="px-3 py-1 text-sm rounded bg-zinc-800 text-red-300 border border-red-800/70 hover:bg-red-950 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {isDeletingDeck ? "Elimino..." : "Elimina deck corrente"}
+        </button>
+        <div className="flex justify-end gap-2">
         <button
           onClick={onCancel}
           className="px-3 py-1 text-sm rounded bg-red-600 hover:bg-red-700"
@@ -59,6 +71,7 @@ export default function DeckLoadModal({
         >
           Carica Mazzo
         </button>
+        </div>
       </div>
     </div>
   );

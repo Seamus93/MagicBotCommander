@@ -100,6 +100,7 @@ export default function MoxfieldUI() {
   const [showMenu, setShowMenu] = useState(false);
   const [deckInput, setDeckInput] = useState("");
   const [deckImportError, setDeckImportError] = useState<{ message: string; cloudflareBlock: boolean } | null>(null);
+  const [isDeletingDeck, setIsDeletingDeck] = useState(false);
   const [landsPlayedThisTurn, setLandsPlayedThisTurn] = useState(0);
   const [fullDeck, setFullDeck] = useState<string[]>([]);
   const [hand, setHand] = useState<string[]>([]);
@@ -355,7 +356,7 @@ export default function MoxfieldUI() {
 
   const moveCard = (
     card: string,
-    setZone: React.Dispatch<React.SetStateAction<string[]>> | ((prev: string[]) => string[]),
+    setZone: React.Dispatch<React.SetStateAction<string[]>>,
     overwrite: boolean = false,
     sourceInfo?: { zoneKey: DragSourceZone; index?: number }
   ) => {
@@ -868,6 +869,35 @@ export default function MoxfieldUI() {
     }
   };
 
+  const handleDeleteCurrentDeck = async () => {
+    if (!currentDeckId || isDeletingDeck) return;
+    const confirmed = window.confirm(`Eliminare il deck #${currentDeckId} dal database?`);
+    if (!confirmed) return;
+
+    setIsDeletingDeck(true);
+    try {
+      const response = await fetch(`http://localhost:3001/decks/${currentDeckId}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(payload?.error ?? "Impossibile eliminare il deck.");
+      }
+
+      localStorage.removeItem("savedDeckId");
+      setCurrentDeckId(null);
+      setNotification({ message: "Deck eliminato dal database", type: "success" });
+      setShowMenu(false);
+    } catch (error) {
+      setNotification({
+        message: error instanceof Error ? error.message : "Errore cancellazione deck",
+        type: "error",
+      });
+    } finally {
+      setIsDeletingDeck(false);
+    }
+  };
+
     useEffect(() => {
     const saved = localStorage.getItem("savedDeck");
     const savedDeckId = localStorage.getItem("savedDeckId");
@@ -1084,9 +1114,12 @@ const autoplayAI = async () => {
                 value={deckInput}
                 onChange={(v) => { setDeckInput(v); setDeckImportError(null); }}
                 onConfirm={() => handleLoadDeck(deckInput)}
+                onDeleteCurrentDeck={handleDeleteCurrentDeck}
                 onCancel={() => { setShowMenu(false); setDeckImportError(null); }}
                 error={deckImportError?.message}
                 cloudflareBlock={deckImportError?.cloudflareBlock}
+                currentDeckId={currentDeckId}
+                isDeletingDeck={isDeletingDeck}
               />
             )}
           </div>
@@ -1154,10 +1187,13 @@ const autoplayAI = async () => {
                 value={deckInput}
                 onChange={(v) => { setDeckInput(v); setDeckImportError(null); }}
                 onConfirm={() => handleLoadDeck(deckInput)}
+                onDeleteCurrentDeck={handleDeleteCurrentDeck}
                 onCancel={() => { setShowMenu(false); setDeckImportError(null); }}
                 className="battlefield-import__modal"
                 error={deckImportError?.message}
                 cloudflareBlock={deckImportError?.cloudflareBlock}
+                currentDeckId={currentDeckId}
+                isDeletingDeck={isDeletingDeck}
               />
             )}
           </div>

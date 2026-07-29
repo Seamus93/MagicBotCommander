@@ -100,6 +100,8 @@ interface DbDeck {
   name: string | null;
   commander: string | null;
   createdAt: string;
+  cardCount?: number | null;
+  metadataCount?: number | null;
 }
 
 interface StoredGameSetup {
@@ -155,6 +157,7 @@ function aiToQuadrant(p: FilteredPlayerState): QuadrantPlayerData {
     life: p.life,
     commander: p.commander,
     battlefield: p.battlefield,
+    battlefieldPermanents: p.battlefieldPermanents,
     creatures: p.creatures,
     graveyard: p.graveyard,
     exile: p.exile,
@@ -268,6 +271,8 @@ interface DeckLobbyProps {
 function DeckLobby({ onStart, myDeckId, myCommander, myFullDeck }: DeckLobbyProps) {
   const [dbDecks, setDbDecks] = useState<DbDeck[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [selections, setSelections] = useState<[string, string, string]>(["", "", ""]);
 
   useEffect(() => {
@@ -304,6 +309,35 @@ function DeckLobby({ onStart, myDeckId, myCommander, myFullDeck }: DeckLobbyProp
       next[index] = deckId;
       return next;
     });
+  };
+
+  const deleteDeck = async (deck: DbDeck) => {
+    const label = deck.name ?? deck.commander ?? `Deck #${deck.id}`;
+    if (!window.confirm(`Eliminare "${label}" dal database?`)) return;
+    setDeletingId(deck.id);
+    setDeleteError(null);
+    try {
+      const response = await fetch(`${GAME_SERVER_URL}/game/decks/${deck.id}`, { method: "DELETE" });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(payload?.error ?? "Impossibile eliminare il deck.");
+      }
+      setDbDecks((prev) => prev.filter((item) => item.id !== deck.id));
+      setSelections((prev) =>
+        prev.map((selection) => (selection === String(deck.id) || selection === `db:${deck.id}` ? "" : selection)) as [
+          string,
+          string,
+          string,
+        ]
+      );
+      if (deck.id === myDeckId) {
+        localStorage.removeItem("savedDeckId");
+      }
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : "Errore cancellazione deck");
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   const labels = ["AI North", "AI East", "AI West"];
@@ -352,12 +386,41 @@ function DeckLobby({ onStart, myDeckId, myCommander, myFullDeck }: DeckLobbyProp
                       <option key={d.id} value={d.id}>
                         {displayName}
                         {displayCommander && displayCommander !== displayName ? ` - ${displayCommander}` : ""}
+                        {typeof d.cardCount === "number" ? ` · ${d.cardCount} cards` : ""}
                       </option>
                     );
                   })}
                 </select>
               </div>
             ))}
+          </div>
+        )}
+
+        {!loading && dbDecks.length > 0 && (
+          <div className="mb-5 max-h-40 overflow-auto rounded-lg border border-white/10 bg-[#0d1117]/80 p-2">
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Deck database</div>
+            {deleteError && <div className="mb-2 text-xs text-red-300">{deleteError}</div>}
+            <div className="space-y-1">
+              {dbDecks.map((deck) => {
+                const label = deck.name ?? deck.commander ?? `Deck #${deck.id}`;
+                return (
+                  <div key={deck.id} className="flex items-center justify-between gap-2 rounded bg-white/5 px-2 py-1 text-xs">
+                    <span className="min-w-0 truncate">
+                      #{deck.id} {label}
+                      {typeof deck.cardCount === "number" ? ` · ${deck.cardCount} cards` : ""}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => deleteDeck(deck)}
+                      disabled={deletingId === deck.id}
+                      className="shrink-0 rounded border border-red-800/70 px-2 py-0.5 text-red-300 hover:bg-red-950 disabled:opacity-50"
+                    >
+                      {deletingId === deck.id ? "..." : "Delete"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
 

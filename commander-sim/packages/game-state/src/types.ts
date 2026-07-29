@@ -2,6 +2,23 @@ import type { CreaturePermanent } from "@rules/combat/types";
 
 export type CardName = string;
 
+export interface CardFaceMetadata {
+  name: string;
+  typeLine?: string;
+  oracleText?: string;
+  manaValue?: number;
+  power?: number;
+  toughness?: number;
+  colors?: string[];
+  colorIdentity?: string[];
+  isLand?: boolean;
+  isCreature?: boolean;
+  isPermanent?: boolean;
+  entersTapped?: boolean;
+  producesMana?: boolean;
+  manaProduction?: number;
+}
+
 export interface DeckCardMetadata {
   name: string;
   typeLine?: string;
@@ -14,6 +31,10 @@ export interface DeckCardMetadata {
   isArtifact?: boolean;
   isPermanent?: boolean;
   manaProduction?: number;
+  producesMana?: boolean;
+  entersTapped?: boolean;
+  landFace?: CardFaceMetadata;
+  spellFace?: CardFaceMetadata;
   aliases?: string[];
   colors?: string[];
   colorIdentity?: string[];
@@ -50,6 +71,7 @@ export interface SimGameState {
   artifacts: CardName[][];
   artifactMana: number[];
   manaSpent: number[];
+  tappedPermanents?: Record<number, Record<string, number>>;
   cardMetadata: Record<string, DeckCardMetadata>[];
   triggers: RegisteredTrigger[];
   triggerCounter: number;
@@ -98,7 +120,10 @@ export type DecisionSource =
   | "explore"
   | "decision_tree"
   | "ai"
-  | "fallback";
+  | "fallback"
+  | "exact"
+  | "fuzzy"
+  | "heuristic";
 
 export interface DecisionMetadata {
   source: DecisionSource;
@@ -106,6 +131,8 @@ export interface DecisionMetadata {
   actionKey?: string;
   reasoning?: string;
   confidence?: number;
+  expectedReward?: number;
+  visits?: number;
 }
 
 export interface AgentDecision {
@@ -139,9 +166,11 @@ export interface AttackPlan {
 export interface BlockPlan {
   assignments: Map<string, string[]>;
   creaturesKilled: number;
+  creaturesKilledValue?: number;
   damagePrevented: number;
   totalIncomingDamage: number;
   blockersLost: number;
+  blockersLostValue?: number;
   score: number;
 }
 
@@ -206,6 +235,8 @@ export interface SimulationOptions {
   phaseDelayMs?: number;
   actionDelayMs?: number;
   maxMulligans?: number;
+  /** Maximum number of lands each player may play during one turn. Defaults to 1. */
+  maxLandDrops?: number;
   /** Ms to wait between each player's turn for real-time viewing.
    *  0 (default) = no delay, runs at full speed (use for batch training).
    *  e.g. 1200 = 1.2 s per player turn, fully watchable in SpellTable. */
@@ -227,6 +258,9 @@ export interface SimulationResult {
   history: SimulationHistoryEntry[];
   turns: number;
   finalState: SimGameState;
+  metrics?: {
+    missedLandDropOpportunity: number;
+  };
 }
 
 export interface StateDigest {

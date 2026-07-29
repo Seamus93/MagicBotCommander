@@ -10,6 +10,7 @@ export interface FilteredPlayerState {
   life: number;
   commander: string;
   battlefield: string[];
+  battlefieldPermanents?: Array<{ name: string; tapped: boolean }>;
   creatures: CreaturePermanent[];
   graveyard: string[];
   exile: string[];
@@ -45,6 +46,7 @@ export function serializeForViewer(
       life,
       commander: state.commanders[i] ?? "",
       battlefield: state.battlefields[i] ?? [],
+      battlefieldPermanents: serializeBattlefieldPermanents(state, i),
       creatures: state.creatures[i] ?? [],
       graveyard: state.graveyards[i] ?? [],
       exile: exileZone,
@@ -63,4 +65,20 @@ export function serializeForViewer(
     startingPlayerIndex,
     players,
   };
+}
+
+function serializeBattlefieldPermanents(
+  state: SimGameState,
+  player: number
+): Array<{ name: string; tapped: boolean }> {
+  const tapped = { ...(state.tappedPermanents?.[player] ?? {}) };
+  return (state.battlefields[player] ?? []).map((name) => {
+    const key = name.trim().toLowerCase();
+    const tappedCount = tapped[key] ?? 0;
+    if (tappedCount > 0) {
+      tapped[key] = tappedCount - 1;
+      return { name, tapped: true };
+    }
+    return { name, tapped: false };
+  });
 }

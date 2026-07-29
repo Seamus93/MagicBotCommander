@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { useState } from "react";
 
 const COLORS = [
   { key: "white", label: "W", icon: "https://svgs.scryfall.io/card-symbols/W.svg" },

@@ -68,6 +68,42 @@ function detectManaProduction(text?: string): number | undefined {
   return maxValue > 0 ? maxValue : undefined;
 }
 
+function detectUnconditionalEntersTapped(text?: string): boolean | undefined {
+  if (!text) return undefined;
+  const sentence = text
+    .split(/[\.\n]/)
+    .map((part) => part.trim())
+    .find((part) => /\benters(?: the battlefield)? tapped\b/i.test(part));
+  if (!sentence) return undefined;
+  if (/\b(if|unless|you may|as .* enters|choose)\b/i.test(sentence)) {
+    return false;
+  }
+  return true;
+}
+
+function faceMetadata(face: any) {
+  const typeLine = typeof face?.type_line === "string" ? face.type_line : undefined;
+  const typeLower = typeLine?.toLowerCase() ?? "";
+  const oracleText = typeof face?.oracle_text === "string" ? face.oracle_text : undefined;
+  const manaProduction = detectManaProduction(oracleText);
+  return {
+    name: face?.name,
+    typeLine,
+    oracleText,
+    manaValue: typeof face?.mana_value === "number" ? face.mana_value : undefined,
+    power: parseStat(face?.power),
+    toughness: parseStat(face?.toughness),
+    colors: Array.isArray(face?.colors) ? face.colors : undefined,
+    colorIdentity: Array.isArray(face?.color_identity) ? face.color_identity : undefined,
+    isLand: typeLower.includes("land"),
+    isCreature: typeLower.includes("creature"),
+    isPermanent: PERMANENT_TYPES.some((token) => typeLower.includes(token)),
+    entersTapped: detectUnconditionalEntersTapped(oracleText),
+    producesMana: manaProduction !== undefined,
+    manaProduction,
+  };
+}
+
 function attachAlias(meta: DeckCardMetadata, originalName: string) {
   const alias = originalName?.trim();
   if (!alias) return;
@@ -108,6 +144,11 @@ export async function fetchCardMetadata(name: string): Promise<DeckCardMetadata 
           ? data.cmc
           : undefined;
     const oracleText = extractOracleText(data);
+    const faces = Array.isArray(data.card_faces)
+      ? data.card_faces.map(faceMetadata).filter((face: any) => face.name)
+      : [];
+    const landFace = faces.find((face: any) => face.isLand);
+    const spellFace = faces.find((face: any) => !face.isLand);
     const power =
       parseStat(data.power) ?? parseStat(data.card_faces?.[0]?.power ?? undefined);
     const toughness =
@@ -122,16 +163,21 @@ export async function fetchCardMetadata(name: string): Promise<DeckCardMetadata 
       power,
       toughness,
       isLand: typeLower?.includes("land"),
-      isCreature: typeLower?.includes("creature"),
+      isCreature: typeLower?.includes("creature") || spellFace?.isCreature,
       isArtifact: typeLower?.includes("artifact"),
       isPermanent: typeLower
         ? PERMANENT_TYPES.some((token) => typeLower.includes(token))
         : undefined,
-      manaProduction: detectManaProduction(oracleText),
+      manaProduction: landFace?.manaProduction ?? detectManaProduction(oracleText),
+      producesMana: landFace?.producesMana ?? (detectManaProduction(oracleText) !== undefined),
+      entersTapped: landFace?.entersTapped ?? detectUnconditionalEntersTapped(oracleText),
+      landFace,
+      spellFace,
       colors: Array.isArray(data.colors) ? data.colors : undefined,
       colorIdentity: Array.isArray(data.color_identity) ? data.color_identity : undefined,
     };
     attachAlias(meta, name);
+    for (const face of faces) attachAlias(meta, face.name);
 
     const canonicalKey = meta.name ? normalize(meta.name) : key;
     cache.set(key, meta);

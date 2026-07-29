@@ -1,16 +1,18 @@
 {
-  "files": [],
-  "references": [
-    { "path": "./packages/game-state/tsconfig.json" },
-    { "path": "./packages/rules/tsconfig.json" },
-    { "path": "./packages/ai/tsconfig.json" },
-    { "path": "./packages/db/tsconfig.json" },
-    { "path": "./packages/neural/tsconfig.json" },
-    { "path": "./packages/sim/tsconfig.json" },
-    { "path": "./apps/ui-player/tsconfig.json" },
-    { "path": "./apps/ui-player/tsconfig.node.json" },
-    { "path": "./apps/ai-service/tsconfig.json" },
-    { "path": "./apps/sim-service/tsconfig.json" },
-    { "path": "./apps/api/tsconfig.json" }
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "jsx": "react-jsx"
+  },
+  "include": [
+    "packages/**/*.ts",
+    "apps/**/*.ts",
+    "apps/**/*.tsx"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "apps/api/server.cjs"
   ]
 }

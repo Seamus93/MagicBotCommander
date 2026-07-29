@@ -64,7 +64,7 @@ describe("counterspell behavior", () => {
     expect(result.finalState.stack).toHaveLength(0);
   });
 
-  it("passes in main phase to represent a counter instead of tapping out", () => {
+  it("passes in main phase to represent a counter instead of tapping out", async () => {
     const agent = new LearningAgent({
       id: "control",
       store: new PatternStore(),
@@ -102,15 +102,15 @@ describe("counterspell behavior", () => {
       stack: [],
     };
 
-    const decision = agent.decideAction(state, [
+    const decision = await Promise.resolve(agent.decideAction(state, [
       { type: "CAST_SPELL", card: "Divination" },
       { type: "PASS_TURN" },
-    ]);
+    ]));
 
     expect(decision.action.type).toBe("PASS_TURN");
   });
 
-  it("still prefers playing a land before passing to hold up interaction", () => {
+  it("still prefers playing a land before passing to hold up interaction", async () => {
     const agent = new LearningAgent({
       id: "control",
       store: new PatternStore(),
@@ -147,10 +147,10 @@ describe("counterspell behavior", () => {
       stack: [],
     };
 
-    const decision = agent.decideAction(state, [
+    const decision = await Promise.resolve(agent.decideAction(state, [
       { type: "PLAY_LAND", card: "Island" },
       { type: "PASS_TURN" },
-    ]);
+    ]));
 
     expect(decision.action.type).toBe("PLAY_LAND");
   });

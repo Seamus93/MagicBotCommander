@@ -1,7 +1,7 @@
 import type { SimGameState, GameEvent, CardName, DeckCardMetadata } from "@game-state/types";
 import { simulateGame } from "@sim/engine.js";
 import { DecisionTreeAgent } from "@sim/decisionTreeAgent.js";
-import { PatternStore } from "@sim/patterns.js";
+import { loadTrainedPolicyStore } from "@sim/policyLoader.js";
 import { serializeForViewer, type FilteredGameState } from "../state/stateSerializer.js";
 import type { GameMessage, SessionStatus } from "./GameSession.js";
 
@@ -22,7 +22,6 @@ export class AllAiGameSession {
   private lastState: SimGameState | null = null;
   private simulationStarted = false;
 
-  private agents: DecisionTreeAgent[];
   private playerDecks: CardName[][];
   private playerDeckMetadata: DeckCardMetadata[][];
   private playerCommanders: Array<CardName | null>;
@@ -35,9 +34,6 @@ export class AllAiGameSession {
     this.id = id;
     this.onMessage = onMessage;
 
-    this.agents = decks.map((_d, i) =>
-      new DecisionTreeAgent({ id: `ai-${i}`, store: new PatternStore() })
-    );
     this.playerDecks = decks.map((d) => d.deck);
     this.playerDeckMetadata = decks.map((d) => d.meta);
     this.playerCommanders = decks.map((d) => d.commander ?? d.deck[0] ?? null);
@@ -47,9 +43,24 @@ export class AllAiGameSession {
   startSimulation(): void {
     if (this.simulationStarted) return;
     this.simulationStarted = true;
-    this.status = "running";
+    void this.runSimulation();
+  }
 
-    simulateGame(this.agents, {
+  private async runSimulation(): Promise<void> {
+    try {
+      const loadedPolicy = await loadTrainedPolicyStore({
+        log: (message) => this.onMessage({ type: "game_log", message }),
+      });
+      const agents = this.playerDecks.map((_d, i) =>
+        new DecisionTreeAgent({ id: `ai-${i}`, store: loadedPolicy.store })
+      );
+      this.status = "running";
+      this.onMessage({
+        type: "game_log",
+        message: `[policy] live_source=${loadedPolicy.source} records=${loadedPolicy.records}`,
+      });
+
+      await simulateGame(agents, {
       maxTurns: 60,
       enableStack: true,
       maxMulligans: 2,
@@ -73,11 +84,12 @@ export class AllAiGameSession {
           this.onMessage({ type: "game_over", winner: event.winner });
         }
       },
-    }).catch((err: unknown) => {
+      });
+    } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.onMessage({ type: "game_log", message: `[ERROR] ${msg}` });
       this.status = "game_over";
-    });
+    }
   }
 
   getFilteredState(): FilteredGameState | null {

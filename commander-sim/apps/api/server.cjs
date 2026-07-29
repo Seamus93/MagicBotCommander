@@ -26,6 +26,220 @@ app.use(bodyParser.json());
 
 // --- Helpers ----------------------------------------------------------------
 
+const metadataCache = new Map();
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const PERMANENT_TYPES = ["land", "creature", "artifact", "enchantment", "planeswalker", "battle"];
+const SCRYFALL_COLLECTION_BATCH_SIZE = 75;
+const SCRYFALL_RETRY_DELAY_MS = 1200;
+
+const parseStat = (value) => {
+  if (value == null || value === "*") return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const extractOracleText = (card = {}) => {
+  if (typeof card.oracle_text === "string" && card.oracle_text.trim()) {
+    return card.oracle_text;
+  }
+  if (Array.isArray(card.card_faces)) {
+    const joined = card.card_faces
+      .map((face) => face?.oracle_text)
+      .filter((text) => typeof text === "string" && text.trim())
+      .join("\n");
+    return joined || undefined;
+  }
+  return undefined;
+};
+
+const detectManaProduction = (text) => {
+  if (!text) return undefined;
+  let maxValue = 0;
+  const addRegex = /Add\s+((?:\{[^}]+\})+)/gi;
+  let match;
+  while ((match = addRegex.exec(text))) {
+    const tokens = match[1].match(/\{[^}]+\}/g) ?? [];
+    const manaSymbols = tokens.filter((symbol) => symbol.toUpperCase() !== "{T}").length;
+    maxValue = Math.max(maxValue, manaSymbols);
+  }
+  if (/Add three mana/iu.test(text)) maxValue = Math.max(maxValue, 3);
+  if (/Add two mana/iu.test(text) || /Add any combination of/iu.test(text)) maxValue = Math.max(maxValue, 2);
+  if (/Add one mana/iu.test(text)) maxValue = Math.max(maxValue, 1);
+  return maxValue > 0 ? maxValue : undefined;
+};
+
+const detectUnconditionalEntersTapped = (text) => {
+  if (!text) return undefined;
+  const sentence = text
+    .split(/[\.\n]/)
+    .map((part) => part.trim())
+    .find((part) => /\benters(?: the battlefield)? tapped\b/i.test(part));
+  if (!sentence) return undefined;
+  if (/\b(if|unless|you may|as .* enters|choose)\b/i.test(sentence)) {
+    return false;
+  }
+  return true;
+};
+
+const metadataFromFace = (face = {}) => {
+  const typeLine = face.type_line ?? undefined;
+  const typeLower = (typeLine ?? "").toLowerCase();
+  const oracleText = typeof face.oracle_text === "string" ? face.oracle_text : undefined;
+  const manaProduction = detectManaProduction(oracleText);
+  return {
+    name: face.name,
+    typeLine,
+    oracleText,
+    manaValue: typeof face.mana_value === "number" ? face.mana_value : undefined,
+    power: parseStat(face.power),
+    toughness: parseStat(face.toughness),
+    colors: Array.isArray(face.colors) ? face.colors : undefined,
+    colorIdentity: Array.isArray(face.color_identity) ? face.color_identity : undefined,
+    isLand: typeLower.includes("land") || undefined,
+    isCreature: typeLower.includes("creature") || undefined,
+    isPermanent: PERMANENT_TYPES.some((type) => typeLower.includes(type)) || undefined,
+    entersTapped: detectUnconditionalEntersTapped(oracleText),
+    producesMana: manaProduction !== undefined || undefined,
+    manaProduction,
+  };
+};
+
+const metadataFromScryfallCard = (card, originalName) => {
+  const typeLine = card.type_line ?? card.card_faces?.[0]?.type_line ?? undefined;
+  const typeLower = (typeLine ?? "").toLowerCase();
+  const oracleText = extractOracleText(card);
+  const faces = Array.isArray(card.card_faces)
+    ? card.card_faces.map(metadataFromFace).filter((face) => face.name)
+    : [];
+  const landFace = faces.find((face) => face.isLand);
+  const spellFace = faces.find((face) => !face.isLand);
+  const manaProduction = landFace?.manaProduction ?? detectManaProduction(oracleText);
+  const meta = {
+    name: card.name ?? originalName,
+    typeLine,
+    oracleText,
+    manaValue: typeof card.mana_value === "number" ? card.mana_value : card.cmc,
+    power: parseStat(card.power ?? card.card_faces?.[0]?.power),
+    toughness: parseStat(card.toughness ?? card.card_faces?.[0]?.toughness),
+    isLand: (typeLower.includes("land") || Boolean(landFace)) || undefined,
+    isCreature: (typeLower.includes("creature") || Boolean(spellFace?.isCreature)) || undefined,
+    isArtifact: typeLower.includes("artifact") || undefined,
+    isPermanent: PERMANENT_TYPES.some((type) => typeLower.includes(type)) || undefined,
+    manaProduction,
+    producesMana: manaProduction !== undefined || undefined,
+    entersTapped: landFace?.entersTapped ?? detectUnconditionalEntersTapped(oracleText),
+    landFace,
+    spellFace,
+    colors: Array.isArray(card.colors) ? card.colors : undefined,
+    colorIdentity: Array.isArray(card.color_identity) ? card.color_identity : undefined,
+    aliases: [
+      ...(card.name && card.name !== originalName ? [originalName] : []),
+      ...faces.map((face) => face.name).filter((name) => name && name !== card.name),
+    ],
+  };
+  return meta;
+};
+
+const fetchCardMetadata = async (name) => {
+  const normalized = name.trim().toLowerCase();
+  if (!normalized) return null;
+  if (metadataCache.has(normalized)) return metadataCache.get(normalized);
+
+  try {
+    const response = await fetch(
+      `https://api.scryfall.com/cards/named?exact=${encodeURIComponent(name)}`,
+      {
+        headers: {
+          "User-Agent": "MagicBotCommander/0.1",
+          Accept: "application/json",
+        },
+      }
+    );
+    if (!response.ok) {
+      console.warn(`[api] Scryfall metadata miss ${name}: ${response.status}`);
+      return null;
+    }
+    const card = await response.json();
+    const meta = metadataFromScryfallCard(card, name);
+    metadataCache.set(normalized, meta);
+    if (meta.name) metadataCache.set(meta.name.toLowerCase(), meta);
+    await sleep(120);
+    return meta;
+  } catch (error) {
+    console.warn(`[api] Scryfall metadata fetch failed for ${name}:`, error);
+    return null;
+  }
+};
+
+const buildDeckMetadata = async (cards = []) => {
+  const unique = [...new Set(cards.map((card) => card.trim()).filter(Boolean))];
+  const batchMetadata = await fetchDeckMetadataBatch(unique);
+  if (batchMetadata.length >= Math.max(1, Math.floor(unique.length * 0.8))) {
+    return batchMetadata;
+  }
+
+  const metadata = [];
+  const seen = new Set(batchMetadata.map((entry) => entry.name?.toLowerCase()).filter(Boolean));
+  metadata.push(...batchMetadata);
+  for (const card of unique) {
+    if (seen.has(card.toLowerCase())) continue;
+    const meta = await fetchCardMetadata(card);
+    if (meta) {
+      metadata.push(meta);
+      if (meta.name) seen.add(meta.name.toLowerCase());
+    }
+  }
+  return metadata;
+};
+
+const fetchDeckMetadataBatch = async (cards = []) => {
+  const metadata = [];
+  for (let i = 0; i < cards.length; i += SCRYFALL_COLLECTION_BATCH_SIZE) {
+    const batch = cards.slice(i, i + SCRYFALL_COLLECTION_BATCH_SIZE);
+    try {
+      const response = await fetchScryfallCollection(batch);
+      if (!response.ok) {
+        console.warn(`[api] Scryfall collection metadata failed: ${response.status}`);
+        continue;
+      }
+      const payload = await response.json();
+      for (const card of payload.data ?? []) {
+        metadata.push(metadataFromScryfallCard(card, card.name));
+      }
+      await sleep(150);
+    } catch (error) {
+      console.warn("[api] Scryfall collection metadata fetch failed:", error);
+    }
+  }
+  return metadata;
+};
+
+const fetchScryfallCollection = async (batch) => {
+  const request = () =>
+    fetch("https://api.scryfall.com/cards/collection", {
+      method: "POST",
+      headers: {
+        "User-Agent": "MagicBotCommander/0.1",
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        identifiers: batch.map((name) => ({ name })),
+      }),
+    });
+
+  const first = await request();
+  if (first.status !== 429) return first;
+
+  const retryAfter = Number(first.headers.get("retry-after"));
+  const delay = Number.isFinite(retryAfter)
+    ? Math.max(1000, retryAfter * 1000)
+    : SCRYFALL_RETRY_DELAY_MS;
+  console.warn(`[api] Scryfall rate limited collection request; retrying in ${delay}ms`);
+  await sleep(delay);
+  return request();
+};
+
 const extractCards = (section = {}) => {
   const cards = [];
   Object.values(section).forEach((entry) => {
@@ -49,19 +263,32 @@ const extractSectionMetadata = (section = {}) => {
     if (map[card.name]) return; // already seen
     const typeLine = card.type_line ?? card.card_faces?.[0]?.type_line ?? undefined;
     const typeLower = (typeLine ?? "").toLowerCase();
-    const PERMANENT_TYPES = ["land", "creature", "artifact", "enchantment", "planeswalker", "battle"];
+    const oracleText = extractOracleText(card);
+    const faces = Array.isArray(card.card_faces)
+      ? card.card_faces.map(metadataFromFace).filter((face) => face.name)
+      : [];
+    const landFace = faces.find((face) => face.isLand);
+    const spellFace = faces.find((face) => !face.isLand);
+    const manaProduction = landFace?.manaProduction ?? detectManaProduction(oracleText);
     map[card.name] = {
       name: card.name,
       typeLine,
+      oracleText,
       manaValue: typeof card.cmc === "number" ? card.cmc : undefined,
       power: card.power != null && card.power !== "*" ? Number(card.power) : undefined,
       toughness: card.toughness != null && card.toughness !== "*" ? Number(card.toughness) : undefined,
-      isLand: typeLower.includes("land") || undefined,
-      isCreature: typeLower.includes("creature") || undefined,
+      isLand: (typeLower.includes("land") || Boolean(landFace)) || undefined,
+      isCreature: (typeLower.includes("creature") || Boolean(spellFace?.isCreature)) || undefined,
       isArtifact: typeLower.includes("artifact") || undefined,
       isPermanent: PERMANENT_TYPES.some((t) => typeLower.includes(t)) || undefined,
+      manaProduction,
+      producesMana: manaProduction !== undefined || undefined,
+      entersTapped: landFace?.entersTapped ?? detectUnconditionalEntersTapped(oracleText),
+      landFace,
+      spellFace,
       colors: Array.isArray(card.colors) ? card.colors : undefined,
       colorIdentity: Array.isArray(card.color_identity) ? card.color_identity : undefined,
+      aliases: faces.map((face) => face.name).filter((name) => name && name !== card.name),
     };
   });
   return map;
@@ -72,7 +299,8 @@ const isMoxfieldLink = (value = "") =>
 
 const parseDeckText = (text = "") => {
   let inSideboard = false;
-  return text
+  const cards = [];
+  text
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => {
@@ -84,12 +312,21 @@ const parseDeckText = (text = "") => {
       }
       return !inSideboard;
     })
-    .map((line) => {
-      const match = line.match(/^\d+\s+(.+?)\s+(\(|\/\/)/);
-      if (match) return match[1].trim();
-      return line.replace(/^\d+\s+/, "").split("(")[0].trim();
-    })
-    .filter(Boolean);
+    .forEach((line) => {
+      const quantityMatch = line.match(/^(\d+)\s+(.+)$/);
+      const quantity = quantityMatch ? Math.max(1, Number(quantityMatch[1])) : 1;
+      const rawName = quantityMatch ? quantityMatch[2] : line;
+      const name = rawName
+        .replace(/\s+#.*$/i, "")
+        .replace(/\s+\[[^\]]+\]\s*$/i, "")
+        .split("(")[0]
+        .trim();
+      if (!name) return;
+      for (let i = 0; i < quantity; i += 1) {
+        cards.push(name);
+      }
+    });
+  return cards;
 };
 
 const createDeckHash = (cards = []) => {
@@ -112,10 +349,13 @@ const upsertDeckRecord = async ({ cards, sourceUrl, name, commander, cardMetadat
   const existing = await prisma.deck.findUnique({ where: { cardHash } });
   if (existing) {
     // Aggiorna nome/commander/cardMetadata se ora li abbiamo e prima mancavano
+    const existingMetadataCount = Array.isArray(existing.cardMetadata)
+      ? existing.cardMetadata.length
+      : 0;
     const needsUpdate =
       (name && !existing.name) ||
       (commander && !existing.commander) ||
-      (cardMetadata?.length && !existing.cardMetadata);
+      (cardMetadata?.length && existingMetadataCount === 0);
     if (needsUpdate) {
       return prisma.deck.update({
         where: { cardHash },
@@ -201,7 +441,12 @@ const fetchMoxfieldDeck = async (url) => {
         const text = await txtRes.text();
         const cards = parseDeckText(text);
         if (cards.length > 0) {
-          return { cards, commander: cards[0] ?? null, name: null };
+          return {
+            cards,
+            cardMetadata: await buildDeckMetadata(cards),
+            commander: cards[0] ?? null,
+            name: null,
+          };
         }
       }
     }
@@ -352,6 +597,7 @@ app.post("/import-deck", async (req, res) => {
     } else {
       cards = parseDeckText(trimmed);
       deckCommander = deckCommander ?? extractCommanderFromText(trimmed);
+      cardMetadata = await buildDeckMetadata(cards);
     }
 
     if (!cards.length) {
@@ -375,6 +621,37 @@ app.post("/import-deck", async (req, res) => {
         : (error.message ?? "Errore durante l'import del deck"),
       cloudflareBlock: isCloudflareBlock,
     });
+  }
+});
+
+app.delete("/decks/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ error: "Deck id non valido" });
+  }
+
+  try {
+    const existing = await prisma.deck.findUnique({
+      where: { id },
+      select: { id: true, name: true, commander: true, cards: true },
+    });
+    if (!existing) {
+      return res.status(404).json({ error: "Deck non trovato" });
+    }
+
+    await prisma.deck.delete({ where: { id } });
+    return res.json({
+      deleted: true,
+      deck: {
+        id: existing.id,
+        name: existing.name,
+        commander: existing.commander,
+        cardCount: Array.isArray(existing.cards) ? existing.cards.length : null,
+      },
+    });
+  } catch (error) {
+    console.error("Errore cancellazione deck:", error);
+    return res.status(500).json({ error: error.message ?? "Errore cancellazione deck" });
   }
 });
 

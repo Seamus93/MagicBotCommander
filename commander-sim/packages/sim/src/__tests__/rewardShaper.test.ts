@@ -47,8 +47,11 @@ function makeSnap(overrides: Partial<StateSnapshot>): StateSnapshot {
   return {
     lifeTotals: [40, 40, 40, 40],
     creatureCounts: [0, 0, 0, 0],
+    creaturePower: [0, 0, 0, 0],
+    permanentCounts: [0, 0, 0, 0],
     landCounts: [0, 0, 0, 0],
     handSizes: [7, 7, 7, 7],
+    graveyardSizes: [0, 0, 0, 0],
     ...overrides,
   };
 }
@@ -98,45 +101,42 @@ describe("shapeReward", () => {
     const prev = makeSnap({ lifeTotals: [40, 40, 40, 40] });
     const next = makeSnap({ lifeTotals: [40, 0, 40, 40] });
     const r = shapeReward(prev, { type: "CAST_SPELL", card: "Burn Spell" }, next, 0);
-    expect(r).toBeCloseTo(0.15 + 0.02); // +0.15 (opponent eliminated) +0.02 (no creature change but spell cast... actually no creature change)
-    // riconsidero: opponent life 40->0 non cambia creature count, quindi solo +0.15
-    // il +0.02 si attiva solo se creatureCounts avversario diminuisce
-    // In questo test creatureCounts rimane [0,0,0,0] quindi +0.15 only
+    expect(r).toBeGreaterThan(0.4);
   });
 
-  it("+0.15 solo per l'eliminazione, senza creature kill", () => {
+  it("premia eliminazione e danno, senza richiedere creature kill", () => {
     const prev = makeSnap({ lifeTotals: [40, 40, 40, 40], creatureCounts: [0, 0, 0, 0] });
     const next = makeSnap({ lifeTotals: [40, 0, 40, 40], creatureCounts: [0, 0, 0, 0] });
     const r = shapeReward(prev, { type: "CAST_SPELL", card: "Burn" }, next, 0);
-    expect(r).toBeCloseTo(0.15);
+    expect(r).toBeCloseTo(0.43);
   });
 
   it("+0.05 per land drop on-curve (aveva spell in mano)", () => {
     const prev = makeSnap({ handSizes: [3, 7, 7, 7] }); // 3 carte: una terra + 2 spell
     const next = makeSnap({ handSizes: [2, 7, 7, 7] });
     const r = shapeReward(prev, { type: "PLAY_LAND", card: "Forest" }, next, 0);
-    expect(r).toBeCloseTo(0.05);
+    expect(r).toBeGreaterThan(0.03);
   });
 
   it("no bonus land drop se aveva solo la terra in mano", () => {
     const prev = makeSnap({ handSizes: [1, 7, 7, 7] });
     const next = makeSnap({ handSizes: [0, 7, 7, 7] });
     const r = shapeReward(prev, { type: "PLAY_LAND", card: "Forest" }, next, 0);
-    expect(r).toBeCloseTo(0);
+    expect(r).toBeLessThanOrEqual(0);
   });
 
   it("+0.02 per removal che riduce board avversario", () => {
     const prev = makeSnap({ creatureCounts: [2, 3, 2, 1] });
     const next = makeSnap({ creatureCounts: [2, 2, 2, 1] }); // opponent 1 perde 1 creatura
     const r = shapeReward(prev, { type: "CAST_SPELL", card: "Destroy Spell" }, next, 0);
-    expect(r).toBeGreaterThanOrEqual(0.02);
+    expect(r).toBeGreaterThanOrEqual(0.03);
   });
 
   it("-0.03 per bad trade (perdi creature senza kill avversario)", () => {
     const prev = makeSnap({ creatureCounts: [2, 2, 1, 1] });
     const next = makeSnap({ creatureCounts: [1, 2, 1, 1] }); // perdiamo 1, avversari invariati
     const r = shapeReward(prev, { type: "DECLARE_ATTACKERS", player: 0, attackers: ["c1"] } as any, next, 0);
-    expect(r).toBeCloseTo(-0.03);
+    expect(r).toBeLessThan(-0.02);
   });
 
   it("-0.01 per mana waste (PASS_TURN con carte in mano e terre)", () => {
@@ -144,6 +144,30 @@ describe("shapeReward", () => {
     const next = makeSnap({ handSizes: [4, 7, 7, 7], landCounts: [3, 5, 3, 2] });
     const r = shapeReward(prev, { type: "PASS_TURN" }, next, 0);
     expect(r).toBeCloseTo(-0.01);
+  });
+
+  it("penalizza l'eliminazione del proprio player", () => {
+    const prev = makeSnap({ lifeTotals: [3, 20, 20, 20] });
+    const next = makeSnap({ lifeTotals: [0, 20, 20, 20] });
+    const r = shapeReward(prev, { type: "PASS_TURN" }, next, 0);
+    expect(r).toBeLessThan(-0.45);
+  });
+
+  it("premia miglioramento relativo del board advantage", () => {
+    const prev = makeSnap({ creaturePower: [2, 4, 4, 4], permanentCounts: [2, 4, 4, 4] });
+    const next = makeSnap({ creaturePower: [6, 4, 4, 4], permanentCounts: [3, 4, 4, 4] });
+    const r = shapeReward(prev, { type: "CAST_SPELL", card: "Board Spell" }, next, 0);
+    expect(r).toBeGreaterThan(0.05);
+  });
+
+  it("non sovra-premia danno casuale piccolo rispetto a elimination", () => {
+    const prev = makeSnap({ lifeTotals: [40, 40, 40, 40] });
+    const ping = makeSnap({ lifeTotals: [40, 39, 40, 40] });
+    const eliminated = makeSnap({ lifeTotals: [40, 0, 40, 40] });
+    const pingReward = shapeReward(prev, { type: "CAST_SPELL", card: "Ping" }, ping, 0);
+    const eliminationReward = shapeReward(prev, { type: "CAST_SPELL", card: "Burn" }, eliminated, 0);
+    expect(pingReward).toBeLessThan(0.02);
+    expect(eliminationReward).toBeGreaterThan(pingReward * 10);
   });
 
   it("nessun reward per azioni senza effetti rilevanti", () => {

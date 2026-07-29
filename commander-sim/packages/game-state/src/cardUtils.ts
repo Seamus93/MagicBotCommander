@@ -15,6 +15,34 @@ const PERMANENT_CARD_TYPES = [
   "battle",
 ];
 
+const KNOWN_NONBASIC_LANDS = new Set([
+  "arena of glory",
+  "bad river",
+  "boggart trawler / boggart bog",
+  "cascade bluffs",
+  "command beacon",
+  "command tower",
+  "crosis's catacombs",
+  "dimir aqueduct",
+  "drowned catacomb",
+  "exotic orchard",
+  "fabled passage",
+  "glasspool mimic / glasspool shore",
+  "graven cairns",
+  "haunted ridge",
+  "high market",
+  "malakir rebirth / malakir mire",
+  "opal palace",
+  "phyrexian tower",
+  "pinnacle monk / mystic peak",
+  "reflecting pool",
+  "rocky tar pit",
+  "shipwreck marsh",
+  "steam vents",
+  "stormcarved coast",
+  "sunken ruins",
+]);
+
 export function normalizeCardName(card: string) {
   if (typeof card !== "string") return "";
   return card.trim().toLowerCase();
@@ -40,12 +68,29 @@ export function getCardMetadata(
   return undefined;
 }
 
+export function getLandFaceMetadata(metadata?: DeckCardMetadata) {
+  return metadata?.landFace;
+}
+
+export function getSpellFaceMetadata(metadata?: DeckCardMetadata) {
+  return metadata?.spellFace;
+}
+
+export function getLandPermanentName(card: CardName, metadata?: DeckCardMetadata) {
+  return metadata?.landFace?.name ?? metadata?.name ?? card;
+}
+
+export function getSpellPermanentName(card: CardName, metadata?: DeckCardMetadata) {
+  return metadata?.spellFace?.name ?? metadata?.name ?? card;
+}
+
 export function isLandCard(
   state: SimGameState,
   player: number,
   card: CardName
 ) {
   const metadata = getCardMetadata(state, player, card);
+  if (metadata?.landFace) return true;
   if (metadata?.isLand !== undefined) return metadata.isLand;
   if (metadata?.typeLine?.toLowerCase().includes("land")) return true;
   const normalized = normalizeCardName(card);
@@ -57,10 +102,44 @@ export function isLandCard(
   if (normalized === "mountain") return true;
   if (normalized === "forest") return true;
   if (normalized === "wastes") return true;
+  if (KNOWN_NONBASIC_LANDS.has(normalized)) return true;
   if (/^snow-covered (plains|island|swamp|mountain|forest)$/i.test(normalized)) {
     return true;
   }
   return false;
+}
+
+export function isCastableSpellCard(
+  state: SimGameState,
+  player: number,
+  card: CardName
+) {
+  const metadata = getCardMetadata(state, player, card);
+  if (metadata?.spellFace) return true;
+  return !isLandCard(state, player, card);
+}
+
+function detectUnconditionalEntersTapped(text?: string) {
+  if (!text) return undefined;
+  const sentence = text
+    .split(/[\.\n]/)
+    .map((part) => part.trim())
+    .find((part) => /\benters(?: the battlefield)? tapped\b/i.test(part));
+  if (!sentence) return undefined;
+  if (/\b(if|unless|you may|as .* enters|choose)\b/i.test(sentence)) {
+    return false;
+  }
+  return true;
+}
+
+export function landEntersTapped(metadata?: DeckCardMetadata) {
+  return (
+    metadata?.landFace?.entersTapped ??
+    metadata?.entersTapped ??
+    detectUnconditionalEntersTapped(metadata?.landFace?.oracleText) ??
+    detectUnconditionalEntersTapped(metadata?.oracleText) ??
+    false
+  );
 }
 
 export function isPermanentCard(card: CardName, metadata?: DeckCardMetadata) {
@@ -154,9 +233,17 @@ export function getAvailableMana(
   state: SimGameState,
   playerIndex: number
 ) {
-  const lands = (state.battlefields[playerIndex] ?? []).filter((c) =>
-    isLandCard(state, playerIndex, c)
-  ).length;
+  const tapped = { ...(state.tappedPermanents?.[playerIndex] ?? {}) };
+  const lands = (state.battlefields[playerIndex] ?? []).filter((card) => {
+    if (!isLandCard(state, playerIndex, card)) return false;
+    const key = normalizeCardName(card);
+    const tappedCount = tapped[key] ?? 0;
+    if (tappedCount > 0) {
+      tapped[key] = tappedCount - 1;
+      return false;
+    }
+    return true;
+  }).length;
   const artifactMana = state.artifactMana[playerIndex] ?? 0;
   const spent = state.manaSpent?.[playerIndex] ?? 0;
   return Math.max(0, lands + artifactMana - spent);

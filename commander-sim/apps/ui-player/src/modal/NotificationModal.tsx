@@ -1,5 +1,4 @@
 // components/Snackbar.tsx
-import React from "react";
 
 interface SnackbarProps {
   message: string;

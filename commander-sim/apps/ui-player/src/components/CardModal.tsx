@@ -1,5 +1,5 @@
 // components/CardModal.tsx
-import React, { forwardRef, useImperativeHandle, useRef } from "react";
+import { forwardRef, useImperativeHandle, useRef } from "react";
 import type { CardDetail, ComboData } from "../types/cards";
 
 interface CardModalProps {

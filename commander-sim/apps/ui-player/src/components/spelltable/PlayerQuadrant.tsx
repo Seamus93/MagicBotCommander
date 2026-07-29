@@ -11,6 +11,7 @@ export interface QuadrantPlayerData {
   life: number;
   commander: string | null;
   battlefield: string[];
+  battlefieldPermanents?: Array<{ name: string; tapped: boolean }>;
   creatures?: Array<{
     id: string;
     name: string;
@@ -299,16 +300,20 @@ export default function PlayerQuadrant({
   const creatures = player.creatures ?? [];
   const handCards = player.hand ?? [];
   const creatureNames = new Set(creatures.map((c) => c.name));
-  const nonCreatureBf = player.battlefield.filter((c) => !creatureNames.has(c));
-  const typeMap = useCardTypeMap(nonCreatureBf);
+  const battlefieldPermanents =
+    player.battlefieldPermanents ??
+    player.battlefield.map((name) => ({ name, tapped: false }));
+  const nonCreatureBf = battlefieldPermanents.filter((c) => !creatureNames.has(c.name));
+  const nonCreatureNames = nonCreatureBf.map((c) => c.name);
+  const typeMap = useCardTypeMap(nonCreatureNames);
 
   const groupedBattlefield = useMemo(() => {
-    const lands: string[] = [];
-    const artifacts: string[] = [];
-    const support: string[] = [];
+    const lands: Array<{ name: string; tapped: boolean }> = [];
+    const artifacts: Array<{ name: string; tapped: boolean }> = [];
+    const support: Array<{ name: string; tapped: boolean }> = [];
 
     nonCreatureBf.forEach((card) => {
-      const group = groupNonCreatureCard(typeMap[card]);
+      const group = groupNonCreatureCard(typeMap[card.name]);
       if (group === "land") lands.push(card);
       else if (group === "artifact") artifacts.push(card);
       else support.push(card);
@@ -633,8 +638,9 @@ export default function PlayerQuadrant({
                   <div className="flex flex-wrap gap-1">
                     {groupedBattlefield.lands.map((card, index) => (
                       <CardImage
-                        key={`land-${card}-${index}`}
-                        name={card}
+                        key={`land-${card.name}-${index}`}
+                        name={card.name}
+                        tapped={card.tapped}
                         className="w-14"
                         onDoubleClick={onCardDoubleClick}
                       />
@@ -654,8 +660,9 @@ export default function PlayerQuadrant({
                   <div className="flex flex-wrap gap-1">
                     {groupedBattlefield.support.map((card, index) => (
                       <CardImage
-                        key={`support-${card}-${index}`}
-                        name={card}
+                        key={`support-${card.name}-${index}`}
+                        name={card.name}
+                        tapped={card.tapped}
                         className="w-14"
                         onDoubleClick={onCardDoubleClick}
                       />
@@ -673,8 +680,9 @@ export default function PlayerQuadrant({
                   <div className="flex flex-wrap gap-1">
                     {groupedBattlefield.artifacts.map((card, index) => (
                       <CardImage
-                        key={`artifact-${card}-${index}`}
-                        name={card}
+                        key={`artifact-${card.name}-${index}`}
+                        name={card.name}
+                        tapped={card.tapped}
                         className="w-14"
                         onDoubleClick={onCardDoubleClick}
                       />

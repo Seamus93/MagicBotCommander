@@ -13,11 +13,19 @@ import { publishSharedGameSession } from "../hooks/useSharedGameSession";
 
 const GAME_SERVER_URL = (import.meta.env.VITE_GAME_SERVER_URL as string | undefined) ?? "http://localhost:5300";
 
-interface DbDeck { id: number; name: string | null; commander: string | null }
+interface DbDeck {
+  id: number;
+  name: string | null;
+  commander: string | null;
+  cardCount?: number | null;
+  metadataCount?: number | null;
+}
 
 function GameLobby({ onStart }: { onStart: (humanDeckId: number | null, aiDeckIds: number[]) => void }) {
   const [dbDecks, setDbDecks] = useState<DbDeck[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [aiSelections, setAiSelections] = useState<[number | null, number | null, number | null]>([null, null, null]);
   const viewerState = useViewerState(1500);
 
@@ -44,6 +52,29 @@ function GameLobby({ onStart }: { onStart: (humanDeckId: number | null, aiDeckId
 
   const setSlot = (i: 0 | 1 | 2, id: number | null) =>
     setAiSelections((prev) => { const n = [...prev] as typeof prev; n[i] = id; return n; });
+
+  const deleteDeck = async (deck: DbDeck) => {
+    const label = deck.name ?? deck.commander ?? `Deck #${deck.id}`;
+    if (!window.confirm(`Eliminare "${label}" dal database?`)) return;
+    setDeletingId(deck.id);
+    setDeleteError(null);
+    try {
+      const response = await fetch(`${GAME_SERVER_URL}/game/decks/${deck.id}`, { method: "DELETE" });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(payload?.error ?? "Impossibile eliminare il deck.");
+      }
+      setDbDecks((prev) => prev.filter((item) => item.id !== deck.id));
+      setAiSelections((prev) => prev.map((id) => (id === deck.id ? null : id)) as typeof prev);
+      if (deck.id === myDeckId) {
+        localStorage.removeItem("savedDeckId");
+      }
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : "Errore cancellazione deck");
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   const aiLabels = ["AI Nord", "AI Est", "AI Ovest"];
   const aiColors = ["text-red-400", "text-emerald-400", "text-violet-400"];
@@ -90,6 +121,7 @@ function GameLobby({ onStart }: { onStart: (humanDeckId: number | null, aiDeckId
                       <option key={d.id} value={d.id}>
                         {isMyDeck ? "★ " : ""}{displayName}
                         {displayCommander && displayCommander !== displayName ? ` — ${displayCommander}` : ""}
+                        {typeof d.cardCount === "number" ? ` · ${d.cardCount} carte` : ""}
                         {isMyDeck ? " (Il tuo mazzo)" : ""}
                       </option>
                     );
@@ -97,6 +129,34 @@ function GameLobby({ onStart }: { onStart: (humanDeckId: number | null, aiDeckId
                 </select>
               </div>
             ))}
+          </div>
+        )}
+
+        {!loading && dbDecks.length > 0 && (
+          <div className="mb-5 max-h-36 overflow-auto rounded-lg border border-gray-700 bg-gray-900/70 p-2">
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Gestione DB</div>
+            {deleteError && <div className="mb-2 text-xs text-red-300">{deleteError}</div>}
+            <div className="space-y-1">
+              {dbDecks.map((deck) => {
+                const label = deck.name ?? deck.commander ?? `Deck #${deck.id}`;
+                return (
+                  <div key={deck.id} className="flex items-center justify-between gap-2 rounded bg-gray-800/70 px-2 py-1 text-xs">
+                    <span className="min-w-0 truncate">
+                      #{deck.id} {label}
+                      {typeof deck.cardCount === "number" ? ` · ${deck.cardCount} carte` : ""}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => deleteDeck(deck)}
+                      disabled={deletingId === deck.id}
+                      className="shrink-0 rounded border border-red-800/70 px-2 py-0.5 text-red-300 hover:bg-red-950 disabled:opacity-50"
+                    >
+                      {deletingId === deck.id ? "..." : "Elimina"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
 

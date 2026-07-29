@@ -9,13 +9,16 @@ import { DecisionTreeAgent } from "./decisionTreeAgent.js";
 import { AiDecisionAgent } from "./aiDecisionAgent.js";
 import { NeuralAgent, createNeuralAgent } from "./neuralAgent.js";
 import { simulateGame } from "./engine.js";
+import { terminalRewardForPlayer } from "./rewardShaper.js";
 import type { DeckCardMetadata, SimulationResult } from "@game-state/types";
 import {
   closeDb,
   createSimulationRun,
   loadPolicyStore,
   persistEpisode,
+  shouldPersistEpisodeReplay,
   upsertPolicyRecords,
+  updateSimulationRunSummary,
   upsertDeck,
   getDeckById,
   updateDeckMetadata,
@@ -48,8 +51,12 @@ const shouldStorePolicyFile =
     : process.env.STORE_POLICY_FILE === "true";
 const shouldStoreDatasetFile =
   process.env.STORE_DATASET_FILE === undefined
-    ? !shouldStoreDb
+    ? false
     : process.env.STORE_DATASET_FILE === "true";
+const policyFlushEveryEpisodes = Math.max(
+  1,
+  Number(process.env.POLICY_FLUSH_EVERY_EPISODES ?? 50)
+);
 const decksEnv = process.env.DECK_PATHS;
 const deckIdsEnv = process.env.DECK_IDS
   ? process.env.DECK_IDS.split(",")
@@ -64,7 +71,7 @@ const useCurriculum = process.env.USE_CURRICULUM === "true";
 
 // Phase 4 — MATCHUP_MODE: mirror | round-robin | random
 type MatchupMode = "mirror" | "round-robin" | "random";
-const matchupMode: MatchupMode = (() => {
+let matchupMode: MatchupMode = (() => {
   const raw = (process.env.MATCHUP_MODE ?? "mirror").toLowerCase().trim();
   if (raw === "round-robin") return "round-robin";
   if (raw === "random") return "random";
@@ -97,6 +104,31 @@ const decisionTreeConfidence = parseOptionalNumber(
 const decisionTreeMinVisits = parseOptionalNumber(
   process.env.DECISION_TREE_MIN_VISITS
 );
+const decisionTreeConfidenceK = parseOptionalNumber(
+  process.env.DECISION_TREE_CONFIDENCE_K
+);
+
+type TrainingMetrics = {
+  exactHits: number;
+  fuzzyHits: number;
+  heuristicFallbacks: number;
+  explorations: number;
+  decisions: number;
+  expectedRewardSum: number;
+  confidenceSum: number;
+  visitsSum: number;
+  actionTypes: Record<string, number>;
+  archetypeWins: Record<string, { wins: number; games: number }>;
+  missedLandDropOpportunity: number;
+  lethalMissed: number;
+  anomalousEpisodes: number;
+  replayEpisodesStored: number;
+  episodeStepRowsStored: number;
+  policyDbWrites: number;
+  policyFlushes: number;
+  approximatePolicyBytes: number;
+  approximateReplayBytes: number;
+};
 
 // Phase 4 — assegna i deck ai player per l'episodio corrente
 function assignDecksForEpisode(
@@ -157,7 +189,7 @@ async function main() {
           commander: record.commander ?? undefined,
           cards,
           cardMetadata: Array.isArray(record.cardMetadata)
-            ? (record.cardMetadata as DeckCardMetadata[])
+            ? (record.cardMetadata as unknown as DeckCardMetadata[])
             : undefined,
         };
       })
@@ -173,6 +205,9 @@ async function main() {
   // Mirror mode con un solo deck: mantieni 1 deck (assignDecksForEpisode lo replica)
   if (decks.length === 0) {
     decks = [{ name: "DefaultDeck", cards: [] }];
+  }
+  if (!process.env.MATCHUP_MODE && decks.length > 1) {
+    matchupMode = "round-robin";
   }
 
   // Arricchisci metadata mancanti
@@ -217,6 +252,12 @@ async function main() {
   console.log(
     `[batch] policy_source=${shouldStoreDb ? "db" : "file"} | dataset_file=${shouldStoreDatasetFile ? "on" : "off"}`
   );
+  console.log(
+    `[batch] storage EPISODE_STEP_STORAGE=${process.env.EPISODE_STEP_STORAGE ?? "off"} ` +
+    `EPISODE_SAMPLE_RATE=${process.env.EPISODE_SAMPLE_RATE ?? "0.01"} ` +
+    `SAVE_ANOMALOUS_EPISODES=${process.env.SAVE_ANOMALOUS_EPISODES ?? "true"} ` +
+    `POLICY_FLUSH_EVERY_EPISODES=${policyFlushEveryEpisodes}`
+  );
   console.log(`[batch] Decks disponibili:`);
   decks.forEach((d, i) =>
     console.log(`  Deck[${i}] "${d.name ?? "?"}" → archetype=${deckArchetypes[i]}`)
@@ -237,6 +278,7 @@ async function main() {
       id: `Agent-${idx}`,
       store,
       epsilon: 0.15,
+      confidenceK: decisionTreeConfidenceK,
       archetype: arch,
       opponentArchetypes: opponentArchs,
     };
@@ -272,6 +314,27 @@ async function main() {
   });
 
   const wins = Array(PLAYER_COUNT).fill(0);
+  const metrics: TrainingMetrics = {
+    exactHits: 0,
+    fuzzyHits: 0,
+    heuristicFallbacks: 0,
+    explorations: 0,
+    decisions: 0,
+    expectedRewardSum: 0,
+    confidenceSum: 0,
+    visitsSum: 0,
+    actionTypes: {},
+    archetypeWins: {},
+    missedLandDropOpportunity: 0,
+    lethalMissed: 0,
+    anomalousEpisodes: 0,
+    replayEpisodesStored: 0,
+    episodeStepRowsStored: 0,
+    policyDbWrites: 0,
+    policyFlushes: 0,
+    approximatePolicyBytes: 0,
+    approximateReplayBytes: 0,
+  };
   const runRow = shouldStoreDb
     ? await createSimulationRun({
         episodes,
@@ -347,10 +410,22 @@ async function main() {
       appendDataset(datasetPath, result, i);
     }
     if (shouldStoreDb && runRow) {
-      await persistEpisode(runRow.id, i, result);
+      const replayDecision = shouldPersistEpisodeReplay(result, i);
+      if (replayDecision.storeEpisode) {
+        await persistEpisode(runRow.id, i, result, replayDecision);
+        metrics.replayEpisodesStored += 1;
+        metrics.episodeStepRowsStored += replayDecision.storeSteps ? result.history.length : 0;
+        metrics.approximateReplayBytes += approximateReplayBytes(result, replayDecision.storageMode);
+        if (replayDecision.reason === "anomaly") metrics.anomalousEpisodes += 1;
+      }
     }
     if (result.winnerIndex !== null) {
       wins[result.winnerIndex] += 1;
+    }
+    updateTrainingMetrics(metrics, result, assignment.map((a) => a.archetype));
+
+    if (shouldStoreDb && (i + 1) % policyFlushEveryEpisodes === 0) {
+      await flushPolicy(runRow?.id ?? null, store, metrics);
     }
 
     // Phase 4 — aggiorna MatchupStats per ogni coppia di archetipi
@@ -370,6 +445,7 @@ async function main() {
 
     if ((i + 1) % 10 === 0) {
       console.log(`Completed ${i + 1}/${episodes} episodes`);
+      console.log(formatTrainingMetrics(metrics));
       // Phase 6 — Curriculum: log current weakness areas
       if (curriculumScheduler && (i + 1) % 50 === 0) {
         try {
@@ -434,7 +510,10 @@ async function main() {
   }
 
   if (shouldStoreDb) {
-    await upsertPolicyRecords(runRow?.id ?? null, store);
+    await flushPolicy(runRow?.id ?? null, store, metrics);
+    if (runRow) {
+      await updateSimulationRunSummary(runRow.id, summarizeTrainingMetrics(metrics, episodes), summarizeStorage(metrics, store));
+    }
   }
   if (shouldStorePolicyFile) {
     store.save(policyPath);
@@ -444,6 +523,8 @@ async function main() {
   }
   await closeDb();
   console.log("Training complete. Win distribution:", wins);
+  console.log(formatTrainingMetrics(metrics));
+  console.log(formatStorageMetrics(metrics, store, episodes));
 }
 
 function appendDataset(
@@ -454,12 +535,11 @@ function appendDataset(
   const dir = path.dirname(targetPath);
   fs.mkdirSync(dir, { recursive: true });
   const lines = result.history.map((entry, step) => {
-    const reward =
-      result.winnerIndex === null
-        ? 0
-        : entry.playerIndex === result.winnerIndex
-          ? 1
-          : -1;
+    const reward = terminalRewardForPlayer(
+      result.winnerIndex,
+      entry.playerIndex,
+      result.finalState.lifeTotals
+    );
     return JSON.stringify({
       episode: episodeIndex,
       step,
@@ -477,6 +557,174 @@ function appendDataset(
   if (lines.length) {
     fs.appendFileSync(targetPath, lines.join("\n") + "\n", "utf8");
   }
+}
+
+function updateTrainingMetrics(
+  metrics: TrainingMetrics,
+  result: SimulationResult,
+  archetypes: string[]
+) {
+  for (const archetype of archetypes) {
+    metrics.archetypeWins[archetype] ??= { wins: 0, games: 0 };
+    metrics.archetypeWins[archetype].games += 1;
+  }
+  if (result.winnerIndex !== null) {
+    const winnerArch = archetypes[result.winnerIndex] ?? "Unknown";
+    metrics.archetypeWins[winnerArch] ??= { wins: 0, games: 0 };
+    metrics.archetypeWins[winnerArch].wins += 1;
+  }
+  metrics.missedLandDropOpportunity += result.metrics?.missedLandDropOpportunity ?? 0;
+
+  for (const entry of result.history) {
+    metrics.decisions += 1;
+    metrics.actionTypes[entry.action.type] = (metrics.actionTypes[entry.action.type] ?? 0) + 1;
+    const meta = entry.metadata;
+    if (!meta) continue;
+    if (meta.source === "exact") metrics.exactHits += 1;
+    if (meta.source === "fuzzy") metrics.fuzzyHits += 1;
+    if (meta.source === "heuristic" || meta.source === "fallback") metrics.heuristicFallbacks += 1;
+    if (meta.source === "explore") metrics.explorations += 1;
+    metrics.expectedRewardSum += meta.expectedReward ?? 0;
+    metrics.confidenceSum += meta.confidence ?? 0;
+    metrics.visitsSum = (metrics.visitsSum ?? 0) + (meta.visits ?? 0);
+    if (entry.action.type === "DECLARE_ATTACKERS" && isMissedLethal(entry)) {
+      metrics.lethalMissed += 1;
+    }
+  }
+}
+
+function formatTrainingMetrics(metrics: TrainingMetrics): string {
+  const decisions = Math.max(1, metrics.decisions);
+  const rate = (value: number) => `${((value / decisions) * 100).toFixed(1)}%`;
+  const archetypes = Object.entries(metrics.archetypeWins)
+    .map(([arch, stats]) => `${arch}:${((stats.wins / Math.max(1, stats.games)) * 100).toFixed(1)}%`)
+    .join(", ");
+  const actionTypes = Object.entries(metrics.actionTypes)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([type, count]) => `${type}:${count}`)
+    .join(", ");
+  return (
+    `[metrics] exact=${rate(metrics.exactHits)} fuzzy=${rate(metrics.fuzzyHits)} ` +
+    `heuristic=${rate(metrics.heuristicFallbacks)} explore=${rate(metrics.explorations)} ` +
+    `avgExpected=${(metrics.expectedRewardSum / decisions).toFixed(3)} ` +
+    `avgConfidence=${(metrics.confidenceSum / decisions).toFixed(3)} ` +
+    `avgVisits=${(metrics.visitsSum / decisions).toFixed(1)} ` +
+    `missedLandDrops=${metrics.missedLandDropOpportunity} lethalMissed=${metrics.lethalMissed} ` +
+    `archetypeWR=[${archetypes}] actions=[${actionTypes}]`
+  );
+}
+
+async function flushPolicy(
+  runId: number | null,
+  store: PatternStore,
+  metrics: TrainingMetrics
+) {
+  if (store.dirtyCount === 0) return;
+  const stats = await upsertPolicyRecords(runId, store, { dirtyOnly: true });
+  metrics.policyDbWrites += stats.recordsUpdated;
+  metrics.policyFlushes += stats.recordsUpdated > 0 ? 1 : 0;
+  metrics.approximatePolicyBytes += stats.approximatePolicyBytes;
+}
+
+function summarizeTrainingMetrics(metrics: TrainingMetrics, episodes: number) {
+  const decisions = Math.max(1, metrics.decisions);
+  return {
+    episodes,
+    decisions: metrics.decisions,
+    exactHitRate: metrics.exactHits / decisions,
+    fuzzyHitRate: metrics.fuzzyHits / decisions,
+    heuristicFallbackRate: metrics.heuristicFallbacks / decisions,
+    explorationRate: metrics.explorations / decisions,
+    avgExpectedReward: metrics.expectedRewardSum / decisions,
+    avgConfidence: metrics.confidenceSum / decisions,
+    avgVisits: metrics.visitsSum / decisions,
+    missedLandDropOpportunity: metrics.missedLandDropOpportunity,
+    lethalMissed: metrics.lethalMissed,
+    actionCounts: metrics.actionTypes,
+    archetypeWins: metrics.archetypeWins,
+    anomalousEpisodes: metrics.anomalousEpisodes,
+  };
+}
+
+function summarizeStorage(
+  metrics: TrainingMetrics,
+  store: PatternStore
+) {
+  const policyRecordCount = store.entries().length;
+  return {
+    policyRecordCount,
+    episodeStepCount: metrics.episodeStepRowsStored,
+    storedReplayCount: metrics.replayEpisodesStored,
+    approximatePolicyBytes: approximateJsonBytes(store.entries()),
+    approximateReplayBytes: metrics.approximateReplayBytes,
+    policyDbWrites: metrics.policyDbWrites,
+    policyFlushes: metrics.policyFlushes,
+    recordsUpdatedPerFlush:
+      metrics.policyDbWrites / Math.max(1, metrics.policyFlushes),
+  };
+}
+
+function formatStorageMetrics(
+  metrics: TrainingMetrics,
+  store: PatternStore,
+  episodes: number
+): string {
+  const summary = summarizeStorage(metrics, store);
+  return (
+    `[storage] episodes=${episodes} decisions=${metrics.decisions} ` +
+    `policyRecords=${summary.policyRecordCount} replayEpisodes=${summary.storedReplayCount} ` +
+    `episodeStepRows=${summary.episodeStepCount} policyDbWrites=${summary.policyDbWrites} ` +
+    `dbWritesPerEpisode=${(summary.policyDbWrites / Math.max(1, episodes)).toFixed(2)} ` +
+    `recordsPerFlush=${summary.recordsUpdatedPerFlush.toFixed(1)} ` +
+    `approxPolicyBytes=${summary.approximatePolicyBytes} approxReplayBytes=${summary.approximateReplayBytes} ` +
+    `mode=${process.env.EPISODE_STEP_STORAGE ?? "off"} sample=${process.env.EPISODE_SAMPLE_RATE ?? "0.01"} ` +
+    `anomaly=${process.env.SAVE_ANOMALOUS_EPISODES ?? "true"}`
+  );
+}
+
+function approximateReplayBytes(
+  result: SimulationResult,
+  mode: "off" | "digest" | "full"
+): number {
+  if (mode === "off") {
+    return approximateJsonBytes({
+      winnerIndex: result.winnerIndex,
+      turns: result.turns,
+      finalStateDigest: result.finalState,
+    });
+  }
+  if (mode === "digest") {
+    return approximateJsonBytes({
+      winnerIndex: result.winnerIndex,
+      turns: result.turns,
+      steps: result.history.map((entry) => ({
+        playerIndex: entry.playerIndex,
+        action: entry.action,
+        metadata: entry.metadata,
+      })),
+    });
+  }
+  return approximateJsonBytes(result);
+}
+
+function approximateJsonBytes(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+function isMissedLethal(entry: SimulationResult["history"][number]): boolean {
+  if (entry.action.type !== "DECLARE_ATTACKERS") return false;
+  const readyAttackers = entry.state.creatures[entry.playerIndex]?.filter(
+    (creature) => !creature.tapped && !creature.summoningSickness
+  ) ?? [];
+  const readyPower = readyAttackers.reduce((sum, creature) => sum + creature.power, 0);
+  const lowestOpponentLife = entry.state.lifeTotals
+    .filter((_life, idx) => idx !== entry.playerIndex)
+    .reduce((lowest, life) => Math.min(lowest, life), Number.POSITIVE_INFINITY);
+  if (!Number.isFinite(lowestOpponentLife) || readyPower < lowestOpponentLife) return false;
+  const chosenPower = readyAttackers
+    .filter((creature) => entry.action.type === "DECLARE_ATTACKERS" && entry.action.attackers.includes(creature.id))
+    .reduce((sum, creature) => sum + creature.power, 0);
+  return chosenPower < lowestOpponentLife;
 }
 
 function loadDeckFromFile(filePath: string): string[] {

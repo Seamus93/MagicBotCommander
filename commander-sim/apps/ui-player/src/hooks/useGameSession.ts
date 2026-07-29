@@ -20,6 +20,7 @@ export interface FilteredPlayerState {
   life: number;
   commander: string;
   battlefield: string[];
+  battlefieldPermanents?: Array<{ name: string; tapped: boolean }>;
   creatures: CreaturePermanent[];
   graveyard: string[];
   exile: string[];

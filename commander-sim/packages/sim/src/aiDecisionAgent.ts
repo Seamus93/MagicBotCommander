@@ -1,8 +1,8 @@
 import type {
   AgentDecision,
+  EpisodeActionContext,
   SimAction,
   SimGameState,
-  StateDigest,
 } from "@game-state/types";
 import { DecisionTreeAgent } from "./decisionTreeAgent.js";
 import type { DecisionTreeAgentOptions } from "./decisionTreeAgent.js";
@@ -17,7 +17,7 @@ export interface AiDecisionAgentOptions extends DecisionTreeAgentOptions {
 
 /**
  * Usa il decision tree locale quando c'è sufficiente confidenza.
- * In caso contrario chiede ad un endpoint esterno (es. Puter) quale azione compiere.
+ * In caso contrario chiede ad un endpoint AI esterno quale azione compiere.
  * La decisione AI viene registrata nel pattern store per raffinare il modello.
  */
 export class AiDecisionAgent extends DecisionTreeAgent {
@@ -49,10 +49,12 @@ export class AiDecisionAgent extends DecisionTreeAgent {
       return {
         action: deterministic.action,
         metadata: {
-          source: "decision_tree",
+          source: deterministic.source,
           pattern: deterministic.pattern,
           actionKey: deterministic.key,
-          confidence: deterministic.score,
+          expectedReward: deterministic.expectedReward,
+          confidence: deterministic.confidence,
+          visits: deterministic.visits,
         },
       };
     }
@@ -70,7 +72,9 @@ export class AiDecisionAgent extends DecisionTreeAgent {
           source: "ai",
           pattern: entry.pattern,
           actionKey: entry.key,
-          confidence: entry.score,
+          expectedReward: entry.expectedReward,
+          confidence: entry.confidence,
+          visits: entry.visits,
           reasoning,
         },
       };
@@ -86,7 +90,7 @@ export class AiDecisionAgent extends DecisionTreeAgent {
   ): Promise<{ entry: ScoredAction; reasoning?: string } | null> {
     try {
       const digest = buildStateDigest(state);
-      let contextActions = [];
+      let contextActions: EpisodeActionContext[] = [];
       try {
         contextActions = await fetchEpisodeContexts(digest);
       } catch (err) {

@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PatternStore } from "@sim/patterns";
+import { loadTrainedPolicyStore, type PolicySource } from "@sim/policyLoader";
 import { DecisionTreeAgent } from "@sim/decisionTreeAgent";
 import { NeuralAgent } from "@sim/neuralAgent";
 import type { CardName, DeckCardMetadata, SimAction, SimGameState } from "@game-state/types";
@@ -12,7 +13,7 @@ import { getCardMetadata, normalizeCardName, isLandCard } from "@game-state/card
 import { scoreArchetypeCategory } from "@rules/archetypeMatcher";
 import { loadModel, latestModel } from "@neural/modelManager";
 import type { PolicyNet } from "@neural/policyNet";
-import { getPolicyStoreVersion, getPrisma, loadPolicyStore } from "@db/db";
+import { getPrisma } from "@db/db";
 
 type UiState = {
   turn: number;
@@ -50,6 +51,33 @@ const POLICY_PATH =
 const NEURAL_MODEL_DIR =
   process.env.NEURAL_MODEL_PATH ??
   path.resolve(__dirname, "../../data");
+const KNOWN_NONBASIC_LANDS = new Set([
+  "arena of glory",
+  "bad river",
+  "boggart trawler / boggart bog",
+  "cascade bluffs",
+  "command beacon",
+  "command tower",
+  "crosis's catacombs",
+  "dimir aqueduct",
+  "drowned catacomb",
+  "exotic orchard",
+  "fabled passage",
+  "glasspool mimic / glasspool shore",
+  "graven cairns",
+  "haunted ridge",
+  "high market",
+  "malakir rebirth / malakir mire",
+  "opal palace",
+  "phyrexian tower",
+  "pinnacle monk / mystic peak",
+  "reflecting pool",
+  "rocky tar pit",
+  "shipwreck marsh",
+  "steam vents",
+  "stormcarved coast",
+  "sunken ruins",
+]);
 
 const app = express();
 app.use(cors({ origin: true }));
@@ -68,37 +96,32 @@ function warnDbUnavailable(error: unknown) {
 
 let cachedStore: PatternStore | null = null;
 let cachedMtimeMs: number | null = null;
-let cachedPolicyVersion: string | null = null;
+let cachedPolicySource: PolicySource | null = null;
 
 async function loadPolicyStoreForServer(): Promise<PatternStore> {
-  if (prisma) {
-    try {
-      const version = await getPolicyStoreVersion();
-      const versionKey = `${version.count}:${version.updatedAt?.toISOString() ?? "none"}`;
-      if (cachedStore && cachedPolicyVersion === versionKey) {
-        return cachedStore;
-      }
-      cachedStore = await loadPolicyStore();
-      cachedPolicyVersion = versionKey;
-      cachedMtimeMs = null;
-      return cachedStore;
-    } catch (error) {
-      warnDbUnavailable(error);
-    }
-  }
-
   try {
-    const stat = fs.statSync(POLICY_PATH);
-    if (cachedStore && cachedMtimeMs === stat.mtimeMs) {
+    const stat = fs.existsSync(POLICY_PATH) ? fs.statSync(POLICY_PATH) : null;
+    if (cachedStore && cachedPolicySource === "file" && cachedMtimeMs === stat?.mtimeMs) {
       return cachedStore;
     }
-    cachedStore = PatternStore.load(POLICY_PATH);
-    cachedMtimeMs = stat.mtimeMs;
+    const loaded = await loadTrainedPolicyStore({
+      policyPath: POLICY_PATH,
+      preferDb: Boolean(prisma),
+      log: (message) => console.log(`[ai-server] ${message}`),
+    });
+    cachedStore = loaded.store;
+    cachedPolicySource = loaded.source;
+    cachedMtimeMs = loaded.source === "file" ? stat?.mtimeMs ?? null : null;
     return cachedStore;
-  } catch {
+  } catch (error) {
+    if (prisma) warnDbUnavailable(error);
+    if (process.env.ALLOW_EMPTY_POLICY_FALLBACK !== "true") {
+      throw error;
+    }
     cachedStore = new PatternStore();
     cachedMtimeMs = null;
-    cachedPolicyVersion = null;
+    cachedPolicySource = "empty-fallback";
+    console.warn("[ai-server] [policy] source=empty-fallback records=0");
     return cachedStore;
   }
 }
@@ -132,6 +155,7 @@ function isProbablyLandName(card: string) {
   if (name === "mountain") return true;
   if (name === "forest") return true;
   if (name === "wastes") return true;
+  if (KNOWN_NONBASIC_LANDS.has(name)) return true;
   if (/^snow-covered (plains|island|swamp|mountain|forest)$/i.test(name)) {
     return true;
   }
@@ -148,7 +172,7 @@ async function detectArchetypeFromDeck(deckId: number): Promise<string | null> {
     if (!deck) return null;
     const cards = Array.isArray(deck.cards) ? (deck.cards as string[]) : [];
     const cardMetadata = Array.isArray(deck.cardMetadata)
-      ? (deck.cardMetadata as DeckCardMetadata[])
+      ? (deck.cardMetadata as unknown as DeckCardMetadata[])
       : undefined;
     const scored = scoreArchetypeCategory({
       name: deck.name ?? undefined,
@@ -172,7 +196,7 @@ async function loadDeckMetadataMap(
       select: { cardMetadata: true },
     });
     const entries = Array.isArray(deck?.cardMetadata)
-      ? (deck!.cardMetadata as DeckCardMetadata[])
+      ? (deck!.cardMetadata as unknown as DeckCardMetadata[])
       : [];
     const map: Record<string, DeckCardMetadata> = {};
     for (const entry of entries) {
@@ -496,7 +520,7 @@ app.post("/decision", async (req, res) => {
       });
     }
 
-    const decision = agent.decideAction(state, actions);
+    const decision = await Promise.resolve(agent.decideAction(state, actions));
     return res.json({
       action: decision.action,
       metadata: decision.metadata ?? null,

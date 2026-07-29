@@ -39,7 +39,7 @@ function broadcast(sessionId: string, msg: GameMessage): void {
   }
 }
 
-function makeDefaultAiDecks(): Array<{ deck: CardName[]; meta: DeckCardMetadata[]; commander: CardName }> {
+function makeDefaultAiDecks(): Array<{ deck: CardName[]; meta: DeckCardMetadata[]; commander?: CardName | null }> {
   const defaultDeck: CardName[] = [
     ...Array(18).fill("Basic Land"),
     ...Array(8).fill("Burn Spell"),
@@ -62,14 +62,63 @@ app.get("/game/sessions", (_req, res) => {
 app.get("/game/decks", async (_req, res) => {
   try {
     const { getPrisma } = await import("@db/db");
-    const decks = await getPrisma().deck.findMany({
-      select: { id: true, name: true, commander: true, createdAt: true },
+    const records = await getPrisma().deck.findMany({
+      select: {
+        id: true,
+        name: true,
+        commander: true,
+        createdAt: true,
+        cards: true,
+        cardMetadata: true,
+      },
       orderBy: { createdAt: "desc" },
       take: 50,
     });
+    const decks = records.map((deck) => ({
+      id: deck.id,
+      name: deck.name,
+      commander: deck.commander,
+      createdAt: deck.createdAt,
+      cardCount: Array.isArray(deck.cards) ? deck.cards.length : null,
+      metadataCount: Array.isArray(deck.cardMetadata) ? deck.cardMetadata.length : null,
+    }));
     res.json({ decks });
   } catch (err) {
     res.json({ decks: [], error: "Could not load decks from database" });
+  }
+});
+
+// DELETE /game/decks/:id — remove a deck from database
+app.delete("/game/decks/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ error: "Invalid deck id" });
+  }
+
+  try {
+    const { getPrisma } = await import("@db/db");
+    const prisma = getPrisma();
+    const existing = await prisma.deck.findUnique({
+      where: { id },
+      select: { id: true, name: true, commander: true, cards: true },
+    });
+    if (!existing) {
+      return res.status(404).json({ error: "Deck not found" });
+    }
+
+    await prisma.deck.delete({ where: { id } });
+    res.json({
+      deleted: true,
+      deck: {
+        id: existing.id,
+        name: existing.name,
+        commander: existing.commander,
+        cardCount: Array.isArray(existing.cards) ? existing.cards.length : null,
+      },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Could not delete deck";
+    res.status(500).json({ error: message });
   }
 });
 
@@ -88,7 +137,7 @@ app.post("/game/create-ai-only", async (req, res) => {
       if (dbDeck) {
         loaded.push({
           deck: dbDeck.cards as CardName[],
-          meta: (dbDeck.cardMetadata as DeckCardMetadata[]) ?? [],
+          meta: (dbDeck.cardMetadata as unknown as DeckCardMetadata[]) ?? [],
           commander: (dbDeck.commander as CardName | null) ?? ((dbDeck.cards as CardName[])[0] ?? null),
         });
       }
@@ -134,7 +183,7 @@ app.post("/game/create", async (req, res) => {
   if (body.humanDeckId) {
     const dbDeck = await safeGetDeckById(body.humanDeckId);
     humanDeck = dbDeck ? (dbDeck.cards as CardName[]) : body.humanDeck ?? [];
-    if (dbDeck && !humanDeckMeta.length) humanDeckMeta = (dbDeck.cardMetadata as DeckCardMetadata[]) ?? [];
+    if (dbDeck && !humanDeckMeta.length) humanDeckMeta = (dbDeck.cardMetadata as unknown as DeckCardMetadata[]) ?? [];
     if (dbDeck) humanCommander = (dbDeck.commander as CardName | null) ?? ((dbDeck.cards as CardName[])[0] ?? null);
   } else {
     humanDeck = body.humanDeck ?? [];
@@ -158,7 +207,7 @@ app.post("/game/create", async (req, res) => {
       if (dbDeck) {
         loaded.push({
           deck: dbDeck.cards as CardName[],
-          meta: (dbDeck.cardMetadata as DeckCardMetadata[]) ?? [],
+          meta: (dbDeck.cardMetadata as unknown as DeckCardMetadata[]) ?? [],
           commander: (dbDeck.commander as CardName | null) ?? ((dbDeck.cards as CardName[])[0] ?? null),
         });
       }

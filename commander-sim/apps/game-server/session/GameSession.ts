@@ -1,7 +1,7 @@
 import type { SimGameState, GameEvent, CardName, DeckCardMetadata } from "@game-state/types";
 import { simulateGame } from "@sim/engine.js";
 import { DecisionTreeAgent } from "@sim/decisionTreeAgent.js";
-import { PatternStore } from "@sim/patterns.js";
+import { loadTrainedPolicyStore } from "@sim/policyLoader.js";
 import { HumanAgent, type WaitingType, type WaitingContext } from "../agents/HumanAgent.js";
 import { serializeForViewer, type FilteredGameState } from "../state/stateSerializer.js";
 
@@ -65,11 +65,6 @@ export class GameSession {
       this.onMessage(msg);
     });
 
-    const aiAgents = aiDecks.map((_d, i) =>
-      new DecisionTreeAgent({ id: `ai-${i + 1}`, store: new PatternStore() })
-    );
-
-    const agents = [this.humanAgent, ...aiAgents];
     const playerDecks = [humanDeck, ...aiDecks.map((d) => d.deck)];
     const playerDeckMetadata = [humanDeckMeta, ...aiDecks.map((d) => d.meta)];
     const playerCommanders = [
@@ -79,9 +74,31 @@ export class GameSession {
 
     const logs: string[] = [];
 
-    this.status = "running";
+    void this.startWithPolicy(aiDecks.length, playerDecks, playerDeckMetadata, playerCommanders, logs);
+  }
 
-    simulateGame(agents, {
+  private async startWithPolicy(
+    aiCount: number,
+    playerDecks: CardName[][],
+    playerDeckMetadata: DeckCardMetadata[][],
+    playerCommanders: Array<CardName | null>,
+    logs: string[]
+  ): Promise<void> {
+    try {
+      const loadedPolicy = await loadTrainedPolicyStore({
+        log: (message) => this.onMessage({ type: "game_log", message }),
+      });
+      const aiAgents = Array.from({ length: aiCount }, (_, i) =>
+        new DecisionTreeAgent({ id: `ai-${i + 1}`, store: loadedPolicy.store })
+      );
+      const agents = [this.humanAgent, ...aiAgents];
+      this.status = "running";
+      this.onMessage({
+        type: "game_log",
+        message: `[policy] live_source=${loadedPolicy.source} records=${loadedPolicy.records}`,
+      });
+
+      await simulateGame(agents, {
       maxTurns: 60,
       startingPlayerIndex: this.startingPlayerIndex,
       playerDecks,
@@ -107,11 +124,12 @@ export class GameSession {
           this.onMessage({ type: "game_over", winner: event.winner });
         }
       },
-    }).catch((err: unknown) => {
+      });
+    } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.onMessage({ type: "game_log", message: `[ERROR] ${msg}` });
       this.status = "game_over";
-    });
+    }
   }
 
   submitDecision(decision: unknown): void {
