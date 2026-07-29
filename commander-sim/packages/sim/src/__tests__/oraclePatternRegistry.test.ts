@@ -277,4 +277,48 @@ describe("OraclePatternRegistry", () => {
     expect(coverage.recognizedPatterns).toContain("CREATE_TOKEN");
     expect(coverage.coverage).toBe("PARTIAL");
   });
+
+  it("parses control, temporary pump, tap, and combat damage triggers", () => {
+    const parsed = parseCardRules(card({
+      name: "Tempo Sampler",
+      typeLine: "Sorcery",
+      oracleText:
+        "Gain control of target creature until end of turn.\n" +
+        "Target creature you control gets +2/+0 until end of turn.\n" +
+        "Tap target creature.\n" +
+        "Whenever a Pirate you control deals combat damage to a player, draw a card.",
+    }));
+
+    expect(parsed.recognizedFragments.map((fragment) => fragment.patternId)).toEqual([
+      "GAIN_CONTROL",
+      "MODIFY_POWER_TOUGHNESS",
+      "TAP_TARGET",
+      "COMBAT_DAMAGE_TRIGGER",
+    ]);
+    expect(parsed.abilities[0]?.effects[0]).toMatchObject({
+      type: "GAIN_CONTROL",
+      duration: "UNTIL_END_OF_TURN",
+    });
+    expect(parsed.abilities[1]?.targets?.[0]).toMatchObject({
+      zone: "battlefield",
+      controller: "self",
+      cardType: "creature",
+    });
+  });
+
+  it("treats runtime-supported keywords as full and parsed-only keywords as partial", () => {
+    const supported = classifyCardRulesCoverage(card({
+      name: "Sky Guard",
+      typeLine: "Creature - Bird",
+      oracleText: "Flying, vigilance",
+    }));
+    const parsedOnly = classifyCardRulesCoverage(card({
+      name: "Death Guard",
+      typeLine: "Creature - Assassin",
+      oracleText: "Deathtouch, lifelink",
+    }));
+
+    expect(supported.coverage).toBe("FULL");
+    expect(parsedOnly.coverage).toBe("PARTIAL");
+  });
 });

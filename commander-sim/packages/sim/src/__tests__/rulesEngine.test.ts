@@ -10,10 +10,13 @@ import type {
 import { getAvailableMana } from "../../../game-state/src/cardUtils.js";
 import {
   applyAction,
+  cleanupTemporaryEffects,
   createInitialState,
+  emitCombatDamageTriggers,
   generateActions,
   resolveStackWithPriority,
 } from "../engine.js";
+import { availableAttackers, availableBlockers, resolveCombat } from "../../../rules/src/combat/combat.js";
 
 const land = (name: string): DeckCardMetadata => ({
   name,
@@ -504,6 +507,275 @@ describe("rules engine legal actions and stack", () => {
     expect(actions.some((action) => action.type === "CAST_SPELL" && action.card === "Optional Return")).toBe(true);
     applyAction(state, { type: "CAST_SPELL", card: "Optional Return" }, 0, () => {});
     expect(state.graveyards[0]).toContain("Optional Return");
+  });
+
+  it("changes controller without changing owner and returns temporary control at cleanup", () => {
+    const state = makeState([
+      meta({ name: "Act of Treason", typeLine: "Sorcery", isSorcery: true, manaValue: 3, oracleText: "Gain control of target creature until end of turn." }),
+    ], ["Act of Treason"]);
+    state.phase = "Prima Fase Principale";
+    state.phaseStep = "Prima Fase Principale";
+    state.creatures[1] = [{ id: "stolen_creature", name: "Stolen Bear", power: 2, toughness: 2, tapped: false, summoningSickness: false }];
+    state.battlefields[1] = ["Stolen Bear"];
+    state.permanents![1] = [{
+      id: "perm_stolen",
+      cardName: "Stolen Bear",
+      owner: 1,
+      controller: 1,
+      face: "Stolen Bear",
+      tapped: false,
+      counters: {},
+      damageMarked: 0,
+    }];
+
+    applyAction(state, { type: "CAST_SPELL", card: "Act of Treason", targetId: "perm_stolen" }, 0, () => {});
+
+    expect(state.permanents?.[0]?.find((permanent) => permanent.id === "perm_stolen")).toMatchObject({
+      owner: 1,
+      controller: 0,
+    });
+    expect(state.creatures[0].some((creature) => creature.name === "Stolen Bear")).toBe(true);
+
+    cleanupTemporaryEffects(state, 0, () => {});
+
+    expect(state.permanents?.[1]?.find((permanent) => permanent.id === "perm_stolen")).toMatchObject({
+      owner: 1,
+      controller: 1,
+    });
+    expect(state.creatures[1].some((creature) => creature.name === "Stolen Bear")).toBe(true);
+  });
+
+  it("puts a stolen permanent into the owner's graveyard when it dies", () => {
+    const state = makeState([
+      meta({ name: "Mind Control Test", typeLine: "Sorcery", isSorcery: true, manaValue: 3, oracleText: "Gain control of target creature." }),
+      meta({ name: "Murder", typeLine: "Instant", manaValue: 3, oracleText: "Destroy target creature." }),
+    ]);
+    state.creatures[1] = [{ id: "owned_creature", name: "Owned Bear", power: 2, toughness: 2, tapped: false, summoningSickness: false }];
+    state.battlefields[1] = ["Owned Bear"];
+    state.permanents![1] = [{
+      id: "perm_owned",
+      cardName: "Owned Bear",
+      owner: 1,
+      controller: 1,
+      face: "Owned Bear",
+      tapped: false,
+      counters: {},
+      damageMarked: 0,
+    }];
+
+    applyAction(state, { type: "CAST_SPELL", card: "Mind Control Test", targetId: "perm_owned" }, 0, () => {});
+    applyAction(state, { type: "CAST_SPELL", card: "Murder", targetId: "owned_creature" }, 0, () => {});
+
+    expect(state.creatures[0]).toHaveLength(0);
+    expect(state.graveyards[1]).toContain("Owned Bear");
+    expect(state.graveyards[0]).not.toContain("Owned Bear");
+  });
+
+  it("applies temporary power/toughness changes and removes them at cleanup", () => {
+    const state = makeState([
+      meta({ name: "Sure Strike", typeLine: "Instant", isInstant: true, manaValue: 2, oracleText: "Target creature you control gets +2/+0 until end of turn." }),
+    ]);
+    state.creatures[0] = [{ id: "attacker_1", name: "Attacker", power: 2, toughness: 2, tapped: false, summoningSickness: false }];
+    state.battlefields[0].push("Attacker");
+    state.permanents![0].push({
+      id: "perm_attacker",
+      cardName: "Attacker",
+      owner: 0,
+      controller: 0,
+      face: "Attacker",
+      tapped: false,
+      counters: {},
+      damageMarked: 0,
+    });
+
+    applyAction(state, { type: "CAST_SPELL", card: "Sure Strike", targetId: "perm_attacker" }, 0, () => {});
+    expect(state.creatures[0][0]).toMatchObject({ power: 4, toughness: 2 });
+
+    cleanupTemporaryEffects(state, 0, () => {});
+    expect(state.creatures[0][0]).toMatchObject({ power: 2, toughness: 2 });
+  });
+
+  it("kills a creature when temporary toughness reduction reaches zero", () => {
+    const state = makeState([
+      meta({ name: "Shrink", typeLine: "Instant", isInstant: true, manaValue: 1, oracleText: "Target creature an opponent controls gets -2/-2 until end of turn." }),
+    ]);
+    state.creatures[1] = [{ id: "small_1", name: "Small Bear", power: 2, toughness: 2, tapped: false, summoningSickness: false }];
+    state.battlefields[1] = ["Small Bear"];
+    state.permanents![1] = [{
+      id: "perm_small",
+      cardName: "Small Bear",
+      owner: 1,
+      controller: 1,
+      face: "Small Bear",
+      tapped: false,
+      counters: {},
+      damageMarked: 0,
+    }];
+
+    applyAction(state, { type: "CAST_SPELL", card: "Shrink", targetId: "perm_small" }, 0, () => {});
+
+    expect(state.creatures[1]).toHaveLength(0);
+    expect(state.graveyards[1]).toContain("Small Bear");
+  });
+
+  it("taps and untaps targeted creatures", () => {
+    const state = makeState([
+      meta({ name: "Tap Spell", typeLine: "Instant", isInstant: true, manaValue: 1, oracleText: "Tap target creature." }),
+      meta({ name: "Untap Spell", typeLine: "Instant", isInstant: true, manaValue: 1, oracleText: "Untap target creature." }),
+    ]);
+    state.creatures[1] = [{ id: "tap_1", name: "Tap Bear", power: 2, toughness: 2, tapped: false, summoningSickness: false }];
+    state.battlefields[1] = ["Tap Bear"];
+    state.permanents![1] = [{
+      id: "perm_tap",
+      cardName: "Tap Bear",
+      owner: 1,
+      controller: 1,
+      face: "Tap Bear",
+      tapped: false,
+      counters: {},
+      damageMarked: 0,
+    }];
+
+    applyAction(state, { type: "CAST_SPELL", card: "Tap Spell", targetId: "perm_tap" }, 0, () => {});
+    expect(state.creatures[1][0].tapped).toBe(true);
+    expect(state.permanents![1][0].tapped).toBe(true);
+
+    applyAction(state, { type: "CAST_SPELL", card: "Untap Spell", targetId: "perm_tap" }, 0, () => {});
+    expect(state.creatures[1][0].tapped).toBe(false);
+    expect(state.permanents![1][0].tapped).toBe(false);
+  });
+
+  it("supports haste, vigilance, and flying/reach combat legality", () => {
+    const state = makeState([], []);
+    state.creatures[0] = [
+      { id: "haste_1", name: "Haste Cat", power: 2, toughness: 2, tapped: false, summoningSickness: true, keywords: ["haste"] },
+      { id: "vigilance_1", name: "Alert Cat", power: 2, toughness: 2, tapped: false, summoningSickness: false, keywords: ["vigilance", "flying"] },
+    ];
+    state.creatures[1] = [
+      { id: "ground_1", name: "Ground Bear", power: 2, toughness: 2, tapped: false, summoningSickness: false },
+      { id: "reach_1", name: "Reach Spider", power: 1, toughness: 3, tapped: false, summoningSickness: false, keywords: ["reach"] },
+    ];
+
+    expect(availableAttackers(state, 0).map((creature) => creature.id)).toContain("haste_1");
+    expect(availableBlockers(state, 1).map((creature) => creature.id)).toContain("reach_1");
+
+    resolveCombat(state, 0, 1, ["vigilance_1"], [{ attackerId: "vigilance_1", blockerId: "ground_1" }], () => {});
+    expect(state.lifeTotals[1]).toBe(38);
+    expect(state.creatures[0].find((creature) => creature.id === "vigilance_1")?.tapped).toBe(false);
+
+    state.lifeTotals[1] = 40;
+    resolveCombat(state, 0, 1, ["vigilance_1"], [{ attackerId: "vigilance_1", blockerId: "reach_1" }], () => {});
+    expect(state.lifeTotals[1]).toBe(40);
+  });
+
+  it("queues combat damage triggers through the stack", async () => {
+    const raider: DeckCardMetadata = {
+      name: "Curious Raider",
+      typeLine: "Creature - Pirate",
+      manaValue: 2,
+      power: 2,
+      toughness: 2,
+      isCreature: true,
+      isPermanent: true,
+      oracleText: "Whenever Curious Raider deals combat damage to a player, draw a card.",
+    };
+    const state = makeState([raider], []);
+    state.creatures[0] = [{ id: "raider_1", name: "Curious Raider", power: 2, toughness: 2, tapped: false, summoningSickness: false }];
+    state.battlefields[0].push("Curious Raider");
+    state.permanents![0].push({
+      id: "perm_raider",
+      cardName: "Curious Raider",
+      owner: 0,
+      controller: 0,
+      face: "Curious Raider",
+      tapped: false,
+      counters: {},
+      damageMarked: 0,
+    });
+    state.libraries[0] = ["Drawn Card"];
+    const before = state.hands[0].length;
+
+    emitCombatDamageTriggers(state, 0, 1, [state.creatures[0][0]], [], () => {});
+    await resolveStackWithPriority(state, 0, [0, 1, 2, 3].map((i) => new PassAgent(`p${i}`)), () => {});
+
+    expect(state.rulesEvents?.some((event) => event.type === "COMBAT_DAMAGE_DEALT")).toBe(true);
+    expect(state.hands[0].length).toBe(before + 1);
+    expect(state.hands[0]).toContain("Drawn Card");
+  });
+
+  it("queues generic permanent-type entered triggers from other permanents", async () => {
+    const watcher = meta({
+      name: "Treasure Lookout",
+      typeLine: "Creature - Pirate",
+      isCreature: true,
+      isPermanent: true,
+      oracleText: "Whenever this creature or another Pirate you control enters, create a tapped Treasure token.",
+    });
+    const recruit = meta({
+      name: "Deckhand",
+      typeLine: "Creature - Pirate",
+      isCreature: true,
+      isPermanent: true,
+      power: 1,
+      toughness: 1,
+      oracleText: "",
+    });
+    const state = makeState([watcher, recruit], ["Deckhand"]);
+    state.battlefields[0].push("Treasure Lookout");
+    state.creatures[0].push({ id: "lookout_1", name: "Treasure Lookout", power: 2, toughness: 2, tapped: false, summoningSickness: false });
+    state.permanents![0].push({
+      id: "perm_lookout",
+      cardName: "Treasure Lookout",
+      owner: 0,
+      controller: 0,
+      face: "Treasure Lookout",
+      tapped: false,
+      counters: {},
+      damageMarked: 0,
+    });
+
+    applyAction(state, { type: "CAST_SPELL", card: "Deckhand" }, 0, () => {});
+    await resolveStackWithPriority(state, 0, [0, 1, 2, 3].map((i) => new PassAgent(`p${i}`)), () => {});
+
+    expect(state.stack).toHaveLength(0);
+    expect(state.battlefields[0]).toContain("Treasure");
+    expect(state.permanents![0].find((permanent) => permanent.cardName === "Treasure")?.tapped).toBe(true);
+  });
+
+  it("queues generic dies triggers from other permanents", async () => {
+    const payoff = meta({
+      name: "Death Payoff",
+      typeLine: "Creature - Human",
+      isCreature: true,
+      isPermanent: true,
+      oracleText: "Whenever another creature you control dies, create a Treasure token.",
+    });
+    const victim = meta({
+      name: "Victim",
+      typeLine: "Creature - Human",
+      isCreature: true,
+      isPermanent: true,
+      power: 1,
+      toughness: 1,
+      oracleText: "",
+    });
+    const murder = meta({ name: "Murder", typeLine: "Instant", manaValue: 3, oracleText: "Destroy target creature." });
+    const state = makeState([payoff, victim, murder], ["Murder"]);
+    state.battlefields[0].push("Death Payoff", "Victim");
+    state.creatures[0].push(
+      { id: "payoff_1", name: "Death Payoff", power: 2, toughness: 2, tapped: false, summoningSickness: false },
+      { id: "victim_1", name: "Victim", power: 1, toughness: 1, tapped: false, summoningSickness: false }
+    );
+    state.permanents![0].push(
+      { id: "perm_payoff", cardName: "Death Payoff", owner: 0, controller: 0, face: "Death Payoff", tapped: false, counters: {}, damageMarked: 0 },
+      { id: "perm_victim", cardName: "Victim", owner: 0, controller: 0, face: "Victim", tapped: false, counters: {}, damageMarked: 0 }
+    );
+
+    applyAction(state, { type: "CAST_SPELL", card: "Murder", targetId: "perm_victim" }, 0, () => {});
+    await resolveStackWithPriority(state, 0, [0, 1, 2, 3].map((i) => new PassAgent(`p${i}`)), () => {});
+
+    expect(state.graveyards[0]).toContain("Victim");
+    expect(state.battlefields[0]).toContain("Treasure");
   });
 
   it("continuous cost reducer only works while source is on battlefield", () => {

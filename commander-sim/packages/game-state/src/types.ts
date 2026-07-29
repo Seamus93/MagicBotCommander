@@ -64,8 +64,10 @@ export interface PermanentState {
   tapped: boolean;
   token?: boolean;
   counters?: Record<string, number>;
+  keywords?: string[];
   damageMarked?: number;
   summoningSickness?: boolean;
+  skipUntapUntilTurn?: number;
 }
 
 export type RulesEventType =
@@ -77,6 +79,7 @@ export type RulesEventType =
   | "SPELL_RESOLVED"
   | "CARD_DRAWN"
   | "DAMAGE_DEALT"
+  | "COMBAT_DAMAGE_DEALT"
   | "LIFE_GAINED"
   | "TURN_STARTED"
   | "UPKEEP_STARTED"
@@ -116,12 +119,15 @@ export type EffectPrimitiveType =
   | "UNTAP"
   | "ADD_MANA"
   | "SEARCH_LIBRARY"
-  | "SACRIFICE";
+  | "SACRIFICE"
+  | "GAIN_CONTROL"
+  | "MODIFY_POWER_TOUGHNESS"
+  | "GRANT_KEYWORD";
 
 export interface EffectDescriptor {
   type: EffectPrimitiveType;
   amount?: number;
-  target?: "self" | "opponent" | "targetCreature" | "targetPermanent" | "eachOpponent" | "eachPlayer";
+  target?: "self" | "opponent" | "targetCreature" | "targetPermanent" | "eachOpponent" | "eachPlayer" | "eachCreature";
   optional?: boolean;
   token?: {
     name: string;
@@ -143,7 +149,23 @@ export interface EffectDescriptor {
   subtype?: string;
   cardType?: "creature" | "artifact" | "enchantment" | "permanent" | "card";
   controller?: "self" | "opponent" | "any";
+  duration?: "PERMANENT" | "UNTIL_END_OF_TURN" | "UNTIL_YOUR_NEXT_TURN" | "WHILE_SOURCE_ON_BATTLEFIELD";
+  powerDelta?: number;
+  toughnessDelta?: number;
+  keyword?: string;
   tapped?: boolean;
+}
+
+export interface TemporaryEffect {
+  id: string;
+  sourceCard?: CardName;
+  controller: number;
+  previousController?: number;
+  targetPermanentId?: string;
+  targetCard?: CardName;
+  effect: EffectDescriptor;
+  expires: "UNTIL_END_OF_TURN" | "UNTIL_YOUR_NEXT_TURN" | "WHILE_SOURCE_ON_BATTLEFIELD";
+  createdTurn: number;
 }
 
 export interface CostDescriptor {
@@ -258,6 +280,7 @@ export interface SimGameState {
   handSizeModifiers: Record<number, HandSizeModifier[]>;
   drawHistory: Record<number, number>;
   rulesEvents?: RulesEvent[];
+  temporaryEffects?: TemporaryEffect[];
   rulesMetrics?: {
     unsupportedEffects: number;
     stateBasedActions: number;

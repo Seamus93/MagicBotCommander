@@ -1,5 +1,6 @@
 import type {
   CardFaceMetadata,
+  ConditionDescriptor,
   CostDescriptor,
   DeckCardMetadata,
   EffectDescriptor,
@@ -85,6 +86,9 @@ const RUNTIME_EFFECTS = new Set<EffectDescriptor["type"]>([
   "ADD_MANA",
   "SEARCH_LIBRARY",
   "SACRIFICE",
+  "GAIN_CONTROL",
+  "MODIFY_POWER_TOUGHNESS",
+  "GRANT_KEYWORD",
 ]);
 
 function standaloneMatcher(regex: RegExp) {
@@ -110,13 +114,19 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
     matcher: /^(?:flying|first strike|double strike|deathtouch|haste|hexproof|indestructible|lifelink|menace|reach|trample|vigilance|ward(?: \{[^}]+\})?|flash)(?:,\s*(?:flying|first strike|double strike|deathtouch|haste|hexproof|indestructible|lifelink|menace|reach|trample|vigilance|ward(?: \{[^}]+\})?|flash))*$/i,
     abilityKind: "STATIC",
     supportLevel: "PARTIAL",
-    parse: (fragment) => [{
-      kind: "STATIC",
-      effects: [],
-      sourceFragment: fragment.text,
-      patternId: "KEYWORD_ABILITIES",
-      supportLevel: "PARTIAL",
-    }],
+    parse: (fragment) => {
+      const keywords = fragment.text.split(",").map((item) => item.trim().toLowerCase());
+      const runtimeSupported = keywords.every((keyword) =>
+        ["haste", "vigilance", "flying", "reach"].includes(keyword)
+      );
+      return [{
+        kind: "STATIC",
+        effects: keywords.map((keyword) => ({ type: "GRANT_KEYWORD" as const, keyword, target: "self" as const, duration: "PERMANENT" as const })),
+        sourceFragment: fragment.text,
+        patternId: "KEYWORD_ABILITIES",
+        supportLevel: runtimeSupported ? "FULL" : "PARTIAL",
+      }];
+    },
   },
   {
     id: "ETB_DRAW",
@@ -149,6 +159,24 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
     }],
   },
   {
+    id: "ETB_TRIGGER",
+    matcher: (fragment) => {
+      if (/\bwhen .+ enters(?: the battlefield)?, (?:draw|you gain)\b/i.test(fragment.text)) return null;
+      return fragment.text.match(/\bwhen .+ enters(?: the battlefield)?,? (.+)$/i);
+    },
+    abilityKind: "TRIGGERED",
+    supportLevel: "PARTIAL",
+    parse: (fragment, match) => parseEffectText((match as RegExpMatchArray)?.[1] ?? "").map((effect) => ({
+      kind: "TRIGGERED",
+      trigger: trigger("PERMANENT_ENTERED"),
+      conditions: [{ type: "SOURCE_IS_THIS" }],
+      effects: [effect],
+      sourceFragment: fragment.text,
+      patternId: "ETB_TRIGGER",
+      supportLevel: "PARTIAL",
+    })),
+  },
+  {
     id: "DIES_DRAW",
     matcher: /\bwhen .+ dies, draw (a|an|one|two|three|\d+) cards?\b/i,
     abilityKind: "TRIGGERED",
@@ -162,6 +190,24 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
       patternId: "DIES_DRAW",
       supportLevel: "FULL",
     }],
+  },
+  {
+    id: "DIES_TRIGGER",
+    matcher: (fragment) => {
+      if (/\bwhen .+ dies, draw (a|an|one|two|three|\d+) cards?\b/i.test(fragment.text)) return null;
+      return fragment.text.match(/\bwh?en(?:ever)? (.+?) dies,? (.+)$/i);
+    },
+    abilityKind: "TRIGGERED",
+    supportLevel: "PARTIAL",
+    parse: (fragment, match) => parseEffectText((match as RegExpMatchArray)?.[2] ?? "").map((effect) => ({
+      kind: "TRIGGERED",
+      trigger: trigger("CREATURE_DIED"),
+      conditions: diesConditions((match as RegExpMatchArray)?.[1] ?? ""),
+      effects: [effect],
+      sourceFragment: fragment.text,
+      patternId: "DIES_TRIGGER",
+      supportLevel: "PARTIAL",
+    })),
   },
   {
     id: "UPKEEP_TRIGGER",
@@ -179,6 +225,36 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
     })),
   },
   {
+    id: "BEGINNING_COMBAT_TRIGGER",
+    matcher: /\bat the beginning of combat on your turn,? (.+)$/i,
+    abilityKind: "TRIGGERED",
+    supportLevel: "PARTIAL",
+    parse: (fragment, match) => parseEffectText((match as RegExpMatchArray)?.[1] ?? "").map((effect) => ({
+      kind: "TRIGGERED",
+      trigger: trigger("ATTACKER_DECLARED"),
+      conditions: [{ type: "CONTROLLER_IS_YOU" }],
+      effects: [effect],
+      sourceFragment: fragment.text,
+      patternId: "BEGINNING_COMBAT_TRIGGER",
+      supportLevel: "PARTIAL",
+    })),
+  },
+  {
+    id: "BEGINNING_END_STEP_TRIGGER",
+    matcher: /\bat the beginning of your end step,? (.+)$/i,
+    abilityKind: "TRIGGERED",
+    supportLevel: "PARTIAL",
+    parse: (fragment, match) => parseEffectText((match as RegExpMatchArray)?.[1] ?? "").map((effect) => ({
+      kind: "TRIGGERED",
+      trigger: trigger("TURN_STARTED"),
+      conditions: [{ type: "CONTROLLER_IS_YOU" }],
+      effects: [effect],
+      sourceFragment: fragment.text,
+      patternId: "BEGINNING_END_STEP_TRIGGER",
+      supportLevel: "PARTIAL",
+    })),
+  },
+  {
     id: "ATTACK_TRIGGER",
     matcher: /\bwhenever .+ attacks,? (.+)$/i,
     abilityKind: "TRIGGERED",
@@ -192,6 +268,40 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
       patternId: "ATTACK_TRIGGER",
       supportLevel: "PARTIAL",
     })),
+  },
+  {
+    id: "COMBAT_DAMAGE_TRIGGER",
+    matcher: /\bwhenever (.+?) deals? combat damage to a player,? (.+)$/i,
+    abilityKind: "TRIGGERED",
+    supportLevel: "PARTIAL",
+    parse: (fragment, match) => parseEffectText((match as RegExpMatchArray)?.[2] ?? "").map((effect) => ({
+      kind: "TRIGGERED",
+      trigger: trigger("COMBAT_DAMAGE_DEALT"),
+      conditions: combatDamageConditions((match as RegExpMatchArray)?.[1] ?? ""),
+      effects: [effect],
+      sourceFragment: fragment.text,
+      patternId: "COMBAT_DAMAGE_TRIGGER",
+      supportLevel: "PARTIAL",
+    })),
+  },
+  {
+    id: "PERMANENT_TYPE_ENTERED_TRIGGER",
+    matcher: /\bwhenever (?:this creature or )?(?:another |an? )?([a-z -]+?) you control enters,? (.+)$/i,
+    abilityKind: "TRIGGERED",
+    supportLevel: "PARTIAL",
+    parse: (fragment, match) => {
+      const subject = ((match as RegExpMatchArray)?.[1] ?? "").trim();
+      const effects = parseEffectText((match as RegExpMatchArray)?.[2] ?? "");
+      return effects.map((effect) => ({
+        kind: "TRIGGERED",
+        trigger: trigger("PERMANENT_ENTERED"),
+        conditions: enteredPermanentConditions(subject),
+        effects: [effect],
+        sourceFragment: fragment.text,
+        patternId: "PERMANENT_TYPE_ENTERED_TRIGGER",
+        supportLevel: "PARTIAL",
+      }));
+    },
   },
   {
     id: "DRAW_CARDS",
@@ -297,6 +407,191 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
     }],
   },
   {
+    id: "GAIN_CONTROL",
+    matcher: standaloneMatcher(/\bgain control of (target creature|target permanent|target nonland permanent|all creatures)(?: until end of turn)?\b/i),
+    abilityKind: "SPELL_EFFECT",
+    supportLevel: "FULL",
+    parse: (fragment, match) => {
+      const targetText = ((match as RegExpMatchArray)?.[1] ?? "target permanent").toLowerCase();
+      const creature = targetText.includes("creature");
+      return [{
+        kind: "SPELL_EFFECT",
+        effects: [{
+          type: "GAIN_CONTROL",
+          target: targetText.includes("all creatures") ? "eachCreature" : creature ? "targetCreature" : "targetPermanent",
+          duration: /\buntil end of turn\b/i.test(fragment.text) ? "UNTIL_END_OF_TURN" : "PERMANENT",
+        }],
+        targets: targetText.includes("all creatures") ? undefined : [battlefieldTarget(creature ? "creature" : "permanent", "opponent")],
+        sourceFragment: fragment.text,
+        patternId: "GAIN_CONTROL",
+        supportLevel: "FULL",
+      }];
+    },
+  },
+  {
+    id: "AURA_CONTROL",
+    matcher: /\byou control enchanted creature\b/i,
+    abilityKind: "STATIC",
+    supportLevel: "PARTIAL",
+    parse: (fragment) => [{
+      kind: "STATIC",
+      effects: [{ type: "GAIN_CONTROL", target: "targetCreature", duration: "WHILE_SOURCE_ON_BATTLEFIELD" }],
+      targets: [battlefieldTarget("creature", "opponent")],
+      sourceFragment: fragment.text,
+      patternId: "AURA_CONTROL",
+      supportLevel: "PARTIAL",
+    }],
+  },
+  {
+    id: "MODIFY_POWER_TOUGHNESS",
+    matcher: standaloneMatcher(/\b(?:target )?creature(?: you control| an opponent controls)? gets ([+-]\d+)\/([+-]\d+)(?: until end of turn)?\b/i),
+    abilityKind: "SPELL_EFFECT",
+    supportLevel: "FULL",
+    parse: (fragment, match) => {
+      const controller = /you control/i.test(fragment.text)
+        ? "self"
+        : /opponent controls/i.test(fragment.text)
+          ? "opponent"
+          : "any";
+      return [{
+        kind: "SPELL_EFFECT",
+        effects: [{
+          type: "MODIFY_POWER_TOUGHNESS",
+          target: "targetCreature",
+          powerDelta: Number((match as RegExpMatchArray)?.[1] ?? 0),
+          toughnessDelta: Number((match as RegExpMatchArray)?.[2] ?? 0),
+          duration: /\buntil end of turn\b/i.test(fragment.text) ? "UNTIL_END_OF_TURN" : "PERMANENT",
+          controller,
+        }],
+        targets: [battlefieldTarget("creature", controller)],
+        sourceFragment: fragment.text,
+        patternId: "MODIFY_POWER_TOUGHNESS",
+        supportLevel: "FULL",
+      }];
+    },
+  },
+  {
+    id: "STATIC_POWER_TOUGHNESS",
+    matcher: standaloneMatcher(/\b(?:other )?([a-z -]+?)s? you control(?: but don't own)? get ([+-]\d+)\/([+-]\d+)\b/i),
+    abilityKind: "STATIC",
+    supportLevel: "PARTIAL",
+    parse: (fragment, match) => [{
+      kind: "STATIC",
+      conditions: enteredPermanentConditions(((match as RegExpMatchArray)?.[1] ?? "").trim()),
+      effects: [{
+        type: "MODIFY_POWER_TOUGHNESS",
+        target: "eachCreature",
+        powerDelta: Number((match as RegExpMatchArray)?.[2] ?? 0),
+        toughnessDelta: Number((match as RegExpMatchArray)?.[3] ?? 0),
+        duration: "WHILE_SOURCE_ON_BATTLEFIELD",
+        controller: "self",
+      }],
+      sourceFragment: fragment.text,
+      patternId: "STATIC_POWER_TOUGHNESS",
+      supportLevel: "PARTIAL",
+    }],
+  },
+  {
+    id: "STATIC_KEYWORD_GRANT",
+    matcher: standaloneMatcher(/\bcreatures you control have (flying|haste|vigilance|reach|menace|deathtouch|lifelink|trample)\b/i),
+    abilityKind: "STATIC",
+    supportLevel: "PARTIAL",
+    parse: (fragment, match) => [{
+      kind: "STATIC",
+      effects: [{
+        type: "GRANT_KEYWORD",
+        target: "eachCreature",
+        keyword: ((match as RegExpMatchArray)?.[1] ?? "").toLowerCase(),
+        duration: "WHILE_SOURCE_ON_BATTLEFIELD",
+        controller: "self",
+      }],
+      sourceFragment: fragment.text,
+      patternId: "STATIC_KEYWORD_GRANT",
+      supportLevel: ["haste", "vigilance", "flying", "reach"].includes(((match as RegExpMatchArray)?.[1] ?? "").toLowerCase())
+        ? "PARTIAL"
+        : "PARTIAL",
+    }],
+  },
+  {
+    id: "GRANT_KEYWORD_UNTIL_EOT",
+    matcher: standaloneMatcher(/\b(?:(?:target )?creature(?: you control| an opponent controls)?|it) gains (haste|vigilance|flying|reach)(?: until end of turn)?\b/i),
+    abilityKind: "SPELL_EFFECT",
+    supportLevel: "FULL",
+    parse: (fragment, match) => {
+      const controller = /you control/i.test(fragment.text)
+        ? "self"
+        : /opponent controls/i.test(fragment.text)
+          ? "opponent"
+          : "any";
+      return [{
+        kind: "SPELL_EFFECT",
+        effects: [{
+          type: "GRANT_KEYWORD",
+          target: "targetCreature",
+          keyword: ((match as RegExpMatchArray)?.[1] ?? "").toLowerCase(),
+          duration: /\buntil end of turn\b/i.test(fragment.text) ? "UNTIL_END_OF_TURN" : "PERMANENT",
+          controller,
+        }],
+        targets: [battlefieldTarget("creature", controller)],
+        sourceFragment: fragment.text,
+        patternId: "GRANT_KEYWORD_UNTIL_EOT",
+        supportLevel: "FULL",
+      }];
+    },
+  },
+  {
+    id: "TAP_TARGET",
+    matcher: standaloneMatcher(/\btap (?:up to (one|two|three|\d+) )?target (creatures?|permanents?)\b/i),
+    abilityKind: "SPELL_EFFECT",
+    supportLevel: "PARTIAL",
+    parse: (fragment, match) => [{
+      kind: "SPELL_EFFECT",
+      effects: [{
+        type: "TAP",
+        amount: amount((match as RegExpMatchArray)?.[1]),
+        target: ((match as RegExpMatchArray)?.[2] ?? "").toLowerCase().includes("permanent") ? "targetPermanent" : "targetCreature",
+        optional: /\bup to\b/i.test(fragment.text),
+      }],
+      targets: [battlefieldTarget(((match as RegExpMatchArray)?.[2] ?? "").toLowerCase().includes("permanent") ? "permanent" : "creature", "any")],
+      sourceFragment: fragment.text,
+      patternId: "TAP_TARGET",
+      supportLevel: "PARTIAL",
+    }],
+  },
+  {
+    id: "SKIP_NEXT_UNTAP",
+    matcher: standaloneMatcher(/\bdoesn't untap during its controller's next untap step\b/i),
+    abilityKind: "SPELL_EFFECT",
+    supportLevel: "PARTIAL",
+    parse: (fragment) => [{
+      kind: "SPELL_EFFECT",
+      effects: [{ type: "TAP", target: "targetPermanent", duration: "UNTIL_YOUR_NEXT_TURN" }],
+      targets: [battlefieldTarget("permanent", "any")],
+      sourceFragment: fragment.text,
+      patternId: "SKIP_NEXT_UNTAP",
+      supportLevel: "PARTIAL",
+    }],
+  },
+  {
+    id: "UNTAP_TARGET",
+    matcher: standaloneMatcher(/\buntap (?:up to (one|two|three|\d+) )?target (creatures?|permanents?)\b/i),
+    abilityKind: "SPELL_EFFECT",
+    supportLevel: "PARTIAL",
+    parse: (fragment, match) => [{
+      kind: "SPELL_EFFECT",
+      effects: [{
+        type: "UNTAP",
+        amount: amount((match as RegExpMatchArray)?.[1]),
+        target: ((match as RegExpMatchArray)?.[2] ?? "").toLowerCase().includes("permanent") ? "targetPermanent" : "targetCreature",
+        optional: /\bup to\b/i.test(fragment.text),
+      }],
+      targets: [battlefieldTarget(((match as RegExpMatchArray)?.[2] ?? "").toLowerCase().includes("permanent") ? "permanent" : "creature", "any")],
+      sourceFragment: fragment.text,
+      patternId: "UNTAP_TARGET",
+      supportLevel: "PARTIAL",
+    }],
+  },
+  {
     id: "EXILE_TARGET",
     matcher: standaloneMatcher(/\bexile target (creature|permanent|artifact|enchantment)\b/i),
     abilityKind: "SPELL_EFFECT",
@@ -348,6 +643,27 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
     }],
   },
   {
+    id: "LOSE_LIFE",
+    matcher: standaloneMatcher(/\b(each opponent|target opponent|target player|you) loses? (one|two|three|\d+) life\b/i),
+    abilityKind: "SPELL_EFFECT",
+    supportLevel: "FULL",
+    parse: (fragment, match) => {
+      const targetText = ((match as RegExpMatchArray)?.[1] ?? "target opponent").toLowerCase();
+      const target = targetText.includes("each opponent")
+        ? "eachOpponent"
+        : targetText.includes("you")
+          ? "self"
+          : "opponent";
+      return [{
+        kind: "SPELL_EFFECT",
+        effects: [{ type: "LOSE_LIFE", amount: amount((match as RegExpMatchArray)?.[2]), target }],
+        sourceFragment: fragment.text,
+        patternId: "LOSE_LIFE",
+        supportLevel: "FULL",
+      }];
+    },
+  },
+  {
     id: "CREATE_TOKEN",
     matcher: standaloneMatcher(/\bcreate (.+? tokens?(?: .+)?)$/i),
     abilityKind: "SPELL_EFFECT",
@@ -362,6 +678,19 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
         supportLevel: token.countMode === "forEach" || token.count === "X" ? "PARTIAL" : "FULL",
       }];
     },
+  },
+  {
+    id: "MILL",
+    matcher: standaloneMatcher(/\bmill (one|two|three|four|five|six|seven|eight|nine|ten|\d+) cards?\b/i),
+    abilityKind: "SPELL_EFFECT",
+    supportLevel: "FULL",
+    parse: (fragment, match) => [{
+      kind: "SPELL_EFFECT",
+      effects: [{ type: "MILL", amount: amount((match as RegExpMatchArray)?.[1]), target: "self" }],
+      sourceFragment: fragment.text,
+      patternId: "MILL",
+      supportLevel: "FULL",
+    }],
   },
   {
     id: "ADD_COUNTER",
@@ -442,6 +771,26 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
       effects: parseEffectText((match as RegExpMatchArray)?.[3] ?? ""),
       sourceFragment: fragment.text,
       patternId: "SACRIFICE_ACTIVATED_COST",
+      supportLevel: "PARTIAL",
+    }],
+  },
+  {
+    id: "FETCH_LAND_ACTIVATED",
+    matcher: /\{T\},\s*Sacrifice this land:\s*Search your library for (?:an?|one)?\s*([A-Za-z ]+?) card, put it onto the battlefield( tapped)?/i,
+    abilityKind: "ACTIVATED",
+    supportLevel: "PARTIAL",
+    parse: (fragment, match) => [{
+      kind: "ACTIVATED",
+      costs: [{ type: "SACRIFICE", amount: 1, cardType: "permanent", controller: "self" }],
+      effects: [{
+        type: "SEARCH_LIBRARY",
+        fromZone: "library",
+        toZone: "battlefield",
+        subtype: ((match as RegExpMatchArray)?.[1] ?? "").trim(),
+        tapped: Boolean((match as RegExpMatchArray)?.[2]),
+      }],
+      sourceFragment: fragment.text,
+      patternId: "FETCH_LAND_ACTIVATED",
       supportLevel: "PARTIAL",
     }],
   },
@@ -532,6 +881,50 @@ function counterTarget(raw: string): TargetRequirement {
     cardType: permanent ? "permanent" : "creature",
     required: true,
   };
+}
+
+function battlefieldTarget(
+  cardType: NonNullable<TargetRequirement["cardType"]>,
+  controller: NonNullable<TargetRequirement["controller"]>
+): TargetRequirement {
+  return {
+    type: cardType === "creature" ? "CREATURE" : "PERMANENT",
+    zone: "battlefield",
+    controller,
+    cardType,
+    required: true,
+  };
+}
+
+function combatDamageConditions(raw: string) {
+  const text = raw.toLowerCase();
+  if (text.includes("pirate")) {
+    return [{ type: "CONTROLLER_IS_YOU" as const }, { type: "HAS_SUBTYPE" as const, subtype: "Pirate" }];
+  }
+  if (text.includes("one or more creatures you control")) return [{ type: "CONTROLLER_IS_YOU" as const }];
+  if (text.includes("you control")) return [{ type: "CONTROLLER_IS_YOU" as const }];
+  return [{ type: "SOURCE_IS_THIS" as const }];
+}
+
+function enteredPermanentConditions(raw: string): ConditionDescriptor[] {
+  const text = raw.toLowerCase();
+  const conditions: ConditionDescriptor[] = [{ type: "CONTROLLER_IS_YOU" }];
+  if (text.includes("artifact")) return conditions.concat([{ type: "HAS_SUBTYPE" as const, subtype: "Artifact" }]);
+  if (text.includes("creature") && !text.includes("pirate")) return conditions.concat([{ type: "IS_CREATURE" as const }]);
+  if (text.includes("pirate")) return conditions.concat([{ type: "HAS_SUBTYPE" as const, subtype: "Pirate" }]);
+  if (text.includes("skeleton")) return conditions.concat([{ type: "HAS_SUBTYPE" as const, subtype: "Skeleton" }]);
+  return conditions;
+}
+
+function diesConditions(raw: string): ConditionDescriptor[] {
+  const text = raw.toLowerCase();
+  if (text.includes("another creature you control") || text.includes("a creature you control")) {
+    return [{ type: "CONTROLLER_IS_YOU" }, { type: "IS_CREATURE" }];
+  }
+  if (text.includes("pirate")) {
+    return [{ type: "CONTROLLER_IS_YOU" }, { type: "HAS_SUBTYPE", subtype: "Pirate" }];
+  }
+  return [{ type: "SOURCE_IS_THIS" }];
 }
 
 function sacrificeCost(match: RegExpMatchArray | boolean | null): CostDescriptor {
@@ -697,7 +1090,7 @@ export function parseCardRules(metadata: DeckCardMetadata): ParsedCardRules {
         patternId: match.definition.id,
         supportLevel: supportedAbilities.some((ability) => ability.supportLevel === "PARTIAL")
           ? "PARTIAL"
-          : match.definition.supportLevel,
+          : "FULL",
       });
     }
     for (const ability of mechanicAbilities) {

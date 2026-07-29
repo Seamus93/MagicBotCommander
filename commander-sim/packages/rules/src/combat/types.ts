@@ -12,4 +12,5 @@ export interface CreaturePermanent {
   toughness: number;
   tapped: boolean;
   summoningSickness: boolean;
+  keywords?: string[];
 }

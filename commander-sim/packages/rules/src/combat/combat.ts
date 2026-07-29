@@ -33,7 +33,8 @@ export function summonCreature(
     power: blueprint.power,
     toughness: blueprint.toughness,
     tapped: false,
-    summoningSickness: true,
+    summoningSickness: !hasKeyword(metadata, "haste"),
+    keywords: runtimeKeywords(metadata),
   };
   state.creatures[player].push(creature);
   log(
@@ -45,7 +46,7 @@ export function summonCreature(
 export function createTokenPermanent(
   state: SimGameState,
   player: number,
-  token: { name: string; power: number; toughness: number; tapped?: boolean }
+  token: { name: string; power: number; toughness: number; tapped?: boolean; keywords?: string[] }
 ) {
   const creature: CreaturePermanent = {
     id: nextCreatureId(),
@@ -53,7 +54,8 @@ export function createTokenPermanent(
     power: token.power,
     toughness: token.toughness,
     tapped: token.tapped ?? false,
-    summoningSickness: true,
+    summoningSickness: !(token.keywords ?? []).some((keyword) => keyword.toLowerCase() === "haste"),
+    keywords: token.keywords,
   };
   state.creatures[player].push(creature);
   return creature;
@@ -65,7 +67,9 @@ export function availableAttackers(
 ): CreaturePermanent[] {
   return state.creatures[player].filter(
     (creature) =>
-      creature.power > 0 && !creature.tapped && !creature.summoningSickness
+      creature.power > 0 &&
+      !creature.tapped &&
+      (!creature.summoningSickness || creatureHasKeyword(creature, "haste"))
   );
 }
 
@@ -104,10 +108,8 @@ export function resolveCombat(
       (creature) => creature.id === assignment.blockerId
     );
     if (!blocker) continue;
-    const attackerExists = attackers.some(
-      (attacker) => attacker.id === assignment.attackerId
-    );
-    if (!attackerExists) continue;
+    const attacker = attackers.find((candidate) => candidate.id === assignment.attackerId);
+    if (!attacker || !canBlockCreature(blocker, attacker)) continue;
     usedBlockers.add(assignment.blockerId);
     const list =
       blockMap.get(assignment.attackerId) ??
@@ -120,7 +122,7 @@ export function resolveCombat(
   const deadBlockers: { id: string; controller: number }[] = [];
 
   for (const attacker of attackers) {
-    attacker.tapped = true;
+    if (!creatureHasKeyword(attacker, "vigilance")) attacker.tapped = true;
     const blockers = blockMap.get(attacker.id) ?? [];
     if (!blockers.length) {
       state.lifeTotals[defendingPlayer] -= attacker.power;
@@ -159,6 +161,26 @@ export function resolveCombat(
   });
 }
 
+function runtimeKeywords(metadata?: DeckCardMetadata) {
+  const text = `${metadata?.oracleText ?? ""}\n${metadata?.keywords?.join("\n") ?? ""}`;
+  return ["haste", "vigilance", "flying", "reach"].filter((keyword) =>
+    hasKeyword(metadata, keyword) || new RegExp(`\\b${keyword}\\b`, "i").test(text)
+  );
+}
+
+function hasKeyword(metadata: DeckCardMetadata | undefined, keyword: string) {
+  return metadata?.keywords?.some((candidate) => candidate.toLowerCase() === keyword) ?? false;
+}
+
+function creatureHasKeyword(creature: CreaturePermanent, keyword: string) {
+  return creature.keywords?.some((candidate) => candidate.toLowerCase() === keyword) ?? false;
+}
+
+function canBlockCreature(blocker: CreaturePermanent, attacker: CreaturePermanent) {
+  if (!creatureHasKeyword(attacker, "flying")) return true;
+  return creatureHasKeyword(blocker, "flying") || creatureHasKeyword(blocker, "reach");
+}
+
 export function destroyCreature(
   state: SimGameState,
   controller: number,
@@ -169,7 +191,13 @@ export function destroyCreature(
   const index = pool.findIndex((creature) => creature.id === creatureId);
   if (index === -1) return;
   const [creature] = pool.splice(index, 1);
-  state.graveyards[controller].push(creature.name);
+  const owner = state.permanents?.[controller]?.find(
+    (permanent) =>
+      permanent.id === creature.id ||
+      permanent.cardName === creature.name ||
+      permanent.face === creature.name
+  )?.owner ?? controller;
+  state.graveyards[owner].push(creature.name);
   log(`Player ${controller}'s ${creature.name} dies in combat`);
   removeTriggersForPermanent(state, controller, creature.name);
 }
