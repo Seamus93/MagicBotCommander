@@ -122,6 +122,47 @@ export interface EffectDescriptor {
   target?: "self" | "opponent" | "targetCreature" | "targetPermanent" | "eachOpponent" | "eachPlayer";
   token?: { name: string; power: number; toughness: number; count?: number };
   counterType?: string;
+  fromZone?: "library" | "graveyard" | "battlefield" | "hand";
+  toZone?: "hand" | "battlefield" | "graveyard" | "exile" | "library";
+  subtype?: string;
+  tapped?: boolean;
+}
+
+export type ConditionDescriptor =
+  | { type: "SOURCE_IS_THIS" }
+  | { type: "CONTROLLER_IS_YOU" }
+  | { type: "IS_CREATURE" }
+  | { type: "HAS_SUBTYPE"; subtype: string }
+  | { type: "HAS_COUNTER"; counterType: string }
+  | { type: "OPPONENT_HAS_MORE_LIFE" }
+  | { type: "OPPONENT_CONTROLS_MORE_LANDS" }
+  | { type: "CREATURE_DIED_THIS_TURN" }
+  | { type: "PERMANENT_ENTERED_THIS_TURN" }
+  | { type: "ATTACKING_PLAYER"; playerRelation: string }
+  | { type: "AND"; conditions: ConditionDescriptor[] }
+  | { type: "OR"; conditions: ConditionDescriptor[] }
+  | { type: "NOT"; condition: ConditionDescriptor };
+
+export interface TargetRequirement {
+  type: "PLAYER" | "CREATURE" | "PERMANENT" | "CARD_IN_GRAVEYARD" | "SPELL";
+  controller?: "self" | "opponent" | "any";
+  required?: boolean;
+}
+
+export interface TriggerDescriptor {
+  eventType: RulesEventType;
+  source?: "self" | "any";
+}
+
+export interface ParsedAbility {
+  kind: "TRIGGERED" | "ACTIVATED" | "STATIC" | "REPLACEMENT" | "SPELL_EFFECT";
+  trigger?: TriggerDescriptor;
+  conditions?: ConditionDescriptor[];
+  effects: EffectDescriptor[];
+  targets?: TargetRequirement[];
+  sourceFragment?: string;
+  patternId?: string;
+  supportLevel?: "FULL" | "PARTIAL";
 }
 
 export type TriggerType =
@@ -143,6 +184,7 @@ export interface RegisteredTrigger {
   type: TriggerType;
   eventType?: RulesEventType;
   condition?: string;
+  conditions?: ConditionDescriptor[];
   effects?: EffectDescriptor[];
   targetRequirements?: string[];
   data?: Record<string, unknown>;

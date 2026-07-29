@@ -7,6 +7,7 @@ import type {
   DecisionMetadata,
   GameEvent,
   PermanentState,
+  ParsedAbility,
   RulesEvent,
   SimAction,
   SimAgent,
@@ -67,6 +68,7 @@ import {
   type AttackPlan,
   type BlockPlan,
 } from "./combatEvaluator.js";
+import { parseCardRules } from "./oraclePatternRegistry.js";
 
 const DEFAULT_DECK = [
   ...Array(18).fill("Basic Land"),
@@ -301,34 +303,54 @@ function queueOracleTriggersForEvent(
   log: (msg: string) => void,
   metadata?: DeckCardMetadata
 ) {
-  if (event.type !== "PERMANENT_ENTERED" || !metadata?.oracleText || event.controller == null) return;
+  if (!metadata || event.controller == null) return;
   const sourceName = event.face ?? event.card ?? metadata.name;
-  const normalizedSource = sourceName.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const drawMatch = metadata.oracleText.match(
-    new RegExp(`when ${normalizedSource} enters(?: the battlefield)?, draw (a|one|two|three|\\d+) cards?`, "i")
-  );
-  if (!drawMatch) return;
-  const amount = parseNumberWord(drawMatch[1]);
-  if (amount <= 0) return;
-  const entry: StackEntry = {
-    id: `trigger_${Date.now()}_${state.stack.length}`,
-    action: { type: "CAST_SPELL", card: sourceName },
-    casterIndex: event.controller,
-    resolved: false,
-    responses: [],
-    kind: "triggeredAbility",
-    sourceCard: sourceName,
-    effects: [{ type: "DRAW_CARDS", amount, target: "self" }],
-  };
-  state.stack.push(entry);
-  log(`[Trigger] ${sourceName} triggered ability put on stack`);
+  const parsed = parseCardRules(metadata);
+  for (const ability of parsed.abilities) {
+    if (ability.kind !== "TRIGGERED") continue;
+    if (ability.trigger?.eventType !== event.type) continue;
+    if (!conditionsSatisfied(state, ability, event, sourceName)) continue;
+    const entry: StackEntry = {
+      id: `trigger_${Date.now()}_${state.stack.length}`,
+      action: { type: "CAST_SPELL", card: sourceName },
+      casterIndex: event.controller,
+      resolved: false,
+      responses: [],
+      kind: "triggeredAbility",
+      sourceCard: sourceName,
+      effects: ability.effects,
+    };
+    state.stack.push(entry);
+    log(`[Trigger] ${sourceName} ${ability.patternId ?? "ability"} put on stack`);
+  }
 }
 
-function parseNumberWord(value: string) {
-  const normalized = value.toLowerCase();
-  if (normalized === "a") return 1;
-  const parsed = NUMBER_WORDS[normalized] ?? Number(normalized);
-  return Number.isFinite(parsed) ? parsed : 0;
+function conditionsSatisfied(
+  state: SimGameState,
+  ability: ParsedAbility,
+  event: RulesEvent,
+  sourceName: string
+): boolean {
+  return (ability.conditions ?? []).every((condition) => {
+    switch (condition.type) {
+      case "SOURCE_IS_THIS":
+        return (event.face ?? event.card ?? "").toLowerCase() === sourceName.toLowerCase();
+      case "CONTROLLER_IS_YOU":
+        return event.player === event.controller;
+      case "OPPONENT_HAS_MORE_LIFE":
+        return state.lifeTotals.some((life, idx) => idx !== event.controller && life >= state.lifeTotals[event.controller ?? 0]);
+      case "OPPONENT_CONTROLS_MORE_LANDS":
+        return state.battlefields.some((battlefield, idx) => idx !== event.controller && battlefield.length > (state.battlefields[event.controller ?? 0]?.length ?? 0));
+      case "AND":
+        return condition.conditions.every((inner) => conditionsSatisfied(state, { ...ability, conditions: [inner] }, event, sourceName));
+      case "OR":
+        return condition.conditions.some((inner) => conditionsSatisfied(state, { ...ability, conditions: [inner] }, event, sourceName));
+      case "NOT":
+        return !conditionsSatisfied(state, { ...ability, conditions: [condition.condition] }, event, sourceName);
+      default:
+        return true;
+    }
+  });
 }
 
 function ensureRulesMetrics(state: SimGameState) {
@@ -874,18 +896,358 @@ function resolveEffectDescriptors(
   log: (msg: string) => void
 ) {
   for (const effect of entry.effects ?? []) {
+    const player = entry.casterIndex;
     switch (effect.type) {
       case "DRAW_CARDS":
-        drawCards(state, entry.casterIndex, effect.amount ?? 1, log, entry.sourceCard);
+        drawCards(state, player, effect.amount ?? 1, log, entry.sourceCard);
         break;
+      case "DISCARD": {
+        const hand = state.hands[player] ?? [];
+        const discarded = hand.splice(Math.max(0, hand.length - (effect.amount ?? 1)));
+        state.graveyards[player].push(...discarded);
+        break;
+      }
       case "GAIN_LIFE":
-        gainLife(state, entry.casterIndex, effect.amount ?? 1, log, entry.sourceCard ?? "ability");
+        gainLife(state, player, effect.amount ?? 1, log, entry.sourceCard ?? "ability");
+        break;
+      case "LOSE_LIFE": {
+        const target = effect.target === "self" ? player : findNextOpponent(state, player);
+        if (target !== null) loseLife(state, target, effect.amount ?? 1, log, entry.sourceCard ?? "ability");
+        break;
+      }
+      case "DEAL_DAMAGE":
+        resolveDamageEffect(state, player, effect, entry, log);
+        break;
+      case "DESTROY":
+        resolveDestroyEffect(state, player, effect, entry, log);
+        break;
+      case "EXILE":
+        resolveExileEffect(state, player, effect, entry, log);
+        break;
+      case "RETURN_TO_HAND":
+        resolveReturnToHandEffect(state, player, effect, log);
+        break;
+      case "MILL":
+        millCards(state, player, effect.amount ?? 1, log, entry.sourceCard);
+        break;
+      case "CREATE_TOKEN":
+        createEffectToken(state, player, effect, log, entry.sourceCard);
+        break;
+      case "ADD_COUNTER":
+        resolveCounterEffect(state, player, effect, entry, log, 1);
+        break;
+      case "REMOVE_COUNTER":
+        resolveCounterEffect(state, player, effect, entry, log, -1);
+        break;
+      case "TAP":
+        resolveTapEffect(state, player, effect, entry, true);
+        break;
+      case "UNTAP":
+        resolveTapEffect(state, player, effect, entry, false);
+        break;
+      case "ADD_MANA":
+        state.artifactMana[player] = (state.artifactMana[player] ?? 0) + (effect.amount ?? 1);
+        break;
+      case "SEARCH_LIBRARY":
+        searchLibraryToZone(state, player, effect, log, entry.sourceCard);
+        break;
+      case "SACRIFICE":
+        sacrificePermanent(state, player, effect, log);
         break;
       default:
         markUnsupportedEffect(state, entry.sourceCard ?? "Triggered ability", effect.type, log);
         break;
     }
   }
+}
+
+function resolveDamageEffect(
+  state: SimGameState,
+  player: number,
+  effect: NonNullable<StackEntry["effects"]>[number],
+  entry: StackEntry,
+  log: (msg: string) => void
+) {
+  const amount = effect.amount ?? 1;
+  if (effect.target === "eachOpponent") {
+    for (let idx = 0; idx < state.lifeTotals.length; idx++) {
+      if (idx !== player && state.lifeTotals[idx] > 0) dealDamageToPlayer(state, idx, amount, log, entry.sourceCard ?? "effect");
+    }
+    return;
+  }
+  if (effect.target === "eachPlayer") {
+    for (let idx = 0; idx < state.lifeTotals.length; idx++) {
+      if (state.lifeTotals[idx] > 0) dealDamageToPlayer(state, idx, amount, log, entry.sourceCard ?? "effect");
+    }
+    return;
+  }
+  if (effect.target === "targetCreature") {
+    const target = entry.action.type === "CAST_SPELL" && entry.action.targetId
+      ? findCreatureTargetById(state, entry.action.targetId)
+      : selectCreatureTarget(state, player);
+    if (!target) return fizzleObject(state, entry.sourceCard ?? "effect", log, "target creature is no longer legal");
+    applyDamageToCreature(state, target.controller, target.creature, amount, log, entry.sourceCard ?? "effect");
+    return;
+  }
+  const target = findNextOpponent(state, player);
+  if (target !== null) dealDamageToPlayer(state, target, amount, log, entry.sourceCard ?? "effect");
+}
+
+function resolveDestroyEffect(
+  state: SimGameState,
+  player: number,
+  effect: NonNullable<StackEntry["effects"]>[number],
+  entry: StackEntry,
+  log: (msg: string) => void
+) {
+  if (effect.target === "targetCreature") {
+    const target = entry.action.type === "CAST_SPELL" && entry.action.targetId
+      ? findCreatureTargetById(state, entry.action.targetId)
+      : selectCreatureTarget(state, player);
+    if (!target) return fizzleObject(state, entry.sourceCard ?? "effect", log, "target creature is no longer legal");
+    destroyCreatureWithEvents(state, target.controller, target.creature.id, log);
+  }
+}
+
+function resolveExileEffect(
+  state: SimGameState,
+  player: number,
+  effect: NonNullable<StackEntry["effects"]>[number],
+  entry: StackEntry,
+  log: (msg: string) => void
+) {
+  if (effect.target === "targetCreature" || effect.target === "targetPermanent") {
+    const target = entry.action.type === "CAST_SPELL" && entry.action.targetId
+      ? findCreatureTargetById(state, entry.action.targetId)
+      : selectCreatureTarget(state, player);
+    if (!target) return fizzleObject(state, entry.sourceCard ?? "effect", log, "target is no longer legal");
+    exileCreature(state, target.controller, target.creature.id, log);
+  }
+}
+
+function resolveReturnToHandEffect(
+  state: SimGameState,
+  player: number,
+  effect: NonNullable<StackEntry["effects"]>[number],
+  log: (msg: string) => void
+) {
+  const target = selectEffectPermanentTarget(state, player, effect);
+  if (!target) return;
+  removePermanentFromBattlefieldOnly(state, target.controller, target.card);
+  state.hands[target.controller].push(target.card);
+  log(`Player ${target.controller}'s ${target.card} returns to hand`);
+}
+
+function millCards(
+  state: SimGameState,
+  player: number,
+  amount: number,
+  log: (msg: string) => void,
+  source?: CardName
+) {
+  const target = findEffectPlayerTarget(state, player, "opponent") ?? player;
+  const moved = state.libraries[target].splice(0, Math.max(0, amount));
+  state.graveyards[target].push(...moved);
+  if (moved.length) log(`${source ?? "Effect"} mills ${moved.length} card(s) from Player ${target}`);
+}
+
+function createEffectToken(
+  state: SimGameState,
+  player: number,
+  effect: NonNullable<StackEntry["effects"]>[number],
+  log: (msg: string) => void,
+  source?: CardName
+) {
+  const token = effect.token ?? { name: "Token", power: 1, toughness: 1 };
+  const count = Math.max(1, token.count ?? effect.amount ?? 1);
+  for (let i = 0; i < count; i++) {
+    const creature = createTokenPermanent(state, player, {
+      name: token.name,
+      power: token.power,
+      toughness: token.toughness,
+    });
+    state.battlefields[player].push(token.name);
+    addPermanentState(state, {
+      cardName: token.name,
+      owner: player,
+      controller: player,
+      face: token.name,
+      tapped: false,
+      token: true,
+      summoningSickness: true,
+    });
+    dispatchRulesEvent(state, {
+      type: "PERMANENT_ENTERED",
+      player,
+      controller: player,
+      card: token.name,
+      face: token.name,
+      permanentId: creature.id,
+      sourceCard: source,
+    }, log, { name: token.name, typeLine: "Token Creature", isCreature: true, isPermanent: true });
+  }
+  log(`${source ?? "Effect"} creates ${count} ${token.power}/${token.toughness} ${token.name} token(s)`);
+}
+
+function resolveCounterEffect(
+  state: SimGameState,
+  player: number,
+  effect: NonNullable<StackEntry["effects"]>[number],
+  entry: StackEntry,
+  log: (msg: string) => void,
+  direction: 1 | -1
+) {
+  const amount = Math.max(1, effect.amount ?? 1) * direction;
+  const counterType = effect.counterType ?? "+1/+1";
+  const target = entry.action.type === "CAST_SPELL" && entry.action.targetId
+    ? findCreatureTargetById(state, entry.action.targetId)
+    : selectCreatureTarget(state, player, { friendlyOnly: effect.target !== "targetCreature" });
+  if (!target) return fizzleObject(state, entry.sourceCard ?? "effect", log, "counter target is no longer legal");
+
+  const permanent = state.permanents?.[target.controller]?.find(
+    (candidate) =>
+      candidate.id === target.creature.id ||
+      candidate.cardName === target.creature.name ||
+      candidate.face === target.creature.name
+  );
+  if (permanent) {
+    permanent.counters ??= {};
+    permanent.counters[counterType] = Math.max(0, (permanent.counters[counterType] ?? 0) + amount);
+  }
+  if (counterType === "+1/+1") {
+    target.creature.power = Math.max(0, target.creature.power + amount);
+    target.creature.toughness = Math.max(0, target.creature.toughness + amount);
+  }
+  log(`${entry.sourceCard ?? "Effect"} ${direction > 0 ? "adds" : "removes"} ${Math.abs(amount)} ${counterType} counter(s)`);
+}
+
+function resolveTapEffect(
+  state: SimGameState,
+  player: number,
+  effect: NonNullable<StackEntry["effects"]>[number],
+  entry: StackEntry,
+  tapped: boolean
+) {
+  const target = effect.target === "self"
+    ? findSourcePermanent(state, player, entry.sourceCard)
+    : selectEffectPermanentTarget(state, player, effect);
+  if (!target) return;
+  const permanent = state.permanents?.[target.controller]?.find(
+    (candidate) => candidate.cardName === target.card || candidate.face === target.card
+  );
+  if (permanent) permanent.tapped = tapped;
+  const creature = state.creatures[target.controller]?.find((item) => item.name === target.card);
+  if (creature) creature.tapped = tapped;
+}
+
+function searchLibraryToZone(
+  state: SimGameState,
+  player: number,
+  effect: NonNullable<StackEntry["effects"]>[number],
+  log: (msg: string) => void,
+  source?: CardName
+) {
+  const library = state.libraries[player] ?? [];
+  const index = library.findIndex((card) => {
+    const metadata = getCardMetadata(state, player, card);
+    if (effect.subtype && !(metadata?.typeLine ?? card).toLowerCase().includes(effect.subtype.toLowerCase())) {
+      return false;
+    }
+    return effect.subtype ? true : isLandCard(state, player, card);
+  });
+  if (index < 0) return;
+  const [card] = library.splice(index, 1);
+  const toZone = effect.toZone ?? "hand";
+  if (toZone === "battlefield") {
+    state.battlefields[player].push(card);
+    addPermanentState(state, {
+      cardName: card,
+      owner: player,
+      controller: player,
+      face: card,
+      tapped: effect.tapped ?? false,
+    });
+  } else if (toZone === "graveyard") {
+    state.graveyards[player].push(card);
+  } else if (toZone === "exile") {
+    const exileZones = ensureExileZones(state);
+    exileZones[player].push(card);
+  } else {
+    state.hands[player].push(card);
+  }
+  log(`${source ?? "Effect"} searches ${card} to ${toZone}`);
+}
+
+function sacrificePermanent(
+  state: SimGameState,
+  player: number,
+  effect: NonNullable<StackEntry["effects"]>[number],
+  log: (msg: string) => void
+) {
+  const target = selectEffectPermanentTarget(state, player, { ...effect, target: "self" });
+  if (!target) return;
+  removeBattlefieldCard(state, target.controller, target.card, log);
+}
+
+function findEffectPlayerTarget(
+  state: SimGameState,
+  player: number,
+  target?: NonNullable<StackEntry["effects"]>[number]["target"]
+) {
+  if (target === "self") return player;
+  if (target === "opponent") return findNextOpponent(state, player);
+  return player;
+}
+
+function findSourcePermanent(
+  state: SimGameState,
+  player: number,
+  source?: CardName
+): { controller: number; card: string } | null {
+  if (!source) return null;
+  const normalized = source.toLowerCase();
+  const permanent = state.permanents?.[player]?.find(
+    (candidate) =>
+      candidate.cardName.toLowerCase() === normalized ||
+      candidate.face?.toLowerCase() === normalized
+  );
+  if (permanent) return { controller: player, card: permanent.face ?? permanent.cardName };
+  const card = state.battlefields[player]?.find((item) => item.toLowerCase() === normalized);
+  return card ? { controller: player, card } : null;
+}
+
+function selectEffectPermanentTarget(
+  state: SimGameState,
+  player: number,
+  effect: Pick<NonNullable<StackEntry["effects"]>[number], "target">
+): { controller: number; card: string } | null {
+  if (effect.target === "self") {
+    const own = state.battlefields[player]?.[0];
+    return own ? { controller: player, card: own } : null;
+  }
+  return selectBattlefieldPermanent(state, player, () => true);
+}
+
+function removePermanentFromBattlefieldOnly(
+  state: SimGameState,
+  controller: number,
+  card: string
+) {
+  const battlefield = state.battlefields[controller];
+  const index = battlefield.indexOf(card);
+  if (index >= 0) battlefield.splice(index, 1);
+  removePermanentState(state, controller, card);
+  const creatureIndex = state.creatures[controller]?.findIndex((creature) => creature.name === card) ?? -1;
+  if (creatureIndex >= 0) state.creatures[controller].splice(creatureIndex, 1);
+}
+
+function ensureExileZones(state: SimGameState): CardName[][] {
+  const withExiles = state as SimGameState & { exiles?: CardName[][] };
+  withExiles.exiles ??= Array.from({ length: state.lifeTotals.length }, () => []);
+  for (let i = 0; i < state.lifeTotals.length; i++) {
+    withExiles.exiles[i] ??= [];
+  }
+  return withExiles.exiles;
 }
 
 function castSpellToStack(
@@ -1649,6 +2011,10 @@ function resolveSpell(
     return;
   }
 
+  if (resolveSpellEffectsFromRegistry(state, player, card, metadata, log, targetId)) {
+    return;
+  }
+
   if (handleTokenCreationSpell(state, player, card, metadata, log)) {
     return;
   }
@@ -1663,6 +2029,39 @@ function resolveSpell(
 
   markUnsupportedEffect(state, card, metadata?.oracleText, log);
   state.graveyards[player].push(card);
+}
+
+function resolveSpellEffectsFromRegistry(
+  state: SimGameState,
+  player: number,
+  card: CardName,
+  metadata: DeckCardMetadata | undefined,
+  log: (msg: string) => void,
+  targetId?: string
+) {
+  if (!metadata) return false;
+  const parsed = parseCardRules(metadata);
+  const spellAbilities = parsed.abilities.filter((ability) => ability.kind === "SPELL_EFFECT");
+  if (!spellAbilities.length) return false;
+
+  for (const ability of spellAbilities) {
+    resolveEffectDescriptors(
+      state,
+      {
+        id: `effect_${Date.now()}`,
+        action: { type: "CAST_SPELL", card, targetId },
+        casterIndex: player,
+        resolved: true,
+        responses: [],
+        kind: "spell",
+        sourceCard: card,
+        effects: ability.effects,
+      },
+      log
+    );
+  }
+  state.graveyards[player].push(card);
+  return true;
 }
 
 function resolveCounterspell(
@@ -2330,20 +2729,21 @@ function destroyCreatureWithEvents(
 ) {
   const creature = state.creatures[controller]?.find((item) => item.id === creatureId);
   if (!creature) return;
+  const metadata = getCardMetadata(state, controller, creature.name);
   destroyCreature(state, controller, creatureId, log);
   removePermanentState(state, controller, creature.name);
-  emitRulesEvent(state, {
+  dispatchRulesEvent(state, {
     type: "CREATURE_DIED",
     controller,
     card: creature.name,
     sourceCard: creature.name,
-  });
-  emitRulesEvent(state, {
+  }, log, metadata);
+  dispatchRulesEvent(state, {
     type: "PERMANENT_LEFT",
     controller,
     card: creature.name,
     sourceCard: creature.name,
-  });
+  }, log, metadata);
 }
 
 function selectCreatureTarget(

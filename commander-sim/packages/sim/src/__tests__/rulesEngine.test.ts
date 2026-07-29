@@ -268,6 +268,80 @@ describe("rules engine legal actions and stack", () => {
     expect(state.rulesEvents?.some((event) => event.type === "PERMANENT_LEFT")).toBe(true);
   });
 
+  it("queues and resolves a generic DIES draw trigger", async () => {
+    const doomed: DeckCardMetadata = {
+      name: "Doomed Witness",
+      typeLine: "Creature - Human",
+      manaValue: 2,
+      power: 1,
+      toughness: 1,
+      isCreature: true,
+      isPermanent: true,
+      oracleText: "When Doomed Witness dies, draw a card.",
+    };
+    const state = makeState([
+      meta({ name: "Murder", typeLine: "Instant", manaValue: 3, oracleText: "Destroy target creature." }),
+      doomed,
+    ]);
+    state.cardMetadata[1] = { ...state.cardMetadata[1], "doomed witness": doomed };
+    state.creatures[1] = [{ id: "doomed_1", name: "Doomed Witness", power: 1, toughness: 1, tapped: false, summoningSickness: false }];
+    state.permanents![1] = [{
+      id: "perm_doomed",
+      cardName: "Doomed Witness",
+      owner: 1,
+      controller: 1,
+      face: "Doomed Witness",
+      tapped: false,
+      counters: {},
+      damageMarked: 0,
+      summoningSickness: false,
+    }];
+    state.libraries[1] = ["Reward Card"];
+    const handBefore = state.hands[1].length;
+    state.stack.push({
+      id: "murder_doomed",
+      action: { type: "CAST_SPELL", card: "Murder", targetId: "doomed_1" },
+      casterIndex: 0,
+      resolved: false,
+      responses: [],
+    });
+
+    await resolveStackWithPriority(state, 0, [0, 1, 2, 3].map((i) => new PassAgent(`p${i}`)), () => {});
+
+    expect(state.creatures[1]).toHaveLength(0);
+    expect(state.hands[1].length).toBe(handBefore + 1);
+    expect(state.hands[1]).toContain("Reward Card");
+  });
+
+  it("resolves generic spell primitives for life gain, token creation, and counters", () => {
+    const state = makeState([
+      meta({ name: "Healing Salve", typeLine: "Sorcery", manaValue: 1, oracleText: "You gain 3 life." }),
+      meta({ name: "Raise Alarm", typeLine: "Sorcery", manaValue: 2, oracleText: "Create two 1/1 white Soldier creature tokens." }),
+      meta({ name: "Strength Spell", typeLine: "Sorcery", manaValue: 1, oracleText: "Put two +1/+1 counters on target creature." }),
+    ]);
+    state.creatures[1] = [{ id: "bear_1", name: "Bear", power: 2, toughness: 2, tapped: false, summoningSickness: false }];
+    state.permanents![1] = [{
+      id: "perm_bear_1",
+      cardName: "Bear",
+      owner: 1,
+      controller: 1,
+      face: "Bear",
+      tapped: false,
+      counters: {},
+      damageMarked: 0,
+      summoningSickness: false,
+    }];
+
+    applyAction(state, { type: "CAST_SPELL", card: "Healing Salve" }, 0, () => {});
+    applyAction(state, { type: "CAST_SPELL", card: "Raise Alarm" }, 0, () => {});
+    applyAction(state, { type: "CAST_SPELL", card: "Strength Spell", targetId: "bear_1" }, 0, () => {});
+
+    expect(state.lifeTotals[0]).toBe(43);
+    expect(state.creatures[0].filter((creature) => creature.name === "Token")).toHaveLength(2);
+    expect(state.creatures[1][0]).toMatchObject({ power: 4, toughness: 4 });
+    expect(state.permanents?.[1]?.[0].counters?.["+1/+1"]).toBe(2);
+  });
+
   it("continuous cost reducer only works while source is on battlefield", () => {
     const reducer: DeckCardMetadata = {
       name: "Ruby Medallion",

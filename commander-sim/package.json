@@ -17,6 +17,7 @@
     "train": "tsx --tsconfig tsconfig.base.json packages/sim/src/run-batch.ts",
     "eval:ab": "tsx --tsconfig tsconfig.base.json packages/sim/src/evaluate-ab.ts",
     "train:reset": "tsx packages/sim/src/resetTrainingData.ts",
+    "rules:inspect": "tsx --tsconfig tsconfig.base.json packages/sim/src/inspectRules.ts",
     "inspect:episodes": "tsx --tsconfig tsconfig.base.json packages/sim/src/inspectEpisodes.ts",
     "test": "vitest run",
     "test:watch": "vitest"
