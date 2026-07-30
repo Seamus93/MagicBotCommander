@@ -67,7 +67,7 @@ const trigger = (eventType: RulesEventType) => ({ eventType, source: "self" as c
 const targetCreature: TargetRequirement = {
   type: "CREATURE",
   zone: "battlefield",
-  controller: "opponent",
+  controller: "any",
   cardType: "creature",
   required: true,
 };
@@ -400,17 +400,24 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
   },
   {
     id: "DESTROY_TARGET_CREATURE",
-    matcher: standaloneMatcher(/\bdestroy target creature\b/i),
+    matcher: standaloneMatcher(/\bdestroy target creature(?: you control| an opponent controls)?\b/i),
     abilityKind: "SPELL_EFFECT",
     supportLevel: "FULL",
-    parse: (fragment) => [{
-      kind: "SPELL_EFFECT",
-      effects: [{ type: "DESTROY", target: "targetCreature" }],
-      targets: [targetCreature],
-      sourceFragment: fragment.text,
-      patternId: "DESTROY_TARGET_CREATURE",
-      supportLevel: "FULL",
-    }],
+    parse: (fragment) => {
+      const controller = /you control/i.test(fragment.text)
+        ? "self"
+        : /opponent controls/i.test(fragment.text)
+          ? "opponent"
+          : "any";
+      return [{
+        kind: "SPELL_EFFECT",
+        effects: [{ type: "DESTROY", target: "targetCreature", controller }],
+        targets: [{ ...targetCreature, controller }],
+        sourceFragment: fragment.text,
+        patternId: "DESTROY_TARGET_CREATURE",
+        supportLevel: "FULL",
+      }];
+    },
   },
   {
     id: "GAIN_CONTROL",

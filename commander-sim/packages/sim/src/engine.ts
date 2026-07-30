@@ -973,6 +973,15 @@ export async function resolveStackWithPriority(
     entry.resolved = true;
     log(`[Stack] Resolving ${entry.action.type} from player ${entry.casterIndex}`);
     if (entry.kind === "triggeredAbility" || entry.kind === "activatedAbility") {
+      if (
+        entry.action.type === "ACTIVATE_ABILITY" &&
+        entry.ability &&
+        !allRequiredTargetsStillLegal(state, entry.casterIndex, entry.action, [entry.ability])
+      ) {
+        fizzleObject(state, entry.sourceCard ?? "ability", log, "all targets are illegal");
+        activePlayer = state.playerIndex;
+        continue;
+      }
       resolveEffectDescriptors(state, entry, log);
       applyStateBasedActions(state, log);
       activePlayer = state.playerIndex;
@@ -2002,13 +2011,109 @@ function selectedAbilityEffects(
 ) {
   const selectedModes = new Set(action.modes ?? []);
   return abilities
-    .filter((ability) => selectedModes.size === 0 || (ability.modeId && selectedModes.has(ability.modeId)))
+    .filter((ability) => selectedModes.size === 0 ? !ability.modeId : (ability.modeId && selectedModes.has(ability.modeId)))
     .filter((ability) => {
       const optionalId = ability.patternId ?? ability.abilityId ?? ability.modeId;
       if (!optionalId || !ability.effects.some((effect) => effect.optional)) return true;
       return action.optionalChoices?.[optionalId] !== false;
     })
     .flatMap((ability) => ability.effects);
+}
+
+function selectedActionAbilities(
+  abilities: ParsedAbility[],
+  action: Extract<SimAction, { type: "CAST_SPELL" | "ACTIVATE_ABILITY" }>
+) {
+  const selectedModes = new Set(action.modes ?? []);
+  return abilities.filter((ability) =>
+    selectedModes.size === 0 ? !ability.modeId : Boolean(ability.modeId && selectedModes.has(ability.modeId))
+  );
+}
+
+function allRequiredTargetsStillLegal(
+  state: SimGameState,
+  player: number,
+  action: Extract<SimAction, { type: "CAST_SPELL" | "ACTIVATE_ABILITY" }>,
+  abilities: ParsedAbility[]
+) {
+  for (const ability of selectedActionAbilities(abilities, action)) {
+    for (const requirement of ability.targets ?? []) {
+      const target = targetForRequirement(state, player, action, requirement);
+      if (!target) {
+        if (requirement.optional || requirement.required === false) continue;
+        return false;
+      }
+      if (!isLegalTarget(state, player, requirement, target)) return false;
+    }
+  }
+  return true;
+}
+
+function targetForRequirement(
+  state: SimGameState,
+  player: number,
+  action: Extract<SimAction, { type: "CAST_SPELL" | "ACTIVATE_ABILITY" }>,
+  requirement: NonNullable<ParsedAbility["targets"]>[number]
+): { id?: string | number; controller: number; card: CardName; type?: TargetRef["type"] } | null {
+  if (requirement.type === "PLAYER" || requirement.zone === "player") {
+    const targetRef = action.targets?.find((target) => target.type === "player");
+    const targetId = targetRef?.id ?? (action.type === "CAST_SPELL" ? action.targetPlayer : undefined);
+    const controller = typeof targetId === "number"
+      ? targetId
+      : typeof targetId === "string" && /^\d+$/.test(targetId)
+        ? Number(targetId)
+        : undefined;
+    return controller === undefined
+      ? null
+      : { id: controller, controller, card: `Player ${controller}`, type: "player" };
+  }
+
+  if (requirement.type === "SPELL" || requirement.zone === "stack") {
+    const targetRef = action.targets?.find((target) => target.type === "stack");
+    const targetId = targetRef?.id ?? (action.type === "CAST_SPELL" ? action.targetStackId : undefined);
+    if (typeof targetId !== "string") return null;
+    const entry = state.stack.find((candidate) => candidate.id === targetId && !candidate.resolved);
+    if (!entry) return null;
+    return {
+      id: entry.id,
+      controller: entry.casterIndex,
+      card: entry.action.type === "CAST_SPELL" ? entry.action.card : entry.sourceCard ?? entry.action.type,
+      type: "stack",
+    };
+  }
+
+  if (requirement.zone === "graveyard" || requirement.type === "CARD_IN_GRAVEYARD") {
+    const targetRef = action.targets?.find((target) => target.type === "card");
+    if (typeof targetRef?.id === "string") {
+      const parsed = parseGraveyardTargetId(targetRef.id);
+      const card = parsed ? state.graveyards[parsed.owner]?.[parsed.index] : undefined;
+      return parsed && card === parsed.card
+        ? { id: targetRef.id, controller: parsed.owner, card, type: "card" }
+        : null;
+    }
+    const legacyCard = action.type === "CAST_SPELL" ? action.targetGraveyardCard : undefined;
+    if (!legacyCard) return null;
+    const owners = playerIndicesByRelation(state, player, requirement.owner ?? requirement.controller ?? "self");
+    for (const owner of owners) {
+      if ((state.graveyards[owner] ?? []).includes(legacyCard)) {
+        return { id: `${owner}:graveyard:${state.graveyards[owner].indexOf(legacyCard)}:${legacyCard}`, controller: owner, card: legacyCard, type: "card" };
+      }
+    }
+    return null;
+  }
+
+  const targetRef = action.targets?.find((target) =>
+    target.type === "permanent" || target.type === "creature"
+  );
+  const targetId = targetRef?.id ?? (action.type === "CAST_SPELL" ? action.targetId : undefined);
+  if (typeof targetId !== "string") return null;
+  const lookup = findPermanentTargetById(state, targetId);
+  if (!lookup) return null;
+  if ((requirement.type === "CREATURE" || requirement.cardType === "creature") && !lookup.creature) return null;
+  const card = lookup.permanent?.face ?? lookup.permanent?.cardName ?? lookup.creature?.name;
+  return card
+    ? { id: targetId, controller: lookup.controller, card, type: lookup.creature ? "creature" : "permanent" }
+    : null;
 }
 
 function findActivatedAbilityForAction(
@@ -2025,14 +2130,18 @@ function findActivatedAbilityForAction(
   return ability ? { sourcePermanent, ability } : null;
 }
 
-function activateAbilityToStack(
+export function activateAbilityToStack(
   state: SimGameState,
   player: number,
   action: Extract<SimAction, { type: "ACTIVATE_ABILITY" }>,
   log: (msg: string) => void
 ): StackEntry | null {
   const found = findActivatedAbilityForAction(state, player, action);
-  if (!found || !canPayAbilityCosts(state, player, found.sourcePermanent, found.ability.costs ?? [])) {
+  if (
+    !found ||
+    !canPayAbilityCosts(state, player, found.sourcePermanent, found.ability.costs ?? []) ||
+    !allRequiredTargetsStillLegal(state, player, action, [found.ability])
+  ) {
     throw new Error(`Illegal activation: ${action.abilityId}`);
   }
   const sourceName = found.sourcePermanent.face ?? found.sourcePermanent.cardName;
@@ -2816,9 +2925,14 @@ export function isLegalTarget(
   if (requirement.controller === "opponent" && target.controller === player) return false;
   const metadata = getCardMetadata(state, target.controller, target.card);
   if (requirement.cardType === "creature" && !state.creatures[target.controller]?.some((creature) => creature.name === target.card) && !isCreatureCard(target.card, metadata)) return false;
-  if (requirement.cardType === "artifact" && !isArtifactCard(target.card, metadata)) return false;
+  if (requirement.cardType === "artifact" && !isArtifactCard(target.card, metadata) && !state.artifacts[target.controller]?.includes(target.card)) return false;
   if (requirement.cardType === "enchantment" && !(metadata?.typeLine ?? "").toLowerCase().includes("enchantment")) return false;
-  if (requirement.cardType === "permanent" && !isPermanentCard(target.card, metadata)) return false;
+  if (
+    requirement.cardType === "permanent" &&
+    target.type !== "permanent" &&
+    target.type !== "creature" &&
+    !isPermanentCard(target.card, metadata)
+  ) return false;
   if (requirement.subtype && !(metadata?.typeLine ?? target.card).toLowerCase().includes(requirement.subtype.toLowerCase())) return false;
   return true;
 }
@@ -3335,20 +3449,26 @@ function resolveSpellEffectsFromRegistry(
   const parsed = parseCardRules(metadata);
   const spellAbilities = parsed.abilities.filter((ability) => ability.kind === "SPELL_EFFECT");
   if (!spellAbilities.length) return false;
+  const spellAction = action ?? { type: "CAST_SPELL" as const, card, targetId, targetGraveyardCard };
+  if (!allRequiredTargetsStillLegal(state, player, spellAction, spellAbilities)) {
+    fizzleObject(state, card, log, "all targets are illegal");
+    state.graveyards[player].push(card);
+    return true;
+  }
 
   for (const ability of spellAbilities) {
     resolveEffectDescriptors(
       state,
       {
         id: `effect_${Date.now()}`,
-        action: action ?? { type: "CAST_SPELL", card, targetId, targetGraveyardCard },
+        action: spellAction,
         casterIndex: player,
         resolved: true,
         responses: [],
         kind: "spell",
         sourceCard: card,
-        effects: selectedAbilityEffects([ability], action ?? { type: "CAST_SPELL", card, targetId, targetGraveyardCard }),
-        targets: action?.targets,
+        effects: selectedAbilityEffects([ability], spellAction),
+        targets: spellAction.targets,
       },
       log
     );

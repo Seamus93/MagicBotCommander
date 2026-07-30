@@ -10,6 +10,7 @@ import type {
 import { getAvailableMana } from "../../../game-state/src/cardUtils.js";
 import {
   applyAction,
+  activateAbilityToStack,
   castSpellToStack,
   cleanupTemporaryEffects,
   createInitialState,
@@ -1157,6 +1158,31 @@ describe("explicit target, modal, optional, and activated action generation", ()
     expect(state.rulesMetrics?.fizzledObjects).toBeGreaterThan(0);
   });
 
+  it("fizzles when an explicit target no longer matches its requirement at resolution", async () => {
+    const murder = meta({
+      name: "Enemy Murder",
+      typeLine: "Instant",
+      manaCost: "{1}{B}",
+      manaValue: 2,
+      isInstant: true,
+      oracleText: "Destroy target creature an opponent controls.",
+    });
+    const state = makeState([murder, basicLand("Swamp")], ["Enemy Murder"]);
+    setManaBoard(state, 0, [basicLand("Swamp"), basicLand("Swamp")]);
+    addTestCreature(state, 1, "victim", "Victim");
+    const action: SimAction = { type: "CAST_SPELL", card: "Enemy Murder", targetId: "victim", targets: [{ type: "creature", id: "victim" }] };
+    castSpellToStack(state, 0, action, () => {});
+    state.stack.push({ id: "stack_murder", action, casterIndex: 0, resolved: false, responses: [], kind: "spell", sourceCard: "Enemy Murder", effects: parseCardRules(murder).abilities[0].effects, targets: action.targets });
+    state.creatures[0].push(state.creatures[1][0]);
+    state.creatures[1] = [];
+    state.permanents![1][0].controller = 0;
+
+    await resolveStackWithPriority(state, 0, [0, 1, 2, 3].map((i) => new PassAgent(`p${i}`)), () => {});
+
+    expect(state.creatures[0].some((creature) => creature.id === "victim")).toBe(true);
+    expect(state.rulesMetrics?.fizzledObjects).toBeGreaterThan(0);
+  });
+
   it("filters target creature you control away from enemy creatures", () => {
     const pump = meta({
       name: "Self Pump",
@@ -1259,6 +1285,32 @@ describe("explicit target, modal, optional, and activated action generation", ()
 
     actions = generateActions(state, 0, mainContext).filter((candidate) => candidate.type === "ACTIVATE_ABILITY");
     expect(actions).toHaveLength(0);
+  });
+
+  it("puts non-mana activated abilities on the stack before resolution", async () => {
+    const tome = meta({
+      name: "Stack Tome Test",
+      typeLine: "Artifact",
+      manaCost: "{4}",
+      manaValue: 4,
+      isArtifact: true,
+      isPermanent: true,
+      oracleText: "{T}: Draw a card.",
+    });
+    const state = makeState([tome], []);
+    setManaBoard(state, 0, [tome]);
+    const action = generateActions(state, 0, mainContext).find(
+      (candidate): candidate is Extract<SimAction, { type: "ACTIVATE_ABILITY" }> =>
+        candidate.type === "ACTIVATE_ABILITY"
+    );
+
+    const entry = activateAbilityToStack(state, 0, action!, () => {});
+
+    expect(entry?.kind).toBe("activatedAbility");
+    expect(state.hands[0]).toHaveLength(0);
+    state.stack.push(entry!);
+    await resolveStackWithPriority(state, 0, [0, 1, 2, 3].map((i) => new PassAgent(`p${i}`)), () => {});
+    expect(state.hands[0]).toHaveLength(1);
   });
 
   it("hides activated sacrifice costs when no sacrificable permanent exists", () => {
