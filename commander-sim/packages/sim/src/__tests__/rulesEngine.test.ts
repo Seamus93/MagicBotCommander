@@ -515,6 +515,44 @@ describe("rules engine legal actions and stack", () => {
     expect(state.graveyards[0]).toContain("Fodder");
   });
 
+  it("does not offer response instants with unpaid additional sacrifice costs", async () => {
+    const bargain = meta({
+      name: "Reckoner's Bargain",
+      typeLine: "Instant",
+      isInstant: true,
+      manaCost: "{1}{B}",
+      manaValue: 2,
+      oracleText: "As an additional cost to cast this spell, sacrifice a creature.\nDraw two cards.",
+    });
+    const probe = meta({
+      name: "Probe Spell",
+      typeLine: "Sorcery",
+      isSorcery: true,
+      manaCost: "{U}",
+      manaValue: 1,
+      oracleText: "Draw a card.",
+    });
+    const state = makeState([bargain, probe, basicLand("Swamp")], []);
+    state.hands[1] = ["Reckoner's Bargain"];
+    setManaBoard(state, 1, [basicLand("Swamp"), basicLand("Swamp")]);
+    const entry: StackEntry = {
+      id: "stack_probe",
+      action: { type: "CAST_SPELL", card: "Probe Spell" },
+      casterIndex: 0,
+      resolved: false,
+      responses: [],
+      kind: "spell",
+      sourceCard: "Probe Spell",
+      effects: parseCardRules(probe).abilities[0].effects,
+    };
+    state.stack.push(entry);
+
+    await resolveStackWithPriority(state, 0, [0, 1, 2, 3].map((i) => new PassAgent(`p${i}`)), () => {});
+
+    expect(state.hands[1]).toContain("Reckoner's Bargain");
+    expect(state.graveyards[1]).not.toContain("Reckoner's Bargain");
+  });
+
   it("uses colored mana requirements and taps Sol Ring only as a real source", () => {
     const blueRed = meta({ name: "Izzet Charm Test", typeLine: "Instant", isInstant: true, manaCost: "{U}{R}", manaValue: 2, oracleText: "Draw a card." });
     const bigRed = meta({ name: "Big Red Test", typeLine: "Sorcery", isSorcery: true, manaCost: "{2}{R}", manaValue: 3, oracleText: "Draw a card." });

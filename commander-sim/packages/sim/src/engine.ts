@@ -907,7 +907,17 @@ async function passPriority(
       continue;
     }
 
-    const instants = getAvailableInstants(state, opponentIndex, currentTop);
+    const instants = getAvailableInstants(state, opponentIndex, currentTop)
+      .filter((action) =>
+        action.type === "CAST_SPELL" &&
+        canCastSpell(state, opponentIndex, action.card, {
+          landDropsUsedThisTurn: 0,
+          maxLandDrops: 1,
+          allowInstant: true,
+          allowSorcery: false,
+          allowLand: false,
+        })
+      );
     if (instants.length === 0) {
       consecutivePasses++;
       priorityPlayer = (priorityPlayer + 1) % numPlayers;
