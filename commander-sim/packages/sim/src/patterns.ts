@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { SimAction, TargetRef } from "@game-state/types";
 
 export interface PatternRecord {
   pattern: string;
@@ -220,8 +221,49 @@ export const patternFromFeatures = (features: Record<string, number>) =>
     .map(([k, v]) => `${k}:${v.toFixed(2)}`)
     .join("|");
 
-export const actionToKey = (actionType: string, card: string) =>
-  `${actionType}:${card ?? "NONE"}`;
+export const actionToKey = (
+  actionType: string,
+  card: string,
+  action?: Partial<SimAction> & {
+    targets?: TargetRef[];
+    modes?: string[];
+    optionalChoices?: Record<string, boolean>;
+    targetId?: string;
+    targetPlayer?: number;
+    targetGraveyardCard?: string;
+    targetStackId?: string;
+    sourcePermanentId?: string;
+    abilityId?: string;
+  }
+) => {
+  const parts = [`${actionType}:${card ?? "NONE"}`];
+  if (action?.type === "ACTIVATE_ABILITY") {
+    parts[0] = `ACTIVATE:${action.sourcePermanentId}`;
+    parts.push(`ability=${action.abilityId}`);
+  }
+  if ("modes" in (action ?? {}) && action?.modes?.length) {
+    parts.push(`mode=${action.modes.join("+")}`);
+  }
+  if ("targets" in (action ?? {}) && action?.targets?.length) {
+    parts.push(
+      ...action.targets.map((target) => `target=${target.type}_${target.id}`)
+    );
+  } else if ("targetId" in (action ?? {}) && action?.targetId) {
+    parts.push(`target=perm_${action.targetId}`);
+  } else if ("targetPlayer" in (action ?? {}) && action?.targetPlayer !== undefined) {
+    parts.push(`target=player_${action.targetPlayer}`);
+  } else if ("targetGraveyardCard" in (action ?? {}) && action?.targetGraveyardCard) {
+    parts.push(`target=graveyard_${action.targetGraveyardCard}`);
+  } else if ("targetStackId" in (action ?? {}) && action?.targetStackId) {
+    parts.push(`target=stack_${action.targetStackId}`);
+  }
+  if ("optionalChoices" in (action ?? {}) && action?.optionalChoices) {
+    for (const [key, value] of Object.entries(action.optionalChoices).sort()) {
+      parts.push(`optional=${key}:${value ? "yes" : "no"}`);
+    }
+  }
+  return parts.join(":");
+};
 
 function estimateSquaredRewardSum(record: PatternRecord): number {
   if (record.visits <= 0) return 0;

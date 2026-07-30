@@ -17,6 +17,8 @@ import {
   generateActions,
   resolveStackWithPriority,
 } from "../engine.js";
+import { parseCardRules } from "../oraclePatternRegistry.js";
+import { actionToKey } from "../patterns.js";
 import { availableAttackers, availableBlockers, resolveCombat } from "../../../rules/src/combat/combat.js";
 
 const land = (name: string): DeckCardMetadata => ({
@@ -43,6 +45,9 @@ function makeState(cards: DeckCardMetadata[], hand: string[] = []): SimGameState
     0
   );
   state.hands[0] = hand;
+  state.playerIndex = 0;
+  state.phase = "Prima Fase Principale";
+  state.phaseStep = "Prima Fase Principale";
   state.libraries[0] = ["Spare", "Spare", "Spare"];
   state.battlefields[0] = ["Forest", "Forest", "Forest", "Forest", "Forest"];
   state.permanents![0] = state.battlefields[0].map((cardName) => ({
@@ -80,6 +85,50 @@ function setManaBoard(state: SimGameState, player: number, permanents: DeckCardM
     });
     if (metadata.isArtifact) state.artifacts[player].push(face);
   }
+}
+
+function addTestCreature(
+  state: SimGameState,
+  controller: number,
+  id: string,
+  name: string,
+  power = 2,
+  toughness = 2,
+  metadata: DeckCardMetadata = { name, typeLine: "Creature - Test", isCreature: true, isPermanent: true, manaCost: "{1}" }
+) {
+  state.cardMetadata[controller][name.toLowerCase()] = metadata;
+  state.battlefields[controller].push(name);
+  state.creatures[controller].push({
+    id,
+    name,
+    power,
+    toughness,
+    tapped: false,
+    summoningSickness: false,
+  });
+  state.permanents![controller].push({
+    id,
+    cardName: name,
+    owner: controller,
+    controller,
+    face: name,
+    tapped: false,
+    summoningSickness: false,
+  });
+}
+
+const mainContext = {
+  landDropsUsedThisTurn: 0,
+  maxLandDrops: 1,
+  allowInstant: true,
+  allowSorcery: true,
+  allowLand: true,
+};
+
+function castActions(actions: SimAction[]) {
+  return actions.filter(
+    (action): action is Extract<SimAction, { type: "CAST_SPELL" }> => action.type === "CAST_SPELL"
+  );
 }
 
 const basicLand = (name: "Island" | "Mountain" | "Swamp" | "Plains" | "Forest"): DeckCardMetadata => ({
@@ -1041,5 +1090,211 @@ describe("rules engine legal actions and stack", () => {
     const state = makeState([], []);
     state.permanents![0][0].tapped = true;
     expect(getAvailableMana(state, 0)).toBe(4);
+  });
+});
+
+describe("explicit target, modal, optional, and activated action generation", () => {
+  it("generates one Murder cast action for each legal enemy creature", () => {
+    const murder = meta({
+      name: "Murder",
+      typeLine: "Instant",
+      manaCost: "{1}{B}",
+      manaValue: 2,
+      isInstant: true,
+      oracleText: "Destroy target creature.",
+    });
+    const state = makeState([murder, basicLand("Swamp")], ["Murder"]);
+    setManaBoard(state, 0, [basicLand("Swamp"), basicLand("Swamp")]);
+    addTestCreature(state, 1, "enemy_a", "Enemy A");
+    addTestCreature(state, 2, "enemy_b", "Enemy B");
+    addTestCreature(state, 3, "enemy_c", "Enemy C");
+
+    const actions = castActions(generateActions(state, 0, mainContext)).filter((action) => action.card === "Murder");
+
+    expect(actions).toHaveLength(3);
+    expect(actions.map((action) => action.targetId).sort()).toEqual(["enemy_a", "enemy_b", "enemy_c"]);
+    expect(actions.every((action) => action.targets?.length === 1)).toBe(true);
+  });
+
+  it("does not expose Murder when no creature target exists", () => {
+    const murder = meta({
+      name: "Murder",
+      typeLine: "Instant",
+      manaCost: "{1}{B}",
+      manaValue: 2,
+      isInstant: true,
+      oracleText: "Destroy target creature.",
+    });
+    const state = makeState([murder, basicLand("Swamp")], ["Murder"]);
+    setManaBoard(state, 0, [basicLand("Swamp"), basicLand("Swamp")]);
+
+    expect(generateActions(state, 0, mainContext).some((action) => action.type === "CAST_SPELL" && action.card === "Murder")).toBe(false);
+  });
+
+  it("fizzles when an explicit permanent target disappears before resolution", async () => {
+    const murder = meta({
+      name: "Murder",
+      typeLine: "Instant",
+      manaCost: "{1}{B}",
+      manaValue: 2,
+      isInstant: true,
+      oracleText: "Destroy target creature.",
+    });
+    const state = makeState([murder, basicLand("Swamp")], ["Murder"]);
+    setManaBoard(state, 0, [basicLand("Swamp"), basicLand("Swamp")]);
+    addTestCreature(state, 1, "victim", "Victim");
+    addTestCreature(state, 2, "bystander", "Bystander");
+    const action: SimAction = { type: "CAST_SPELL", card: "Murder", targetId: "victim", targets: [{ type: "creature", id: "victim" }] };
+    castSpellToStack(state, 0, action, () => {});
+    state.stack.push({ id: "stack_murder", action, casterIndex: 0, resolved: false, responses: [], kind: "spell", sourceCard: "Murder", effects: parseCardRules(murder).abilities[0].effects, targets: action.targets });
+    state.creatures[1] = [];
+    state.permanents![1] = [];
+    state.battlefields[1] = [];
+
+    await resolveStackWithPriority(state, 0, [0, 1, 2, 3].map((i) => new PassAgent(`p${i}`)), () => {});
+
+    expect(state.creatures[2].some((creature) => creature.id === "bystander")).toBe(true);
+    expect(state.rulesMetrics?.fizzledObjects).toBeGreaterThan(0);
+  });
+
+  it("filters target creature you control away from enemy creatures", () => {
+    const pump = meta({
+      name: "Self Pump",
+      typeLine: "Instant",
+      manaCost: "{G}",
+      manaValue: 1,
+      isInstant: true,
+      oracleText: "Target creature you control gets +2/+2 until end of turn.",
+    });
+    const state = makeState([pump, basicLand("Forest")], ["Self Pump"]);
+    setManaBoard(state, 0, [basicLand("Forest")]);
+    addTestCreature(state, 0, "ally", "Ally");
+    addTestCreature(state, 1, "enemy", "Enemy");
+
+    const actions = castActions(generateActions(state, 0, mainContext)).filter((action) => action.card === "Self Pump");
+
+    expect(actions).toHaveLength(1);
+    expect(actions[0].targetId).toBe("ally");
+  });
+
+  it("generates distinct graveyard target actions", () => {
+    const raise = meta({
+      name: "Raise Dead Test",
+      typeLine: "Sorcery",
+      manaCost: "{B}",
+      manaValue: 1,
+      isSorcery: true,
+      oracleText: "Return target creature card from your graveyard to your hand.",
+    });
+    const state = makeState([raise, basicLand("Swamp")], ["Raise Dead Test"]);
+    setManaBoard(state, 0, [basicLand("Swamp")]);
+    state.graveyards[0] = ["Dead A", "Dead B"];
+    state.cardMetadata[0]["dead a"] = { name: "Dead A", typeLine: "Creature - Test", isCreature: true, isPermanent: true };
+    state.cardMetadata[0]["dead b"] = { name: "Dead B", typeLine: "Creature - Test", isCreature: true, isPermanent: true };
+
+    const actions = castActions(generateActions(state, 0, mainContext)).filter((action) => action.card === "Raise Dead Test");
+
+    expect(actions.map((action) => action.targetGraveyardCard).sort()).toEqual(["Dead A", "Dead B"]);
+    expect(actions.every((action) => action.targets?.[0]?.type === "card")).toBe(true);
+  });
+
+  it("generates choose-one modes and mode-target combinations", () => {
+    const modal = meta({
+      name: "Command Test",
+      typeLine: "Sorcery",
+      manaCost: "{2}{B}",
+      manaValue: 3,
+      isSorcery: true,
+      oracleText: "Choose one — • Draw two cards • Destroy target creature.",
+    });
+    const state = makeState([modal, basicLand("Swamp")], ["Command Test"]);
+    setManaBoard(state, 0, [basicLand("Swamp"), basicLand("Swamp"), basicLand("Swamp")]);
+    addTestCreature(state, 1, "enemy_a", "Enemy A");
+    addTestCreature(state, 2, "enemy_b", "Enemy B");
+
+    const actions = castActions(generateActions(state, 0, mainContext)).filter((action) => action.card === "Command Test");
+
+    expect(actions.some((action) => action.modes?.[0]?.startsWith("DRAW_CARDS"))).toBe(true);
+    const destroyActions = actions.filter((action) => action.modes?.[0]?.startsWith("DESTROY_TARGET_CREATURE"));
+    expect(destroyActions).toHaveLength(2);
+    expect(destroyActions.map((action) => action.targetId).sort()).toEqual(["enemy_a", "enemy_b"]);
+  });
+
+  it("generates yes/no actions for a relevant may effect", () => {
+    const maybeDraw = meta({
+      name: "Maybe Draw",
+      typeLine: "Sorcery",
+      manaCost: "{U}",
+      manaValue: 1,
+      isSorcery: true,
+      oracleText: "You may draw a card.",
+    });
+    const state = makeState([maybeDraw, basicLand("Island")], ["Maybe Draw"]);
+    setManaBoard(state, 0, [basicLand("Island")]);
+
+    const actions = castActions(generateActions(state, 0, mainContext)).filter((action) => action.card === "Maybe Draw");
+
+    expect(actions.map((action) => action.optionalChoices?.MAY_EFFECT ?? action.optionalChoices?.DRAW_CARDS).sort()).toEqual([false, true]);
+  });
+
+  it("generates activated tap abilities only while untapped and puts non-mana ability on stack", async () => {
+    const tome = meta({
+      name: "Jayemdae Tome Test",
+      typeLine: "Artifact",
+      manaCost: "{4}",
+      manaValue: 4,
+      isArtifact: true,
+      isPermanent: true,
+      oracleText: "{T}: Draw a card.",
+    });
+    const state = makeState([tome], []);
+    setManaBoard(state, 0, [tome]);
+
+    let actions = generateActions(state, 0, mainContext).filter((action) => action.type === "ACTIVATE_ABILITY");
+    expect(actions).toHaveLength(1);
+    const action = actions[0];
+    applyAction(state, action, 0, () => {});
+    expect(state.permanents![0][0].tapped).toBe(true);
+    expect(state.hands[0].length).toBe(1);
+
+    actions = generateActions(state, 0, mainContext).filter((candidate) => candidate.type === "ACTIVATE_ABILITY");
+    expect(actions).toHaveLength(0);
+  });
+
+  it("hides activated sacrifice costs when no sacrificable permanent exists", () => {
+    const altar = meta({
+      name: "Blood Altar Test",
+      typeLine: "Artifact",
+      isArtifact: true,
+      isPermanent: true,
+      oracleText: "Sacrifice a creature: Draw two cards.",
+    });
+    const state = makeState([altar], []);
+    setManaBoard(state, 0, [altar]);
+
+    expect(generateActions(state, 0, mainContext).some((action) => action.type === "ACTIVATE_ABILITY")).toBe(false);
+    addTestCreature(state, 0, "fodder", "Fodder");
+    expect(generateActions(state, 0, mainContext).some((action) => action.type === "ACTIVATE_ABILITY")).toBe(true);
+  });
+
+  it("represents Sol Ring mana ability without producing infinite mana", () => {
+    const state = makeState([solRing], []);
+    setManaBoard(state, 0, [solRing]);
+
+    const action = generateActions(state, 0, mainContext).find((candidate) => candidate.type === "ACTIVATE_ABILITY");
+    expect(action).toBeTruthy();
+    applyAction(state, action!, 0, () => {});
+    expect(state.permanents![0][0].tapped).toBe(true);
+    expect(state.artifactMana[0]).toBe(2);
+    expect(generateActions(state, 0, mainContext).some((candidate) => candidate.type === "ACTIVATE_ABILITY")).toBe(false);
+  });
+
+  it("serializes action keys with target, mode, and ability", () => {
+    expect(actionToKey("CAST_SPELL", "Murder", { type: "CAST_SPELL", card: "Murder", targets: [{ type: "permanent", id: "perm_12" }] }))
+      .toBe("CAST_SPELL:Murder:target=permanent_perm_12");
+    expect(actionToKey("CAST_SPELL", "Command", { type: "CAST_SPELL", card: "Command", modes: ["destroy"], targets: [{ type: "permanent", id: "perm_3" }] }))
+      .toBe("CAST_SPELL:Command:mode=destroy:target=permanent_perm_3");
+    expect(actionToKey("ACTIVATE_ABILITY", "", { type: "ACTIVATE_ABILITY", sourcePermanentId: "perm_8", abilityId: "draw" }))
+      .toBe("ACTIVATE:perm_8:ability=draw");
   });
 });

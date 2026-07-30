@@ -203,11 +203,14 @@ export interface TemporaryEffect {
 }
 
 export interface CostDescriptor {
-  type: "SACRIFICE";
+  type: "TAP" | "MANA" | "SACRIFICE" | "PAY_LIFE";
   amount?: number;
+  mana?: ManaCost;
+  life?: number;
   cardType?: "creature" | "artifact" | "enchantment" | "permanent";
   subtype?: string;
   controller?: "self";
+  source?: boolean;
 }
 
 export type ConditionDescriptor =
@@ -250,6 +253,9 @@ export interface ParsedAbility {
   targets?: TargetRequirement[];
   sourceFragment?: string;
   patternId?: string;
+  abilityId?: string;
+  modeId?: string;
+  modeLabel?: string;
   supportLevel?: "FULL" | "PARTIAL";
 }
 
@@ -287,7 +293,8 @@ export interface StackEntry {
   kind?: "spell" | "triggeredAbility" | "activatedAbility";
   sourceCard?: CardName;
   effects?: EffectDescriptor[];
-  targets?: Array<{ type: "player" | "creature" | "permanent" | "stack"; id: string | number }>;
+  targets?: TargetRef[];
+  ability?: ParsedAbility;
 }
 
 export interface SimGameState {
@@ -344,9 +351,33 @@ export interface HandSizeModifier {
   bonus?: number;
 }
 
+export interface TargetRef {
+  type: "player" | "creature" | "permanent" | "card" | "stack";
+  id: string | number;
+}
+
 export type SimAction =
   | { type: "PLAY_LAND"; card: CardName; face?: string }
-  | { type: "CAST_SPELL"; card: CardName; face?: string; targetStackId?: string; targetId?: string; targetPlayer?: number; targetGraveyardCard?: CardName }
+  | {
+      type: "CAST_SPELL";
+      card: CardName;
+      face?: string;
+      targetStackId?: string;
+      targetId?: string;
+      targetPlayer?: number;
+      targetGraveyardCard?: CardName;
+      targets?: TargetRef[];
+      modes?: string[];
+      optionalChoices?: Record<string, boolean>;
+    }
+  | {
+      type: "ACTIVATE_ABILITY";
+      sourcePermanentId: string;
+      abilityId: string;
+      targets?: TargetRef[];
+      modes?: string[];
+      optionalChoices?: Record<string, boolean>;
+    }
   | { type: "PASS_TURN" }
   | { type: "ATTACK_CHOICE"; card: CardName; mode: "ATTACK" | "HOLD" }
   | { type: "BLOCK_CHOICE"; card: CardName; targetId: string | null }

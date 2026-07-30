@@ -639,13 +639,15 @@ export function getAvailableInstants(
     })
     .map((card) => {
       const metadata = getCardMetadata(state, playerIndex, card);
+      const targetStackId =
+        triggeringEntry && isCounterspell(card, metadata)
+          ? triggeringEntry.id
+          : undefined;
       return {
         type: "CAST_SPELL" as const,
         card,
-        targetStackId:
-          triggeringEntry && isCounterspell(card, metadata)
-            ? triggeringEntry.id
-            : undefined,
+        targetStackId,
+        targets: targetStackId ? [{ type: "stack" as const, id: targetStackId }] : undefined,
       };
     });
 }

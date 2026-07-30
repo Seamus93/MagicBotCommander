@@ -64,7 +64,13 @@ function amount(raw?: string) {
 }
 
 const trigger = (eventType: RulesEventType) => ({ eventType, source: "self" as const });
-const targetCreature: TargetRequirement = { type: "CREATURE", controller: "opponent", required: true };
+const targetCreature: TargetRequirement = {
+  type: "CREATURE",
+  zone: "battlefield",
+  controller: "opponent",
+  cardType: "creature",
+  required: true,
+};
 const triggerLike = (text: string) => /^(when|whenever|at the beginning)\b/i.test(text.trim());
 const RUNTIME_EFFECTS = new Set<EffectDescriptor["type"]>([
   "DRAW_CARDS",
@@ -599,7 +605,7 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
     parse: (fragment) => [{
       kind: "SPELL_EFFECT",
       effects: [{ type: "EXILE", target: "targetPermanent" }],
-      targets: [{ type: "PERMANENT", controller: "opponent", required: true }],
+      targets: [{ type: "PERMANENT", zone: "battlefield", controller: "opponent", cardType: "permanent", required: true }],
       sourceFragment: fragment.text,
       patternId: "EXILE_TARGET",
       supportLevel: "PARTIAL",
@@ -622,7 +628,13 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
       return [{
         kind: "SPELL_EFFECT",
         effects: [{ type: "DEAL_DAMAGE", amount: amount((match as RegExpMatchArray)?.[1]), target }],
-        targets: target === "targetCreature" ? [targetCreature] : undefined,
+        targets: target === "targetCreature"
+          ? [targetCreature]
+          : destination.includes("target player")
+            ? [{ type: "PLAYER", zone: "player", controller: "any", required: true }]
+            : destination.includes("target opponent")
+              ? [{ type: "PLAYER", zone: "player", controller: "opponent", required: true }]
+              : undefined,
         sourceFragment: fragment.text,
         patternId: "DEAL_DAMAGE",
         supportLevel: "FULL",
@@ -781,7 +793,10 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
     supportLevel: "PARTIAL",
     parse: (fragment, match) => [{
       kind: "ACTIVATED",
-      costs: [{ type: "SACRIFICE", amount: 1, cardType: "permanent", controller: "self" }],
+      costs: [
+        { type: "TAP" },
+        { type: "SACRIFICE", amount: 1, cardType: "permanent", controller: "self", source: true },
+      ],
       effects: [{
         type: "SEARCH_LIBRARY",
         fromZone: "library",
@@ -796,14 +811,48 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
   },
   {
     id: "ADD_MANA",
-    matcher: /\badd ((?:\{[^}]+\})+|one mana|two mana|three mana)/i,
+    matcher: /\b(?:\{T\}:\s*)?add ((?:\{[^}]+\})+|one mana|two mana|three mana)/i,
     abilityKind: "ACTIVATED",
     supportLevel: "PARTIAL",
     parse: (fragment, match) => [{
       kind: "ACTIVATED",
+      costs: /\{T\}/i.test(fragment.text) ? [{ type: "TAP" }] : [],
       effects: [{ type: "ADD_MANA", amount: manaAmount((match as RegExpMatchArray)?.[1]), target: "self" }],
       sourceFragment: fragment.text,
       patternId: "ADD_MANA",
+      supportLevel: "PARTIAL",
+    }],
+  },
+  {
+    id: "TAP_ACTIVATED_EFFECT",
+    matcher: /(?:(\{[^}]+\}),\s*)?\{T\}:\s*(.+)$/i,
+    abilityKind: "ACTIVATED",
+    supportLevel: "PARTIAL",
+    parse: (fragment, match) => {
+      const mana = parseGenericManaCost((match as RegExpMatchArray)?.[1]);
+      const costs: CostDescriptor[] = [{ type: "TAP" }];
+      if (mana) costs.unshift({ type: "MANA", mana });
+      return [{
+        kind: "ACTIVATED",
+        costs,
+        effects: parseEffectText((match as RegExpMatchArray)?.[2] ?? ""),
+        sourceFragment: fragment.text,
+        patternId: "TAP_ACTIVATED_EFFECT",
+        supportLevel: "PARTIAL",
+      }];
+    },
+  },
+  {
+    id: "PAY_LIFE_ACTIVATED",
+    matcher: /\bpay (\d+) life:\s*(.+)$/i,
+    abilityKind: "ACTIVATED",
+    supportLevel: "PARTIAL",
+    parse: (fragment, match) => [{
+      kind: "ACTIVATED",
+      costs: [{ type: "PAY_LIFE", life: Number((match as RegExpMatchArray)?.[1] ?? 0) }],
+      effects: parseEffectText((match as RegExpMatchArray)?.[2] ?? ""),
+      sourceFragment: fragment.text,
+      patternId: "PAY_LIFE_ACTIVATED",
       supportLevel: "PARTIAL",
     }],
   },
@@ -822,6 +871,21 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
     }],
   },
 ];
+
+function parseGenericManaCost(raw?: string) {
+  if (!raw) return undefined;
+  const match = raw.match(/\{(\d+)\}/);
+  if (!match) return undefined;
+  return {
+    generic: Number(match[1]),
+    white: 0,
+    blue: 0,
+    black: 0,
+    red: 0,
+    green: 0,
+    colorless: 0,
+  };
+}
 
 function manaAmount(raw?: string) {
   if (!raw) return 1;
@@ -1073,6 +1137,65 @@ export function parseCardRules(metadata: DeckCardMetadata): ParsedCardRules {
   const unsupportedFragments: string[] = [];
 
   for (const fragment of fragments) {
+    if (/^choose (?:one|two)\s*[—-]/i.test(fragment.text)) {
+      const modeTexts = fragment.text
+        .replace(/^choose (?:one|two)\s*[—-]\s*/i, "")
+        .split(/\s*•\s*/)
+        .map((mode) => mode.trim())
+        .filter(Boolean);
+      for (const [index, modeText] of modeTexts.entries()) {
+        const modeFragment = { ...fragment, text: modeText };
+        const modeMatches = matchOraclePatterns(modeFragment);
+        if (!modeMatches.length) {
+          unsupportedFragments.push(modeText);
+          continue;
+        }
+        for (const match of modeMatches) {
+          const modeId = `${match.definition.id}_${index + 1}`;
+          const supportedAbilities = match.abilities.map((ability) => ({
+            ...ability,
+            modeId,
+            modeLabel: modeText,
+            supportLevel: abilityRuntimeSupported(ability) ? ability.supportLevel : "PARTIAL" as const,
+          }));
+          abilities.push(...supportedAbilities);
+          recognizedFragments.push({
+            fragment: modeText,
+            patternId: match.definition.id,
+            supportLevel: supportedAbilities.some((ability) => ability.supportLevel === "PARTIAL")
+              ? "PARTIAL"
+              : "FULL",
+          });
+        }
+      }
+      continue;
+    }
+
+    if (/^you may\b/i.test(fragment.text)) {
+      const mayText = fragment.text.replace(/^you may\s+/i, "");
+      const mayFragment = { ...fragment, text: mayText };
+      const mayMatches = matchOraclePatterns(mayFragment);
+      if (mayMatches.length) {
+        for (const match of mayMatches) {
+          const supportedAbilities = match.abilities.map((ability) => ({
+            ...ability,
+            effects: ability.effects.map((effect) => ({ ...effect, optional: true })),
+            patternId: ability.patternId ?? "MAY_EFFECT",
+            supportLevel: abilityRuntimeSupported(ability) ? ability.supportLevel : "PARTIAL" as const,
+          }));
+          abilities.push(...supportedAbilities);
+          recognizedFragments.push({
+            fragment: fragment.text,
+            patternId: "MAY_EFFECT",
+            supportLevel: supportedAbilities.some((ability) => ability.supportLevel === "PARTIAL")
+              ? "PARTIAL"
+              : "FULL",
+          });
+        }
+        continue;
+      }
+    }
+
     const matches = matchOraclePatterns(fragment);
     const mechanicAbilities = parseMechanics(fragment);
     if (!matches.length && !mechanicAbilities.length) {
