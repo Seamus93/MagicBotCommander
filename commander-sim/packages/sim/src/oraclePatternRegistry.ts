@@ -748,7 +748,7 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
   },
   {
     id: "SACRIFICE_ADDITIONAL_COST",
-    matcher: /\bas an additional cost to cast this spell, sacrifice (a|an|one|two|three|\d+)?\s*(creature|artifact|enchantment|permanent)\b/i,
+    matcher: /\bas an additional cost to cast this spell, sacrifice (?:(a|an|one|two|three|\d+)\s+)?(creature|artifact|enchantment|permanent)\b/i,
     abilityKind: "SPELL_EFFECT",
     supportLevel: "FULL",
     parse: (fragment, match) => [{

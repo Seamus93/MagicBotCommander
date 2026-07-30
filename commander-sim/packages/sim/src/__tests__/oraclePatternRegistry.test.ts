@@ -321,4 +321,21 @@ describe("OraclePatternRegistry", () => {
     expect(supported.coverage).toBe("FULL");
     expect(parsedOnly.coverage).toBe("PARTIAL");
   });
+
+  it("parses Village Rites additional sacrifice cost and draw effect", () => {
+    const parsed = parseCardRules(card({
+      name: "Village Rites",
+      typeLine: "Instant",
+      manaCost: "{B}",
+      oracleText: "As an additional cost to cast this spell, sacrifice a creature.\nDraw two cards.",
+    }));
+
+    expect(parsed.unsupportedFragments).toEqual([]);
+    expect(parsed.abilities.some((ability) =>
+      ability.costs?.some((cost) => cost.type === "SACRIFICE" && cost.cardType === "creature" && cost.amount === 1)
+    )).toBe(true);
+    expect(parsed.abilities.some((ability) =>
+      ability.effects.some((effect) => effect.type === "DRAW_CARDS" && effect.amount === 2)
+    )).toBe(true);
+  });
 });

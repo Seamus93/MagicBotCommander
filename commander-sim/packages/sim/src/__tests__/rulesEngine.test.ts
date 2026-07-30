@@ -10,6 +10,7 @@ import type {
 import { getAvailableMana } from "../../../game-state/src/cardUtils.js";
 import {
   applyAction,
+  castSpellToStack,
   cleanupTemporaryEffects,
   createInitialState,
   emitCombatDamageTriggers,
@@ -57,6 +58,48 @@ function makeState(cards: DeckCardMetadata[], hand: string[] = []): SimGameState
   state.cardMetadata[0] = { ...state.cardMetadata[0], ...metadataMap(cards) };
   return state;
 }
+
+function setManaBoard(state: SimGameState, player: number, permanents: DeckCardMetadata[]) {
+  state.battlefields[player] = [];
+  state.permanents![player] = [];
+  state.artifacts[player] = [];
+  for (const metadata of permanents) {
+    const face = metadata.landFace?.name ?? metadata.name;
+    state.cardMetadata[player][metadata.name.toLowerCase()] = metadata;
+    state.cardMetadata[player][face.toLowerCase()] = metadata;
+    state.battlefields[player].push(face);
+    state.permanents![player].push({
+      id: `perm_${face.toLowerCase().replace(/[^a-z0-9]+/g, "_")}`,
+      cardName: metadata.name,
+      owner: player,
+      controller: player,
+      face,
+      tapped: false,
+      counters: {},
+      damageMarked: 0,
+    });
+    if (metadata.isArtifact) state.artifacts[player].push(face);
+  }
+}
+
+const basicLand = (name: "Island" | "Mountain" | "Swamp" | "Plains" | "Forest"): DeckCardMetadata => ({
+  name,
+  typeLine: `Basic Land - ${name}`,
+  isLand: true,
+  isPermanent: true,
+  producesMana: true,
+});
+
+const solRing: DeckCardMetadata = {
+  name: "Sol Ring",
+  typeLine: "Artifact",
+  manaCost: "{1}",
+  manaValue: 1,
+  isArtifact: true,
+  isPermanent: true,
+  producesMana: true,
+  oracleText: "{T}: Add {C}{C}.",
+};
 
 class PassAgent implements SimAgent {
   constructor(public id: string) {}
@@ -422,6 +465,169 @@ describe("rules engine legal actions and stack", () => {
     expect(state.graveyards[0]).toContain("Fodder");
   });
 
+  it("uses colored mana requirements and taps Sol Ring only as a real source", () => {
+    const blueRed = meta({ name: "Izzet Charm Test", typeLine: "Instant", isInstant: true, manaCost: "{U}{R}", manaValue: 2, oracleText: "Draw a card." });
+    const bigRed = meta({ name: "Big Red Test", typeLine: "Sorcery", isSorcery: true, manaCost: "{2}{R}", manaValue: 3, oracleText: "Draw a card." });
+    const state = makeState([blueRed, bigRed, solRing, basicLand("Mountain")], ["Izzet Charm Test", "Big Red Test"]);
+    state.phase = "Prima Fase Principale";
+    state.phaseStep = "Prima Fase Principale";
+    setManaBoard(state, 0, [basicLand("Mountain"), solRing]);
+
+    const actions = generateActions(state, 0, {
+      landDropsUsedThisTurn: 0,
+      maxLandDrops: 1,
+      allowInstant: true,
+      allowSorcery: true,
+      allowLand: true,
+    });
+
+    expect(actions.some((action) => action.type === "CAST_SPELL" && action.card === "Izzet Charm Test")).toBe(false);
+    expect(actions.some((action) => action.type === "CAST_SPELL" && action.card === "Big Red Test")).toBe(true);
+
+    applyAction(state, { type: "CAST_SPELL", card: "Big Red Test" }, 0, () => {});
+
+    expect(state.permanents![0].find((permanent) => permanent.face === "Mountain")?.tapped).toBe(true);
+    expect(state.permanents![0].find((permanent) => permanent.face === "Sol Ring")?.tapped).toBe(true);
+    expect(state.artifactMana[0]).toBe(0);
+  });
+
+  it("allows matching colored costs and rejects colorless costs paid by colored mana", () => {
+    const blueRed = meta({ name: "Izzet Charm Test", typeLine: "Instant", isInstant: true, manaCost: "{U}{R}", manaValue: 2, oracleText: "Draw a card." });
+    const colorless = meta({ name: "Spatial Test", typeLine: "Instant", isInstant: true, manaCost: "{C}{C}", manaValue: 2, oracleText: "Draw a card." });
+    const state = makeState([blueRed, colorless, basicLand("Island"), basicLand("Mountain")], ["Izzet Charm Test", "Spatial Test"]);
+    state.phase = "Prima Fase Principale";
+    state.phaseStep = "Prima Fase Principale";
+    setManaBoard(state, 0, [basicLand("Island"), basicLand("Mountain")]);
+
+    let actions = generateActions(state, 0, {
+      landDropsUsedThisTurn: 0,
+      maxLandDrops: 1,
+      allowInstant: true,
+      allowSorcery: true,
+      allowLand: true,
+    });
+    expect(actions.some((action) => action.type === "CAST_SPELL" && action.card === "Izzet Charm Test")).toBe(true);
+    expect(actions.some((action) => action.type === "CAST_SPELL" && action.card === "Spatial Test")).toBe(false);
+
+    applyAction(state, { type: "CAST_SPELL", card: "Izzet Charm Test" }, 0, () => {});
+    expect(state.permanents![0].find((permanent) => permanent.face === "Island")?.tapped).toBe(true);
+    expect(state.permanents![0].find((permanent) => permanent.face === "Mountain")?.tapped).toBe(true);
+
+    state.hands[0] = ["Izzet Charm Test"];
+    actions = generateActions(state, 0, {
+      landDropsUsedThisTurn: 0,
+      maxLandDrops: 1,
+      allowInstant: true,
+      allowSorcery: true,
+      allowLand: true,
+    });
+    expect(actions.some((action) => action.type === "CAST_SPELL" && action.card === "Izzet Charm Test")).toBe(false);
+  });
+
+  it("uses Sol Ring for true colorless costs and cannot reuse tapped sources", () => {
+    const colorless = meta({ name: "Spatial Test", typeLine: "Instant", isInstant: true, manaCost: "{C}{C}", manaValue: 2, oracleText: "Draw a card." });
+    const second = meta({ name: "Second Spatial Test", typeLine: "Instant", isInstant: true, manaCost: "{C}", manaValue: 1, oracleText: "Draw a card." });
+    const state = makeState([colorless, second, solRing], ["Spatial Test", "Second Spatial Test"]);
+    state.phase = "Prima Fase Principale";
+    state.phaseStep = "Prima Fase Principale";
+    setManaBoard(state, 0, [solRing]);
+
+    let actions = generateActions(state, 0, {
+      landDropsUsedThisTurn: 0,
+      maxLandDrops: 1,
+      allowInstant: true,
+      allowSorcery: true,
+      allowLand: true,
+    });
+    expect(actions.some((action) => action.type === "CAST_SPELL" && action.card === "Spatial Test")).toBe(true);
+
+    applyAction(state, { type: "CAST_SPELL", card: "Spatial Test" }, 0, () => {});
+    expect(state.permanents![0].find((permanent) => permanent.face === "Sol Ring")?.tapped).toBe(true);
+
+    actions = generateActions(state, 0, {
+      landDropsUsedThisTurn: 0,
+      maxLandDrops: 1,
+      allowInstant: true,
+      allowSorcery: true,
+      allowLand: true,
+    });
+    expect(actions.some((action) => action.type === "CAST_SPELL" && action.card === "Second Spatial Test")).toBe(false);
+  });
+
+  it("requires Village Rites sacrifice cost and draws only if the spell resolves", async () => {
+    const villageRites = meta({
+      name: "Village Rites",
+      typeLine: "Instant",
+      isInstant: true,
+      manaCost: "{B}",
+      manaValue: 1,
+      oracleText: "As an additional cost to cast this spell, sacrifice a creature.\nDraw two cards.",
+    });
+    const counterspell = meta({ name: "Counterspell", typeLine: "Instant", isInstant: true, manaCost: "{U}{U}", manaValue: 2, oracleText: "Counter target spell." });
+    const state = makeState([villageRites, counterspell, basicLand("Swamp"), basicLand("Island")], ["Village Rites"]);
+    state.phase = "Prima Fase Principale";
+    state.phaseStep = "Prima Fase Principale";
+    setManaBoard(state, 0, [basicLand("Swamp")]);
+
+    let actions = generateActions(state, 0, {
+      landDropsUsedThisTurn: 0,
+      maxLandDrops: 1,
+      allowInstant: true,
+      allowSorcery: true,
+      allowLand: true,
+    });
+    expect(actions.some((action) => action.type === "CAST_SPELL" && action.card === "Village Rites")).toBe(false);
+
+    state.creatures[0] = [{ id: "fodder_vr", name: "Fodder", power: 1, toughness: 1, tapped: false, summoningSickness: false }];
+    state.battlefields[0].push("Fodder");
+    state.permanents![0].push({ id: "perm_fodder_vr", cardName: "Fodder", owner: 0, controller: 0, face: "Fodder", tapped: false, counters: {}, damageMarked: 0 });
+    actions = generateActions(state, 0, {
+      landDropsUsedThisTurn: 0,
+      maxLandDrops: 1,
+      allowInstant: true,
+      allowSorcery: true,
+      allowLand: true,
+    });
+    expect(actions.some((action) => action.type === "CAST_SPELL" && action.card === "Village Rites")).toBe(true);
+
+    state.libraries[0] = ["Draw A", "Draw B"];
+    castSpellToStack(state, 0, { type: "CAST_SPELL", card: "Village Rites" }, () => {});
+    expect(state.creatures[0]).toHaveLength(0);
+    expect(state.graveyards[0]).toContain("Fodder");
+    expect(state.rulesEvents?.some((event) => event.type === "CREATURE_DIED")).toBe(true);
+    state.stack.push({
+      id: "vr_stack",
+      action: { type: "CAST_SPELL", card: "Village Rites" },
+      casterIndex: 0,
+      resolved: false,
+      responses: [],
+      kind: "spell",
+    });
+    await resolveStackWithPriority(state, 0, [0, 1, 2, 3].map((i) => new PassAgent(`p${i}`)), () => {});
+    expect(state.hands[0]).toContain("Draw A");
+    expect(state.hands[0]).toContain("Draw B");
+
+    const countered = makeState([villageRites, counterspell, basicLand("Swamp"), basicLand("Island")], ["Village Rites"]);
+    setManaBoard(countered, 0, [basicLand("Swamp")]);
+    countered.creatures[0] = [{ id: "fodder_countered", name: "Fodder", power: 1, toughness: 1, tapped: false, summoningSickness: false }];
+    countered.battlefields[0].push("Fodder");
+    countered.permanents![0].push({ id: "perm_fodder_countered", cardName: "Fodder", owner: 0, controller: 0, face: "Fodder", tapped: false, counters: {}, damageMarked: 0 });
+    castSpellToStack(countered, 0, { type: "CAST_SPELL", card: "Village Rites" }, () => {});
+    countered.stack.push({
+      id: "vr_countered",
+      action: { type: "CAST_SPELL", card: "Village Rites" },
+      casterIndex: 0,
+      resolved: false,
+      responses: [],
+      kind: "spell",
+    });
+    countered.stack.splice(0, 1);
+    countered.graveyards[0].push("Village Rites");
+    expect(countered.graveyards[0]).toContain("Fodder");
+    expect(countered.creatures[0]).toHaveLength(0);
+    expect(countered.hands[0]).not.toContain("Draw A");
+  });
+
   it("resolves sacrifice effects for the appropriate controller", () => {
     const state = makeState([
       meta({ name: "Cruel Edict", typeLine: "Sorcery", manaValue: 2, oracleText: "Target player sacrifices a creature." }),
@@ -562,6 +768,17 @@ describe("rules engine legal actions and stack", () => {
       counters: {},
       damageMarked: 0,
     }];
+    state.battlefields[0].push("Forest");
+    state.permanents![0].push({
+      id: "perm_extra_forest",
+      cardName: "Forest",
+      owner: 0,
+      controller: 0,
+      face: "Forest",
+      tapped: false,
+      counters: {},
+      damageMarked: 0,
+    });
 
     applyAction(state, { type: "CAST_SPELL", card: "Mind Control Test", targetId: "perm_owned" }, 0, () => {});
     applyAction(state, { type: "CAST_SPELL", card: "Murder", targetId: "owned_creature" }, 0, () => {});

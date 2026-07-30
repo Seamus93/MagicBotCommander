@@ -29,6 +29,7 @@ export interface CardFaceMetadata {
 export interface DeckCardMetadata {
   name: string;
   typeLine?: string;
+  manaCost?: string;
   oracleText?: string;
   manaValue?: number;
   power?: number;
@@ -51,6 +52,39 @@ export interface DeckCardMetadata {
   aliases?: string[];
   colors?: string[];
   colorIdentity?: string[];
+}
+
+export interface ManaCost {
+  generic: number;
+  white: number;
+  blue: number;
+  black: number;
+  red: number;
+  green: number;
+  colorless: number;
+  x?: boolean;
+}
+
+export interface ManaPool {
+  W: number;
+  U: number;
+  B: number;
+  R: number;
+  G: number;
+  C: number;
+}
+
+export interface ManaPaymentSource {
+  permanentId: string;
+  card: CardName;
+  producedMana: ManaPool;
+  usedMana: ManaPool;
+}
+
+export interface ManaPaymentPlan {
+  legal: boolean;
+  sources: ManaPaymentSource[];
+  missing?: Partial<ManaPool> & { generic?: number };
 }
 
 export type RulesCoverageLevel = "FULL" | "PARTIAL" | "UNSUPPORTED";
@@ -285,6 +319,8 @@ export interface SimGameState {
     unsupportedEffects: number;
     stateBasedActions: number;
     fizzledObjects: number;
+    illegalCastPrevented?: number;
+    manaPaymentFailures?: number;
   };
   stack: StackEntry[];
 }

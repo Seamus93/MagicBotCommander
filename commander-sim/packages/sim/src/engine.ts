@@ -17,6 +17,8 @@ import type {
   SimulationResult,
   StackEntry,
   TemporaryEffect,
+  ManaCost,
+  ManaPaymentPlan,
 } from "@game-state/types";
 import { shouldMulligan, chooseBottomCards } from "./mulliganEvaluator.js";
 import type { CreaturePermanent } from "@rules/combat/types";
@@ -57,8 +59,11 @@ import {
   isInstantLike,
   isSorceryLike,
   getAvailableInstants,
-  getAvailableMana,
   isCounterspell,
+  manaCostFromMetadata,
+  reduceGenericManaCost,
+  findManaPaymentPlan,
+  applyManaPaymentPlan,
 } from "../../game-state/src/cardUtils.js";
 import {
   handleLandEntered,
@@ -426,6 +431,17 @@ function ensureRulesMetrics(state: SimGameState) {
     fizzledObjects: 0,
   };
   return state.rulesMetrics;
+}
+
+function recordIllegalCastPrevented(state: SimGameState) {
+  const metrics = ensureRulesMetrics(state);
+  metrics.illegalCastPrevented = (metrics.illegalCastPrevented ?? 0) + 1;
+}
+
+function recordManaPaymentFailure(state: SimGameState) {
+  const metrics = ensureRulesMetrics(state);
+  metrics.manaPaymentFailures = (metrics.manaPaymentFailures ?? 0) + 1;
+  metrics.illegalCastPrevented = (metrics.illegalCastPrevented ?? 0) + 1;
 }
 
 export async function simulateGame(
@@ -1595,7 +1611,16 @@ function selectControlledPermanentByType(
   controller: number,
   cardType: NonNullable<NonNullable<StackEntry["effects"]>[number]["cardType"]> | NonNullable<CostDescriptor["cardType"]>
 ): { controller: number; card: string } | null {
+  return getControlledPermanentsByType(state, controller, cardType)[0] ?? null;
+}
+
+function getControlledPermanentsByType(
+  state: SimGameState,
+  controller: number,
+  cardType: NonNullable<NonNullable<StackEntry["effects"]>[number]["cardType"]> | NonNullable<CostDescriptor["cardType"]>
+): Array<{ controller: number; card: string }> {
   const battlefield = state.battlefields[controller] ?? [];
+  const results: Array<{ controller: number; card: string }> = [];
   for (const card of battlefield) {
     const metadata = getCardMetadata(state, controller, card);
     if (
@@ -1606,9 +1631,9 @@ function selectControlledPermanentByType(
     if (cardType === "artifact" && !isArtifactCard(card, metadata)) continue;
     if (cardType === "enchantment" && !(metadata?.typeLine ?? "").toLowerCase().includes("enchantment")) continue;
     if (cardType === "permanent" && !isPermanentCard(card, metadata)) continue;
-    return { controller, card };
+    results.push({ controller, card });
   }
-  return null;
+  return results;
 }
 
 function sacrificeBattlefieldPermanent(
@@ -1794,7 +1819,7 @@ function ensureExileZones(state: SimGameState): CardName[][] {
   return withExiles.exiles;
 }
 
-function castSpellToStack(
+export function castSpellToStack(
   state: SimGameState,
   player: number,
   action: Extract<SimAction, { type: "CAST_SPELL" }>,
@@ -1805,8 +1830,10 @@ function castSpellToStack(
   if (idx >= 0) {
     state.hands[player].splice(idx, 1);
   }
-  payAdditionalCosts(state, player, getCardMetadata(state, player, card), log);
-  spendManaForSpell(state, player, card);
+  const metadata = getCardMetadata(state, player, card);
+  const paymentPlan = requireManaPaymentPlan(state, player, card, metadata, log);
+  applyManaPaymentPlan(state, player, paymentPlan);
+  payAdditionalCosts(state, player, metadata, log);
   emitRulesEvent(state, {
     type: "SPELL_CAST",
     player,
@@ -2414,12 +2441,8 @@ function canPayAdditionalCosts(
 ) {
   for (const cost of parsedCosts(metadata)) {
     if (cost.type !== "SACRIFICE") continue;
-    let available = 0;
-    for (let i = 0; i < (cost.amount ?? 1); i++) {
-      const target = selectControlledPermanentByType(state, player, cost.cardType ?? "permanent");
-      if (target) available++;
-    }
-    if (available < (cost.amount ?? 1)) return false;
+    const available = getControlledPermanentsByType(state, player, cost.cardType ?? "permanent");
+    if (available.length < (cost.amount ?? 1)) return false;
   }
   return true;
 }
@@ -2434,7 +2457,7 @@ function payAdditionalCosts(
     if (cost.type !== "SACRIFICE") continue;
     for (let i = 0; i < (cost.amount ?? 1); i++) {
       const target = selectControlledPermanentByType(state, player, cost.cardType ?? "permanent");
-      if (!target) continue;
+      if (!target) throw new Error(`Cannot pay sacrifice cost for ${metadata?.name ?? "spell"}`);
       sacrificeBattlefieldPermanent(state, target.controller, target.card, log);
     }
   }
@@ -2541,16 +2564,24 @@ export function canCastSpell(
     ? true
     : sorceryTiming && context.allowSorcery && isOwnMainPhaseWithEmptyStack(state, player);
   if (!timingLegal) return false;
-  if (!canPayAdditionalCosts(state, player, metadata)) return false;
+  if (!canPayAdditionalCosts(state, player, metadata)) {
+    recordIllegalCastPrevented(state);
+    return false;
+  }
   const graveyardTarget = findDefaultGraveyardTargetForCard(state, player, metadata);
   const requiresMissingGraveyardTarget = parseCardRules(metadata ?? { name: card }).abilities.some((ability) =>
     ability.targets?.some((target) => target.zone === "graveyard" && target.required !== false) &&
     !graveyardTarget
   );
   if (requiresMissingGraveyardTarget) return false;
+  if (!hasRequiredTargets(state, player, metadata)) return false;
 
-  const cost = getSpellCost(card, state, player);
-  return cost <= getAvailableMana(state, player);
+  const plan = findManaPaymentPlan(state, player, getSpellManaCost(card, state, player));
+  if (!plan.legal) {
+    recordManaPaymentFailure(state);
+    return false;
+  }
+  return true;
 }
 
 export function generateActions(
@@ -2574,17 +2605,12 @@ export function generateActions(
     return actions;
   }
 
-  const availableMana = getAvailableMana(state, player);
-
   hand
     .filter((card) => canCastSpell(state, player, card, context))
     .forEach((card) => {
       const metadata = getCardMetadata(state, player, card);
       if (isCounterspell(card, metadata)) return;
-      const cost = getSpellCost(card, state, player);
-      if (cost <= availableMana) {
-        actions.push(...buildCastSpellActions(state, player, card, metadata));
-      }
+      actions.push(...buildCastSpellActions(state, player, card, metadata));
     });
 
   return actions;
@@ -2619,6 +2645,23 @@ function getDefaultLegalTargets(
   const requirement = ability?.targets?.find((target) => target.zone === "battlefield");
   if (!requirement) return [];
   return getLegalTargets(state, player, requirement).slice(0, 3);
+}
+
+function hasRequiredTargets(
+  state: SimGameState,
+  player: number,
+  metadata?: DeckCardMetadata
+) {
+  if (!metadata) return true;
+  const requirements = parseCardRules(metadata).abilities.flatMap((ability) => ability.targets ?? []);
+  for (const requirement of requirements) {
+    if (requirement.required === false || requirement.optional) continue;
+    if (requirement.zone === "graveyard") continue;
+    if (requirement.zone === "battlefield" && getLegalTargets(state, player, requirement).length === 0) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function applyAction(
@@ -2670,10 +2713,12 @@ export function applyAction(
       break;
     }
     case "CAST_SPELL": {
+      const metadata = getCardMetadata(state, player, action.card);
+      const paymentPlan = requireManaPaymentPlan(state, player, action.card, metadata, log);
       const idx = state.hands[player].indexOf(action.card);
       if (idx >= 0) state.hands[player].splice(idx, 1);
-      payAdditionalCosts(state, player, getCardMetadata(state, player, action.card), log);
-      spendManaForSpell(state, player, action.card);
+      applyManaPaymentPlan(state, player, paymentPlan);
+      payAdditionalCosts(state, player, metadata, log);
       resolveSpell(state, player, action.card, log, action.face, action.targetId, action.targetGraveyardCard);
       break;
     }
@@ -2847,11 +2892,6 @@ function placePermanent(
       state.artifacts[player] = [];
     }
     state.artifacts[player].push(card);
-    const manaBonus = metadata?.manaProduction ?? 0;
-    if (manaBonus > 0) {
-      state.artifactMana[player] =
-        (state.artifactMana[player] ?? 0) + manaBonus;
-    }
   }
   log(`Player ${player} resolves permanent ${card}`);
   dispatchRulesEvent(state, {
@@ -3226,7 +3266,7 @@ function enforceHandSizeLimit(
 function getSpellCost(card: string, state: SimGameState, player: number) {
   const metadata = getCardMetadata(state, player, card);
   const spellManaValue = metadata?.spellFace?.manaValue ?? metadata?.manaValue;
-  if (typeof spellManaValue === "number" && spellManaValue > 0) {
+  if (typeof spellManaValue === "number") {
     return applyCostReductions(state, player, card, metadata, spellManaValue);
   }
   if (isBurnSpell(card)) return 2;
@@ -3252,27 +3292,38 @@ function getSpellCost(card: string, state: SimGameState, player: number) {
   return applyCostReductions(state, player, card, metadata, 3);
 }
 
-function spendManaForSpell(
+function getSpellManaCost(card: string, state: SimGameState, player: number): ManaCost {
+  const metadata = getCardMetadata(state, player, card);
+  const fallbackCost = getSpellCost(card, state, player);
+  const parsed = manaCostFromMetadata(metadata, fallbackCost);
+  return reduceGenericManaCost(parsed, totalGenericCostReduction(state, player, card, metadata));
+}
+
+function requireManaPaymentPlan(
   state: SimGameState,
   player: number,
-  card: string
-) {
-  const cost = getSpellCost(card, state, player);
-  const available = getAvailableMana(state, player);
-  const spend = Math.min(cost, available);
-  const permanents = state.permanents?.[player] ?? [];
-  if (permanents.length) {
-    let remaining = spend;
-    for (const permanent of permanents) {
-      if (remaining <= 0) break;
-      if (permanent.tapped) continue;
-      if (!isLandCard(state, player, permanent.face ?? permanent.cardName)) continue;
-      permanent.tapped = true;
-      remaining--;
-    }
-    return;
+  card: string,
+  metadata: DeckCardMetadata | undefined,
+  log: (msg: string) => void
+): ManaPaymentPlan {
+  const cost = getSpellManaCost(card, state, player);
+  log(`[Mana] Player ${player} casting ${card} cost=${formatManaCost(cost)}`);
+  const plan = findManaPaymentPlan(state, player, cost);
+  if (!plan.legal) {
+    recordManaPaymentFailure(state);
+    log(`[Mana] payment failed missing=${JSON.stringify(plan.missing ?? {})}`);
+    throw new Error(`Illegal cast: cannot pay mana cost for ${metadata?.name ?? card}`);
   }
-  state.manaSpent[player] = (state.manaSpent[player] ?? 0) + spend;
+  log(`[Mana] payment ${card}: ${plan.sources.map((source) => `${source.card} -> ${formatManaPool(source.usedMana)}`).join(", ")}`);
+  return plan;
+}
+
+function formatManaCost(cost: ManaCost) {
+  return `${cost.generic ? `{${cost.generic}}` : ""}${"{W}".repeat(cost.white)}${"{U}".repeat(cost.blue)}${"{B}".repeat(cost.black)}${"{R}".repeat(cost.red)}${"{G}".repeat(cost.green)}${"{C}".repeat(cost.colorless)}` || "{0}";
+}
+
+function formatManaPool(pool: ManaPaymentPlan["sources"][number]["usedMana"]) {
+  return `${"{W}".repeat(pool.W)}${"{U}".repeat(pool.U)}${"{B}".repeat(pool.B)}${"{R}".repeat(pool.R)}${"{G}".repeat(pool.G)}${"{C}".repeat(pool.C)}` || "{0}";
 }
 
 function isBurnSpell(card: string) {
@@ -3404,6 +3455,17 @@ function applyCostReductions(
   metadata: DeckCardMetadata | undefined,
   baseCost: number
 ) {
+  const totalReduction = totalGenericCostReduction(state, player, card, metadata);
+  const finalCost = Math.max(0, baseCost - totalReduction);
+  return finalCost;
+}
+
+function totalGenericCostReduction(
+  state: SimGameState,
+  player: number,
+  card: string,
+  metadata: DeckCardMetadata | undefined
+) {
   const reducers = state.costReducers[player] ?? [];
   let totalReduction = 0;
   for (const reducer of reducers) {
@@ -3418,8 +3480,7 @@ function applyCostReductions(
       continue;
     }
   }
-  const finalCost = Math.max(0, baseCost - totalReduction);
-  return finalCost;
+  return totalReduction;
 }
 
 function sourcePermanentStillPresent(

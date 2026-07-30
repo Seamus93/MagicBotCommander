@@ -1,11 +1,27 @@
 import type {
   CardName,
   DeckCardMetadata,
+  ManaCost,
+  ManaPaymentPlan,
+  ManaPaymentSource,
+  ManaPool,
   PermanentState,
   SimAction,
   SimGameState,
   StackEntry,
 } from "./types.js";
+
+const EMPTY_MANA_COST: ManaCost = {
+  generic: 0,
+  white: 0,
+  blue: 0,
+  black: 0,
+  red: 0,
+  green: 0,
+  colorless: 0,
+};
+
+const EMPTY_MANA_POOL: ManaPool = { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 };
 
 const PERMANENT_CARD_TYPES = [
   "land",
@@ -282,10 +298,251 @@ export function isCounterspell(card: CardName, metadata?: DeckCardMetadata) {
   return /counter\s+(?:up to\s+one\s+)?target/.test(text) || name.includes("counterspell");
 }
 
+export function emptyManaPool(): ManaPool {
+  return { ...EMPTY_MANA_POOL };
+}
+
+export function parseManaCost(raw?: string): ManaCost {
+  const cost: ManaCost = { ...EMPTY_MANA_COST };
+  if (!raw) return cost;
+  for (const symbol of raw.match(/\{[^}]+\}/g) ?? []) {
+    const value = symbol.slice(1, -1).toUpperCase();
+    if (/^\d+$/.test(value)) {
+      cost.generic += Number(value);
+      continue;
+    }
+    if (value === "X") {
+      cost.x = true;
+      continue;
+    }
+    if (value === "W") cost.white++;
+    else if (value === "U") cost.blue++;
+    else if (value === "B") cost.black++;
+    else if (value === "R") cost.red++;
+    else if (value === "G") cost.green++;
+    else if (value === "C") cost.colorless++;
+    else if (value.includes("/")) {
+      cost.generic++;
+    }
+  }
+  return cost;
+}
+
+export function manaCostFromMetadata(metadata?: DeckCardMetadata, fallbackManaValue = 0): ManaCost {
+  const raw = metadata?.spellFace?.manaCost ?? metadata?.manaCost;
+  const parsed = parseManaCost(raw);
+  if (raw) return parsed;
+  return { ...EMPTY_MANA_COST, generic: Math.max(0, fallbackManaValue) };
+}
+
+export function reduceGenericManaCost(cost: ManaCost, amount: number): ManaCost {
+  return {
+    ...cost,
+    generic: Math.max(0, cost.generic - Math.max(0, amount)),
+  };
+}
+
+function addMana(a: ManaPool, b: ManaPool): ManaPool {
+  return {
+    W: a.W + b.W,
+    U: a.U + b.U,
+    B: a.B + b.B,
+    R: a.R + b.R,
+    G: a.G + b.G,
+    C: a.C + b.C,
+  };
+}
+
+function producedPoolForPermanent(
+  state: SimGameState,
+  playerIndex: number,
+  permanent: PermanentState
+): ManaPool | null {
+  const card = permanent.face ?? permanent.cardName;
+  const metadata = getCardMetadata(state, playerIndex, permanent.cardName) ??
+    getCardMetadata(state, playerIndex, card);
+  const name = normalizeCardName(card);
+  const oracle = `${metadata?.landFace?.oracleText ?? ""}\n${metadata?.oracleText ?? ""}`;
+  const typeLine = metadata?.landFace?.typeLine ?? metadata?.typeLine ?? "";
+
+  if (name === "plains" || /\bbasic land\b/i.test(typeLine) && /\bplains\b/i.test(typeLine)) return { ...EMPTY_MANA_POOL, W: 1 };
+  if (name === "island" || /\bbasic land\b/i.test(typeLine) && /\bisland\b/i.test(typeLine)) return { ...EMPTY_MANA_POOL, U: 1 };
+  if (name === "swamp" || /\bbasic land\b/i.test(typeLine) && /\bswamp\b/i.test(typeLine)) return { ...EMPTY_MANA_POOL, B: 1 };
+  if (name === "mountain" || /\bbasic land\b/i.test(typeLine) && /\bmountain\b/i.test(typeLine)) return { ...EMPTY_MANA_POOL, R: 1 };
+  if (name === "forest" || /\bbasic land\b/i.test(typeLine) && /\bforest\b/i.test(typeLine)) return { ...EMPTY_MANA_POOL, G: 1 };
+  if (name === "wastes") return { ...EMPTY_MANA_POOL, C: 1 };
+  if (name === "basic land") return { ...EMPTY_MANA_POOL, C: 1 };
+
+  const addMatch = oracle.match(/\{T\}[^:]*:\s*Add ((?:\{[^}]+\})+|one mana|two mana|three mana)/i);
+  if (addMatch) return parseProducedMana(addMatch[1]);
+  if (metadata?.producesMana && metadata.manaProduction) {
+    return { ...EMPTY_MANA_POOL, C: metadata.manaProduction };
+  }
+  return null;
+}
+
+function parseProducedMana(raw: string): ManaPool {
+  const pool = emptyManaPool();
+  const symbols = raw.match(/\{[^}]+\}/g) ?? [];
+  if (symbols.length) {
+    for (const symbol of symbols) {
+      const value = symbol.slice(1, -1).toUpperCase();
+      if (value === "W") pool.W++;
+      else if (value === "U") pool.U++;
+      else if (value === "B") pool.B++;
+      else if (value === "R") pool.R++;
+      else if (value === "G") pool.G++;
+      else if (value === "C") pool.C++;
+      else if (/^\d+$/.test(value)) pool.C += Number(value);
+    }
+    return pool;
+  }
+  if (/three mana/i.test(raw)) pool.C = 3;
+  else if (/two mana/i.test(raw)) pool.C = 2;
+  else pool.C = 1;
+  return pool;
+}
+
+function manaSourcesForPlayer(state: SimGameState, playerIndex: number): ManaPaymentSource[] {
+  const sources: ManaPaymentSource[] = [];
+  const permanents = state.permanents?.[playerIndex] ?? [];
+  for (const permanent of permanents) {
+    if (permanent.tapped) continue;
+    const producedMana = producedPoolForPermanent(state, playerIndex, permanent);
+    if (!producedMana) continue;
+    sources.push({
+      permanentId: permanent.id,
+      card: permanent.face ?? permanent.cardName,
+      producedMana,
+      usedMana: emptyManaPool(),
+    });
+  }
+  if (!sources.length && !permanents.length) {
+    const tapped = { ...(state.tappedPermanents?.[playerIndex] ?? {}) };
+    for (const card of state.battlefields[playerIndex] ?? []) {
+      const key = normalizeCardName(card);
+      const tappedCount = tapped[key] ?? 0;
+      if (tappedCount > 0) {
+        tapped[key] = tappedCount - 1;
+        continue;
+      }
+      const producedMana = producedPoolForPermanent(state, playerIndex, {
+        id: `legacy:${playerIndex}:${key}`,
+        cardName: card,
+        owner: playerIndex,
+        controller: playerIndex,
+        face: card,
+        tapped: false,
+      });
+      if (!producedMana) continue;
+      sources.push({
+        permanentId: `legacy:${playerIndex}:${key}`,
+        card,
+        producedMana,
+        usedMana: emptyManaPool(),
+      });
+    }
+  }
+  return sources;
+}
+
+function consume(pool: ManaPool, color: keyof ManaPool, amount: number) {
+  const used = Math.min(pool[color], amount);
+  pool[color] -= used;
+  return used;
+}
+
+function sourceCanPay(source: ManaPaymentSource, color: keyof ManaPool) {
+  return source.producedMana[color] > 0;
+}
+
+function missingCost(cost: ManaCost): ManaPaymentPlan["missing"] {
+  return {
+    W: cost.white || undefined,
+    U: cost.blue || undefined,
+    B: cost.black || undefined,
+    R: cost.red || undefined,
+    G: cost.green || undefined,
+    C: cost.colorless || undefined,
+    generic: cost.generic || undefined,
+  };
+}
+
+export function findManaPaymentPlan(
+  state: SimGameState,
+  playerIndex: number,
+  cost: ManaCost
+): ManaPaymentPlan {
+  const requirements: Array<[keyof ManaPool, number]> = [
+    ["W", cost.white],
+    ["U", cost.blue],
+    ["B", cost.black],
+    ["R", cost.red],
+    ["G", cost.green],
+    ["C", cost.colorless],
+  ];
+  const unusedSources = manaSourcesForPlayer(state, playerIndex);
+  const chosen: ManaPaymentSource[] = [];
+  const pool = emptyManaPool();
+
+  for (const [color, amountNeeded] of requirements) {
+    let remaining = amountNeeded;
+    while (remaining > 0) {
+      const index = unusedSources.findIndex((source) => sourceCanPay(source, color));
+      if (index < 0) return { legal: false, sources: chosen, missing: missingCost(cost) };
+      const [source] = unusedSources.splice(index, 1);
+      const exactUsed = Math.min(source.producedMana[color], remaining);
+      source.usedMana[color] += exactUsed;
+      chosen.push(source);
+      const produced = { ...source.producedMana };
+      produced[color] -= exactUsed;
+      const added = addMana(pool, produced);
+      pool.W = added.W; pool.U = added.U; pool.B = added.B; pool.R = added.R; pool.G = added.G; pool.C = added.C;
+      remaining -= exactUsed;
+    }
+  }
+
+  let genericRemaining = cost.generic;
+  for (const color of ["W", "U", "B", "R", "G", "C"] as Array<keyof ManaPool>) {
+    genericRemaining -= consume(pool, color, genericRemaining);
+    if (genericRemaining <= 0) break;
+  }
+  while (genericRemaining > 0) {
+    const source = unusedSources.shift();
+    if (!source) return { legal: false, sources: chosen, missing: { generic: genericRemaining } };
+    chosen.push(source);
+    let remainingFromSource = Object.values(source.producedMana).reduce((sum, value) => sum + value, 0);
+    for (const color of ["C", "W", "U", "B", "R", "G"] as Array<keyof ManaPool>) {
+      while (remainingFromSource > 0 && genericRemaining > 0 && source.producedMana[color] > source.usedMana[color]) {
+        source.usedMana[color]++;
+        remainingFromSource--;
+        genericRemaining--;
+      }
+    }
+  }
+
+  return { legal: true, sources: chosen };
+}
+
+export function applyManaPaymentPlan(state: SimGameState, playerIndex: number, plan: ManaPaymentPlan) {
+  if (!plan.legal) return;
+  for (const source of plan.sources) {
+    const permanent = state.permanents?.[playerIndex]?.find((candidate) => candidate.id === source.permanentId);
+    if (permanent) permanent.tapped = true;
+  }
+}
+
 export function getAvailableMana(
   state: SimGameState,
   playerIndex: number
 ) {
+  const sources = manaSourcesForPlayer(state, playerIndex);
+  if (sources.length || state.permanents?.[playerIndex]?.length) {
+    return sources.reduce(
+      (sum, source) => sum + Object.values(source.producedMana).reduce((inner, value) => inner + value, 0),
+      0
+    );
+  }
   const permanentLands = state.permanents?.[playerIndex]?.filter((permanent) => {
     if (permanent.tapped) return false;
     return isLandCard(state, playerIndex, permanent.face ?? permanent.cardName);
@@ -369,14 +626,14 @@ export function getAvailableInstants(
   triggeringEntry?: StackEntry
 ): SimAction[] {
   const hand = state.hands[playerIndex] ?? [];
-  const totalMana = getAvailableMana(state, playerIndex);
 
   return hand
     .filter((card) => {
       const metadata = getCardMetadata(state, playerIndex, card);
       if (!isInstantCard(state, playerIndex, card, metadata) && !hasFlash(metadata)) return false;
-      const cmc = metadata?.spellFace?.manaValue ?? metadata?.manaValue ?? 0;
-      if (cmc > totalMana) return false;
+      const fallback = metadata?.spellFace?.manaValue ?? metadata?.manaValue ?? 0;
+      const cost = manaCostFromMetadata(metadata, fallback);
+      if (!findManaPaymentPlan(state, playerIndex, cost).legal) return false;
       if (!triggeringEntry) return true;
       return canRespondWith(state, playerIndex, card, triggeringEntry, metadata);
     })
