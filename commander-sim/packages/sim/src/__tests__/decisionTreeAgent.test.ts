@@ -142,6 +142,34 @@ describe("DecisionTreeAgent confidence", () => {
     expect(picked?.action).toEqual(better);
     expect(picked?.expectedReward).toBeCloseTo(0.2);
   });
+
+  it("include target, mode e ability nella actionKey prodotta dall'agente", () => {
+    const state = makeState();
+    const targeted: SimAction = {
+      type: "CAST_SPELL",
+      card: "Reliable Spell",
+      modes: ["destroy"],
+      targets: [{ type: "permanent", id: "perm_12" }],
+    };
+    const ability: SimAction = {
+      type: "ACTIVATE_ABILITY",
+      sourcePermanentId: "perm_8",
+      abilityId: "draw",
+    };
+    const agent = new InspectableDecisionTreeAgent({
+      id: "policy",
+      store: new PatternStore(),
+      epsilon: 0,
+      confidenceThreshold: 0.8,
+      minVisits: 5,
+      confidenceK: 50,
+    });
+
+    const scored = agent.scorePublic(state, [targeted, ability]);
+
+    expect(scored[0].key).toBe("CAST_SPELL:Reliable Spell:mode=destroy:target=permanent_perm_12");
+    expect(scored[1].key).toBe("ACTIVATE:perm_8:ability=draw");
+  });
 });
 
 describe("live policy loading", () => {

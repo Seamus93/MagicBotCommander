@@ -20,11 +20,13 @@ export interface PatternScoreRecord extends PatternRecord {
 export class PatternStore {
   private readonly records = new Map<string, PatternRecord>();
   private readonly dirtyKeys = new Set<string>();
+  private readonly recordsByActionKey = new Map<string, Set<PatternRecord>>();
+  private readonly parsedPatternCache = new Map<string, Map<string, number>>();
 
   constructor(initial?: PatternRecord[]) {
     initial?.forEach((record) => {
       const key = this.makeKey(record.pattern, record.actionKey);
-      this.records.set(key, this.normalizeRecord(record));
+      this.setRecord(key, this.normalizeRecord(record));
     });
   }
 
@@ -33,6 +35,8 @@ export class PatternStore {
   }
 
   private parsePattern(pattern: string): Map<string, number> {
+    const cached = this.parsedPatternCache.get(pattern);
+    if (cached) return cached;
     const map = new Map<string, number>();
     for (const part of pattern.split("|")) {
       const colonIdx = part.indexOf(":");
@@ -40,6 +44,7 @@ export class PatternStore {
       const v = parseFloat(part.slice(colonIdx + 1));
       if (!Number.isNaN(v)) map.set(part.slice(0, colonIdx), v);
     }
+    this.parsedPatternCache.set(pattern, map);
     return map;
   }
 
@@ -72,8 +77,10 @@ export class PatternStore {
     let weightedSum = 0;
     let totalWeight = 0;
     let weightedVisits = 0;
-    for (const record of this.records.values()) {
-      if (record.actionKey !== actionKey || record.visits === 0) continue;
+    const candidates = this.recordsByActionKey.get(actionKey);
+    if (!candidates) return undefined;
+    for (const record of candidates) {
+      if (record.visits === 0) continue;
       const dist = this.hammingDistance(queryFeatures, this.parsePattern(record.pattern));
       if (dist > maxDistance) continue;
       const confidence = confidenceFromRecord(record);
@@ -104,7 +111,7 @@ export class PatternStore {
     const current = this.records.get(key);
     const now = new Date().toISOString();
     if (!current) {
-      this.records.set(key, {
+      this.setRecord(key, {
         pattern,
         actionKey,
         score: deltaScore,
@@ -144,7 +151,7 @@ export class PatternStore {
       const key = this.makeKey(record.pattern, record.actionKey);
       const existing = this.records.get(key);
       if (!existing) {
-        this.records.set(key, this.normalizeRecord(record));
+        this.setRecord(key, this.normalizeRecord(record));
       } else {
         existing.score += record.score;
         existing.visits += record.visits;
@@ -197,6 +204,16 @@ export class PatternStore {
     };
   }
 
+  private setRecord(key: string, record: PatternRecord): void {
+    this.records.set(key, record);
+    let bucket = this.recordsByActionKey.get(record.actionKey);
+    if (!bucket) {
+      bucket = new Set<PatternRecord>();
+      this.recordsByActionKey.set(record.actionKey, bucket);
+    }
+    bucket.add(record);
+  }
+
   static load(filePath: string): PatternStore {
     try {
       const text = fs.readFileSync(filePath, "utf8");
@@ -228,7 +245,7 @@ export const actionToKey = (
     targets?: TargetRef[];
     modes?: string[];
     optionalChoices?: Record<string, boolean>;
-    targetId?: string;
+    targetId?: string | null;
     targetPlayer?: number;
     targetGraveyardCard?: string;
     targetStackId?: string;

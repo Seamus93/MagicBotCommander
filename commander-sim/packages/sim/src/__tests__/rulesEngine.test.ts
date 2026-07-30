@@ -776,6 +776,26 @@ describe("rules engine legal actions and stack", () => {
     expect(tokens.find((creature) => creature.name === "Pirate")).toMatchObject({ power: 1, toughness: 1, tapped: true });
   });
 
+  it("does not retrigger source ETB abilities for unrelated permanents entering", async () => {
+    const ramirez = meta({
+      name: "Ramirez DePietro, Pillager",
+      typeLine: "Legendary Creature - Human Pirate",
+      isCreature: true,
+      isPermanent: true,
+      manaValue: 4,
+      power: 4,
+      toughness: 3,
+      oracleText: "When Ramirez DePietro enters, create two Treasure tokens.",
+    });
+    const state = makeState([ramirez], ["Ramirez DePietro, Pillager"]);
+
+    applyAction(state, { type: "CAST_SPELL", card: "Ramirez DePietro, Pillager" }, 0, () => {});
+    await resolveStackWithPriority(state, 0, [0, 1, 2, 3].map((i) => new PassAgent(`p${i}`)), () => {});
+
+    expect(state.battlefields[0].filter((card) => card === "Treasure")).toHaveLength(2);
+    expect(state.battlefields[0].filter((card) => card === "Treasure")).not.toHaveLength(4);
+  });
+
   it("does not require a graveyard target for optional up to one effects", () => {
     const state = makeState([
       meta({

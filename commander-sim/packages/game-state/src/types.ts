@@ -531,9 +531,46 @@ export interface SimulationResult {
   history: SimulationHistoryEntry[];
   turns: number;
   finalState: SimGameState;
+  diagnostics?: SimulationDiagnostics;
   metrics?: {
     missedLandDropOpportunity: number;
   };
+}
+
+export interface SimulationDiagnostics {
+  aborted?: boolean;
+  abortReason?: string;
+  abortDump?: string;
+  actionsApplied: number;
+  maxAvailableActions: number;
+  avgAvailableActions: number;
+  windowsOver50Actions: number;
+  windowsOver100Actions: number;
+  stackPushes: number;
+  stackResolutions: number;
+  priorityPasses: number;
+  responsesGenerated: number;
+  maxStackDepth: number;
+  maxPriorityIterationsPerWindow: number;
+  repeatedStateAborts: number;
+  priorityIterationAborts: number;
+  stackResolutionAborts: number;
+  actionLimitAborts: number;
+  timeLimitAborts: number;
+  topActionWindows: Array<{
+    turn: number;
+    phase: string;
+    player: number;
+    total: number;
+    cast: number;
+    activate: number;
+    pass: number;
+    targetCombos: number;
+    modeCombos: number;
+    topCards: Array<{ key: string; count: number }>;
+  }>;
+  recentActions: string[];
+  timingsMs: Record<string, number>;
 }
 
 export interface StateDigest {

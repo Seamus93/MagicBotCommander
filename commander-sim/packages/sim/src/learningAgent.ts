@@ -392,7 +392,7 @@ export class LearningAgent implements SimAgent {
         ...patternBase,
         actionHash: this.hashAction(action),
       });
-      const key = actionToKey(action.type, "card" in action ? action.card : "");
+      const key = actionToKey(action.type, "card" in action ? action.card : "", action);
       const policy = this.resolvePatternScore(pattern, key);
       let heuristic = 0;
       if (action.type === "PLAY_LAND") {

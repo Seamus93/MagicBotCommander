@@ -19,6 +19,7 @@ import type {
   TemporaryEffect,
   ManaCost,
   ManaPaymentPlan,
+  SimulationDiagnostics,
   TargetRef,
 } from "@game-state/types";
 import { shouldMulligan, chooseBottomCards } from "./mulliganEvaluator.js";
@@ -63,7 +64,7 @@ import {
   isCounterspell,
   manaCostFromMetadata,
   reduceGenericManaCost,
-  findManaPaymentPlan,
+  findManaPaymentPlan as findManaPaymentPlanRaw,
   applyManaPaymentPlan,
 } from "../../game-state/src/cardUtils.js";
 import {
@@ -76,7 +77,7 @@ import {
   type AttackPlan,
   type BlockPlan,
 } from "./combatEvaluator.js";
-import { parseCardRules } from "./oraclePatternRegistry.js";
+import { parseCardRules as parseCardRulesRaw } from "./oraclePatternRegistry.js";
 
 const DEFAULT_DECK = [
   ...Array(18).fill("Basic Land"),
@@ -180,6 +181,111 @@ const TURN_STRUCTURE: TurnStepConfig[] = [
 
 const MAX_ACTIONS_PER_WINDOW = 4;
 
+class EpisodeAbort extends Error {
+  constructor(
+    public readonly reason: string,
+    public readonly diagnostics?: SimulationDiagnostics
+  ) {
+    super(reason);
+    this.name = "EpisodeAbort";
+  }
+}
+
+interface DiagnosticContext {
+  enabled: boolean;
+  debugEpisode: boolean;
+  startedAt: number;
+  limits: {
+    maxEpisodeMs: number;
+    maxActionsPerEpisode: number;
+    maxPriorityIterations: number;
+    maxStackResolutions: number;
+    maxIdenticalStateRepeats: number;
+  };
+  data: SimulationDiagnostics;
+  actionWindowTotal: number;
+  actionWindowCount: number;
+  fingerprintCounts: Map<string, number>;
+}
+
+let activeDiagnostics: DiagnosticContext | null = null;
+
+const envNumber = (name: string, fallback: number) => {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+function createDiagnosticContext(): DiagnosticContext {
+  return {
+    enabled: true,
+    debugEpisode: process.env.DEBUG_EPISODE === "true",
+    startedAt: Date.now(),
+    limits: {
+      maxEpisodeMs: envNumber("MAX_EPISODE_MS", 120_000),
+      maxActionsPerEpisode: envNumber("MAX_ACTIONS_PER_EPISODE", 2_000),
+      maxPriorityIterations: envNumber("MAX_PRIORITY_ITERATIONS", 2_000),
+      maxStackResolutions: envNumber("MAX_STACK_RESOLUTIONS", 500),
+      maxIdenticalStateRepeats: envNumber("MAX_IDENTICAL_STATE_REPEATS", 20),
+    },
+    data: {
+      actionsApplied: 0,
+      maxAvailableActions: 0,
+      avgAvailableActions: 0,
+      windowsOver50Actions: 0,
+      windowsOver100Actions: 0,
+      stackPushes: 0,
+      stackResolutions: 0,
+      priorityPasses: 0,
+      responsesGenerated: 0,
+      maxStackDepth: 0,
+      maxPriorityIterationsPerWindow: 0,
+      repeatedStateAborts: 0,
+      priorityIterationAborts: 0,
+      stackResolutionAborts: 0,
+      actionLimitAborts: 0,
+      timeLimitAborts: 0,
+      topActionWindows: [],
+      recentActions: [],
+      timingsMs: {},
+    },
+    actionWindowTotal: 0,
+    actionWindowCount: 0,
+    fingerprintCounts: new Map(),
+  };
+}
+
+function timeBlock<T>(name: string, fn: () => T): T {
+  const start = performance.now();
+  try {
+    return fn();
+  } finally {
+    const diagnostics = activeDiagnostics;
+    if (diagnostics) {
+      diagnostics.data.timingsMs[name] = (diagnostics.data.timingsMs[name] ?? 0) + performance.now() - start;
+    }
+  }
+}
+
+async function timeAsync<T>(name: string, fn: () => Promise<T>): Promise<T> {
+  const start = performance.now();
+  try {
+    return await fn();
+  } finally {
+    const diagnostics = activeDiagnostics;
+    if (diagnostics) {
+      diagnostics.data.timingsMs[name] = (diagnostics.data.timingsMs[name] ?? 0) + performance.now() - start;
+    }
+  }
+}
+
+function parseCardRules(metadata: DeckCardMetadata) {
+  return timeBlock("parseCardRules", () => parseCardRulesRaw(metadata));
+}
+
+function findManaPaymentPlan(state: SimGameState, player: number, cost: ManaCost) {
+  return timeBlock("findManaPaymentPlan", () => findManaPaymentPlanRaw(state, player, cost));
+}
+
 type TokenCountDescriptor =
   | { type: "fixed"; value: number }
   | { type: "selfCreatures" }
@@ -196,6 +302,143 @@ interface TokenEffectDescriptor {
 
 const cloneState = (state: SimGameState): SimGameState =>
   JSON.parse(JSON.stringify(state));
+
+function actionSummary(action?: SimAction | null) {
+  if (!action) return "none";
+  if (action.type === "CAST_SPELL") {
+    const targets = action.targets?.map((target) => `${target.type}:${target.id}`).join(",") ??
+      action.targetId ?? action.targetPlayer ?? action.targetGraveyardCard ?? action.targetStackId ?? "";
+    return `CAST ${action.card}${action.modes?.length ? ` mode=${action.modes.join("+")}` : ""}${targets ? ` target=${targets}` : ""}`;
+  }
+  if (action.type === "ACTIVATE_ABILITY") {
+    const targets = action.targets?.map((target) => `${target.type}:${target.id}`).join(",") ?? "";
+    return `ACTIVATE ${action.sourcePermanentId} ability=${action.abilityId}${targets ? ` target=${targets}` : ""}`;
+  }
+  if ("card" in action) return `${action.type} ${action.card}`;
+  return action.type;
+}
+
+function compactFingerprint(
+  state: SimGameState,
+  options: { priorityPlayer?: number; action?: SimAction | null } = {}
+) {
+  const permanentCounts = (state.permanents ?? []).map((items) => items?.length ?? 0).join(",");
+  return [
+    `t=${state.turn}`,
+    `ph=${state.phaseStep || state.phase}`,
+    `ap=${state.playerIndex}`,
+    `pp=${options.priorityPlayer ?? "-"}`,
+    `sd=${state.stack.length}`,
+    `h=${state.hands.map((hand) => hand.length).join(",")}`,
+    `p=${permanentCounts}`,
+    `l=${state.lifeTotals.join(",")}`,
+    `a=${actionSummary(options.action)}`,
+  ].join("|");
+}
+
+function recordRecentAction(state: SimGameState, action: SimAction, prefix = "") {
+  const diagnostics = activeDiagnostics;
+  if (!diagnostics) return;
+  const line = `${prefix}T${state.turn} ${state.phaseStep || state.phase} P${state.playerIndex} ${actionSummary(action)} stack=${state.stack.length}`;
+  diagnostics.data.recentActions.push(line);
+  if (diagnostics.data.recentActions.length > 30) diagnostics.data.recentActions.shift();
+}
+
+function diagnosticDump(state: SimGameState, reason: string) {
+  const diagnostics = activeDiagnostics;
+  const data = diagnostics?.data;
+  const topTimings = Object.entries(data?.timingsMs ?? {})
+    .sort(([, left], [, right]) => right - left)
+    .slice(0, 8)
+    .map(([key, value]) => `${key}=${value.toFixed(1)}ms`)
+    .join(" ");
+  return [
+    `[watchdog] ${reason}`,
+    `state ${compactFingerprint(state)}`,
+    `actions=${data?.actionsApplied ?? 0} stackPushes=${data?.stackPushes ?? 0} stackResolutions=${data?.stackResolutions ?? 0} priorityPasses=${data?.priorityPasses ?? 0}`,
+    `maxActions=${data?.maxAvailableActions ?? 0} maxStack=${data?.maxStackDepth ?? 0} maxPriorityIterations=${data?.maxPriorityIterationsPerWindow ?? 0}`,
+    `timings ${topTimings || "none"}`,
+    `recent:\n${(data?.recentActions ?? []).slice(-30).join("\n")}`,
+  ].join("\n");
+}
+
+function abortEpisode(state: SimGameState, reason: string): never {
+  const diagnostics = activeDiagnostics;
+  if (diagnostics) {
+    diagnostics.data.aborted = true;
+    diagnostics.data.abortReason = reason;
+    diagnostics.data.abortDump = diagnosticDump(state, reason);
+    if (reason === "MAX_EPISODE_MS") diagnostics.data.timeLimitAborts++;
+    if (reason === "MAX_ACTIONS_PER_EPISODE") diagnostics.data.actionLimitAborts++;
+    if (reason === "MAX_STACK_RESOLUTIONS") diagnostics.data.stackResolutionAborts++;
+    if (reason === "LOOP_DETECTED") diagnostics.data.repeatedStateAborts++;
+    if (reason === "MAX_PRIORITY_ITERATIONS") diagnostics.data.priorityIterationAborts++;
+  }
+  throw new EpisodeAbort(reason, diagnostics?.data);
+}
+
+function checkEpisodeWatchdog(state: SimGameState, action?: SimAction | null, priorityPlayer?: number) {
+  const diagnostics = activeDiagnostics;
+  if (!diagnostics) return;
+  if (Date.now() - diagnostics.startedAt > diagnostics.limits.maxEpisodeMs) {
+    abortEpisode(state, "MAX_EPISODE_MS");
+  }
+  if (diagnostics.data.actionsApplied > diagnostics.limits.maxActionsPerEpisode) {
+    abortEpisode(state, "MAX_ACTIONS_PER_EPISODE");
+  }
+  const fingerprint = compactFingerprint(state, { priorityPlayer, action });
+  const count = (diagnostics.fingerprintCounts.get(fingerprint) ?? 0) + 1;
+  diagnostics.fingerprintCounts.set(fingerprint, count);
+  if (count > diagnostics.limits.maxIdenticalStateRepeats) {
+    abortEpisode(state, "LOOP_DETECTED");
+  }
+}
+
+function recordActionWindow(state: SimGameState, player: number, actions: SimAction[]) {
+  const diagnostics = activeDiagnostics;
+  if (!diagnostics) return;
+  const cast = actions.filter((action) => action.type === "CAST_SPELL").length;
+  const activate = actions.filter((action) => action.type === "ACTIVATE_ABILITY").length;
+  const pass = actions.filter((action) => action.type === "PASS_TURN").length;
+  const targetCombos = actions.filter((action) => "targets" in action && Boolean(action.targets?.length)).length;
+  const modeCombos = actions.filter((action) => "modes" in action && Boolean(action.modes?.length)).length;
+  diagnostics.actionWindowTotal += actions.length;
+  diagnostics.actionWindowCount += 1;
+  diagnostics.data.avgAvailableActions = diagnostics.actionWindowTotal / Math.max(1, diagnostics.actionWindowCount);
+  diagnostics.data.maxAvailableActions = Math.max(diagnostics.data.maxAvailableActions, actions.length);
+  if (actions.length > 50) diagnostics.data.windowsOver50Actions++;
+  if (actions.length > 100) diagnostics.data.windowsOver100Actions++;
+  const byCard = new Map<string, number>();
+  for (const action of actions) {
+    const key = action.type === "CAST_SPELL"
+      ? `CAST:${action.card}`
+      : action.type === "ACTIVATE_ABILITY"
+        ? `ACTIVATE:${action.sourcePermanentId}:${action.abilityId}`
+        : action.type;
+    byCard.set(key, (byCard.get(key) ?? 0) + 1);
+  }
+  const record = {
+    turn: state.turn,
+    phase: state.phaseStep || state.phase,
+    player,
+    total: actions.length,
+    cast,
+    activate,
+    pass,
+    targetCombos,
+    modeCombos,
+    topCards: [...byCard.entries()]
+      .sort(([, left], [, right]) => right - left)
+      .slice(0, 5)
+      .map(([key, count]) => ({ key, count })),
+  };
+  diagnostics.data.topActionWindows.push(record);
+  diagnostics.data.topActionWindows.sort((left, right) => right.total - left.total);
+  diagnostics.data.topActionWindows = diagnostics.data.topActionWindows.slice(0, 10);
+  if (diagnostics.debugEpisode) {
+    console.log(`[debug] T${state.turn} ${record.phase} P${player} actions=${record.total} cast=${cast} activate=${activate} stack=${state.stack.length}`);
+  }
+}
 
 // Phase 2 — parallel snapshot array, kept in sync with history[]
 interface StepSnapshotEntry {
@@ -350,12 +593,10 @@ function queueAllPermanentTriggersForEvent(
         {
           ...event,
           controller,
-          card: permanent.cardName,
-          face: permanent.face,
-          permanentId: permanent.id,
         },
         log,
-        metadata
+        metadata,
+        permanent.face ?? permanent.cardName
       );
     }
   }
@@ -365,10 +606,11 @@ function queueOracleTriggersForEvent(
   state: SimGameState,
   event: RulesEvent,
   log: (msg: string) => void,
-  metadata?: DeckCardMetadata
+  metadata?: DeckCardMetadata,
+  sourceNameOverride?: CardName
 ) {
   if (!metadata || event.controller == null) return;
-  const sourceName = event.face ?? event.card ?? metadata.name;
+  const sourceName = sourceNameOverride ?? event.face ?? event.card ?? metadata.name;
   const parsed = parseCardRules(metadata);
   for (const ability of parsed.abilities) {
     if (ability.kind !== "TRIGGERED") continue;
@@ -464,6 +706,8 @@ export async function simulateGame(
     options.playerCommanders,
     options.startingPlayerIndex ?? 0
   );
+  const diagnostics = createDiagnosticContext();
+  activeDiagnostics = diagnostics;
   const history: SimulationResult["history"] = [];
   // Phase 2 — parallel snapshot array (one entry per history entry)
   const snapshotEntries: StepSnapshotEntry[] = [];
@@ -549,6 +793,7 @@ export async function simulateGame(
 
   for (let turn = 1; turn <= maxTurns && winnerIndex === null; turn++) {
     state.turn = turn;
+    checkEpisodeWatchdog(state);
     for (let seatOffset = 0; seatOffset < agents.length && winnerIndex === null; seatOffset++) {
       const p = (startingPlayerIndex + seatOffset) % agents.length;
       if (state.lifeTotals[p] <= 0) continue;
@@ -564,6 +809,7 @@ export async function simulateGame(
       for (const step of TURN_STRUCTURE) {
         state.phase = step.phase;
         state.phaseStep = step.step;
+        checkEpisodeWatchdog(state);
         if (step.step === "Sottofase di Mantenimento") {
           emitRulesEvent(state, { type: "UPKEEP_STARTED", player: p, controller: p });
         }
@@ -699,6 +945,7 @@ export async function simulateGame(
     history,
     turns: state.turn,
     finalState: cloneState(state),
+    diagnostics: diagnostics.data,
     metrics: { missedLandDropOpportunity },
   };
 }
@@ -891,9 +1138,22 @@ async function passPriority(
 
   let priorityPlayer = (castingPlayer + 1) % numPlayers;
   let consecutivePasses = 0;
+  let iterations = 0;
   const requiredPasses = () => livingPlayers().length;
 
   while (state.stack.length > 0 && consecutivePasses < requiredPasses()) {
+    iterations++;
+    const diagnostics = activeDiagnostics;
+    if (diagnostics) {
+      diagnostics.data.maxPriorityIterationsPerWindow = Math.max(
+        diagnostics.data.maxPriorityIterationsPerWindow,
+        iterations
+      );
+      if (iterations > diagnostics.limits.maxPriorityIterations) {
+        abortEpisode(state, "MAX_PRIORITY_ITERATIONS");
+      }
+    }
+    checkEpisodeWatchdog(state, null, priorityPlayer);
     if (state.lifeTotals[priorityPlayer] <= 0) {
       priorityPlayer = (priorityPlayer + 1) % numPlayers;
       continue;
@@ -903,23 +1163,30 @@ async function passPriority(
     const agent = agents[opponentIndex];
     if (typeof agent.decideResponse !== "function") {
       consecutivePasses++;
+      if (activeDiagnostics) activeDiagnostics.data.priorityPasses++;
       priorityPlayer = (priorityPlayer + 1) % numPlayers;
       continue;
     }
 
-    const instants = getAvailableInstants(state, opponentIndex, currentTop)
-      .filter((action) =>
-        action.type === "CAST_SPELL" &&
-        canCastSpell(state, opponentIndex, action.card, {
-          landDropsUsedThisTurn: 0,
-          maxLandDrops: 1,
-          allowInstant: true,
-          allowSorcery: false,
-          allowLand: false,
-        })
-      );
+    const instants = timeBlock("priority generateResponses", () =>
+      getAvailableInstants(state, opponentIndex, currentTop)
+        .filter((action) =>
+          action.type === "CAST_SPELL" &&
+          canCastSpell(state, opponentIndex, action.card, {
+            landDropsUsedThisTurn: 0,
+            maxLandDrops: 1,
+            allowInstant: true,
+            allowSorcery: false,
+            allowLand: false,
+          })
+        )
+    );
+    if (activeDiagnostics) {
+      activeDiagnostics.data.responsesGenerated += instants.length;
+    }
     if (instants.length === 0) {
       consecutivePasses++;
+      if (activeDiagnostics) activeDiagnostics.data.priorityPasses++;
       priorityPlayer = (priorityPlayer + 1) % numPlayers;
       continue;
     }
@@ -928,14 +1195,17 @@ async function passPriority(
       ...state,
       playerIndex: opponentIndex,
     };
-    const response = await Promise.resolve(
-      agent.decideResponse(responseState, currentTop, instants)
+    const response = await timeAsync("AI decideResponse", () =>
+      Promise.resolve(agent.decideResponse!(responseState, currentTop, instants))
     );
     if (response === null) {
       consecutivePasses++;
+      if (activeDiagnostics) activeDiagnostics.data.priorityPasses++;
       priorityPlayer = (priorityPlayer + 1) % numPlayers;
       continue;
     }
+    recordRecentAction(state, response, "response ");
+    checkEpisodeWatchdog(state, response, opponentIndex);
 
     let responseEntry: StackEntry | null = null;
     if (response.type === "CAST_SPELL") {
@@ -956,11 +1226,16 @@ async function passPriority(
 
     if (!responseEntry) {
       consecutivePasses++;
+      if (activeDiagnostics) activeDiagnostics.data.priorityPasses++;
       priorityPlayer = (priorityPlayer + 1) % numPlayers;
       continue;
     }
     currentTop.responses.push(responseEntry);
     state.stack.push(responseEntry);
+    if (activeDiagnostics) {
+      activeDiagnostics.data.stackPushes++;
+      activeDiagnostics.data.maxStackDepth = Math.max(activeDiagnostics.data.maxStackDepth, state.stack.length);
+    }
     log(`[Stack] Player ${opponentIndex} responds with ${response.type}`);
     consecutivePasses = 0;
     priorityPlayer = (opponentIndex + 1) % numPlayers;
@@ -976,11 +1251,18 @@ export async function resolveStackWithPriority(
   pauseForAction: () => Promise<void> = () => Promise.resolve()
 ): Promise<void> {
   while (state.stack.length > 0) {
+    checkEpisodeWatchdog(state);
     const top = state.stack[state.stack.length - 1];
     await passPriority(state, activePlayer, top, agents, log, onStateChange, pauseForAction);
     const entry = state.stack.pop()!;
     if (entry.resolved) continue;
     entry.resolved = true;
+    if (activeDiagnostics) {
+      activeDiagnostics.data.stackResolutions++;
+      if (activeDiagnostics.data.stackResolutions > activeDiagnostics.limits.maxStackResolutions) {
+        abortEpisode(state, "MAX_STACK_RESOLUTIONS");
+      }
+    }
     log(`[Stack] Resolving ${entry.action.type} from player ${entry.casterIndex}`);
     if (entry.kind === "triggeredAbility" || entry.kind === "activatedAbility") {
       if (
@@ -2242,13 +2524,17 @@ async function processActionWindow(
   if (!rules.allowInstant && !rules.allowSorcery && !rules.allowLand) return null;
 
   for (let count = 0; count < MAX_ACTIONS_PER_WINDOW; count++) {
-    const available = generateActions(state, player, {
-      landDropsUsedThisTurn: context.landDropsUsedThisTurn,
-      maxLandDrops: context.maxLandDrops,
-      allowInstant: rules.allowInstant,
-      allowSorcery: rules.allowSorcery,
-      allowLand: rules.allowLand,
-    });
+    checkEpisodeWatchdog(state);
+    const available = timeBlock("generateActions", () =>
+      generateActions(state, player, {
+        landDropsUsedThisTurn: context.landDropsUsedThisTurn,
+        maxLandDrops: context.maxLandDrops,
+        allowInstant: rules.allowInstant,
+        allowSorcery: rules.allowSorcery,
+        allowLand: rules.allowLand,
+      })
+    );
+    recordActionWindow(state, player, available);
     const availableSnapshot = cloneActions(available);
     const requiresManualPass = agents[player]?.id === "human";
     if (availableSnapshot.length === 1 && !requiresManualPass) break;
@@ -2267,10 +2553,16 @@ async function processActionWindow(
             reasoning: "strategic_land_drop_invariant",
           },
         }
-      : await Promise.resolve(
-          agents[player].decideAction(snapshot, availableSnapshot)
+      : await timeAsync("AI chooseAction", () =>
+          Promise.resolve(agents[player].decideAction(snapshot, availableSnapshot))
         );
     const action = decision.action;
+    activeDiagnostics!.data.actionsApplied++;
+    recordRecentAction(state, action);
+    checkEpisodeWatchdog(state, action);
+    if (activeDiagnostics?.debugEpisode) {
+      console.log(`[debug] choose=${actionSummary(action)}`);
+    }
     history.push({
       playerIndex: player,
       agentId: agents[player].id,
@@ -2303,7 +2595,11 @@ async function processActionWindow(
       await pauseForAction();
 
       state.stack.push(stackEntry);
-      await resolveStackWithPriority(state, player, agents, log, onStateChange, pauseForAction);
+      activeDiagnostics!.data.stackPushes++;
+      activeDiagnostics!.data.maxStackDepth = Math.max(activeDiagnostics!.data.maxStackDepth, state.stack.length);
+      await timeAsync("resolveStack", () =>
+        resolveStackWithPriority(state, player, agents, log, onStateChange, pauseForAction)
+      );
       onStateChange?.(cloneState(state), { type: "action_applied", player, action });
       await pauseForAction();
     } else {
@@ -2872,6 +3168,14 @@ function findDefaultGraveyardTargetForCard(
 type LegalTarget = { id: string | number; controller: number; card: CardName; type: TargetRef["type"] };
 
 export function getLegalTargets(
+  state: SimGameState,
+  player: number,
+  requirement: NonNullable<ParsedAbility["targets"]>[number]
+): LegalTarget[] {
+  return timeBlock("getLegalTargets", () => getLegalTargetsInner(state, player, requirement));
+}
+
+function getLegalTargetsInner(
   state: SimGameState,
   player: number,
   requirement: NonNullable<ParsedAbility["targets"]>[number]

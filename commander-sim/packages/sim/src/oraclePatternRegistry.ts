@@ -41,6 +41,23 @@ export interface ParsedCardRules {
   unsupportedFragments: string[];
 }
 
+const parsedRulesCache = new Map<string, ParsedCardRules>();
+
+function parsedRulesCacheKey(metadata: DeckCardMetadata) {
+  const faces = metadata.faces
+    ?.map((face) => `${face.name}|${face.typeLine ?? ""}|${face.oracleText ?? ""}|${face.manaCost ?? ""}`)
+    .join("||") ?? "";
+  return [
+    metadata.name,
+    metadata.typeLine ?? "",
+    metadata.oracleText ?? "",
+    metadata.manaCost ?? "",
+    metadata.landFace ? `${metadata.landFace.name}|${metadata.landFace.typeLine ?? ""}|${metadata.landFace.oracleText ?? ""}` : "",
+    metadata.spellFace ? `${metadata.spellFace.name}|${metadata.spellFace.typeLine ?? ""}|${metadata.spellFace.oracleText ?? ""}` : "",
+    faces,
+  ].join("\u001f");
+}
+
 const NUMBER_WORDS: Record<string, number> = {
   a: 1,
   an: 1,
@@ -1138,6 +1155,9 @@ export function splitOracleText(text: string) {
 }
 
 export function parseCardRules(metadata: DeckCardMetadata): ParsedCardRules {
+  const cacheKey = parsedRulesCacheKey(metadata);
+  const cached = parsedRulesCache.get(cacheKey);
+  if (cached) return cached;
   const fragments = oracleFragmentsForCard(metadata);
   const abilities: ParsedAbility[] = [];
   const recognizedFragments: ParsedCardRules["recognizedFragments"] = [];
@@ -1244,11 +1264,13 @@ export function parseCardRules(metadata: DeckCardMetadata): ParsedCardRules {
     supportLevel = metadata.isLand || type.includes("land") ? "FULL" : metadata.isCreature || type.includes("creature") ? "PARTIAL" : "UNSUPPORTED";
   }
 
-  return {
+  const parsed = {
     card: metadata.name,
     supportLevel,
     abilities,
     recognizedFragments,
     unsupportedFragments,
   };
+  parsedRulesCache.set(cacheKey, parsed);
+  return parsed;
 }

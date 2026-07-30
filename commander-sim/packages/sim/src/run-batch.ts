@@ -10,7 +10,7 @@ import { AiDecisionAgent } from "./aiDecisionAgent.js";
 import { NeuralAgent, createNeuralAgent } from "./neuralAgent.js";
 import { simulateGame } from "./engine.js";
 import { terminalRewardForPlayer } from "./rewardShaper.js";
-import type { DeckCardMetadata, SimulationResult } from "@game-state/types";
+import type { DeckCardMetadata, SimulationDiagnostics, SimulationResult } from "@game-state/types";
 import {
   closeDb,
   createSimulationRun,
@@ -126,6 +126,17 @@ type TrainingMetrics = {
   missedLandDropOpportunity: number;
   lethalMissed: number;
   anomalousEpisodes: number;
+  watchdogAborts: number;
+  watchdogReasons: Record<string, number>;
+  episodeTimeMsTotal: number;
+  maxEpisodeTimeMs: number;
+  actionsApplied: number;
+  maxAvailableActions: number;
+  maxStackDepth: number;
+  priorityPasses: number;
+  stackPushes: number;
+  stackResolutions: number;
+  timingTotalsMs: Record<string, number>;
   replayEpisodesStored: number;
   episodeStepRowsStored: number;
   policyDbWrites: number;
@@ -342,6 +353,17 @@ async function main() {
     missedLandDropOpportunity: 0,
     lethalMissed: 0,
     anomalousEpisodes: 0,
+    watchdogAborts: 0,
+    watchdogReasons: {},
+    episodeTimeMsTotal: 0,
+    maxEpisodeTimeMs: 0,
+    actionsApplied: 0,
+    maxAvailableActions: 0,
+    maxStackDepth: 0,
+    priorityPasses: 0,
+    stackPushes: 0,
+    stackResolutions: 0,
+    timingTotalsMs: {},
     replayEpisodesStored: 0,
     episodeStepRowsStored: 0,
     policyDbWrites: 0,
@@ -413,12 +435,37 @@ async function main() {
     const playerDeckLists = assignment.map((a) => a.deck.cards ?? []);
     const playerDeckMetadata = assignment.map((a) => a.deck.cardMetadata ?? []);
 
-    const result = await simulateGame(agents, {
-      log: () => {},
-      maxTurns: 40,
-      playerDecks: playerDeckLists,
-      playerDeckMetadata,
-    });
+    const episodeStarted = Date.now();
+    let result: SimulationResult;
+    try {
+      result = await simulateGame(agents, {
+        log: process.env.DEBUG_EPISODE === "true" ? (message) => console.log(`[sim] ${message}`) : () => {},
+        maxTurns: 40,
+        playerDecks: playerDeckLists,
+        playerDeckMetadata,
+        enableStack: process.env.ENABLE_STACK === "true",
+      });
+    } catch (err) {
+      const maybeAbort = err as Error & { reason?: string; diagnostics?: SimulationResult["diagnostics"] };
+      if (maybeAbort.name === "EpisodeAbort") {
+        const reason = maybeAbort.reason ?? maybeAbort.message ?? "WATCHDOG_ABORT";
+        metrics.watchdogAborts += 1;
+        metrics.watchdogReasons[reason] = (metrics.watchdogReasons[reason] ?? 0) + 1;
+        if (maybeAbort.diagnostics) {
+          mergeDiagnostics(metrics, maybeAbort.diagnostics);
+          console.warn(maybeAbort.diagnostics.abortDump ?? `[watchdog] ${reason}`);
+        } else {
+          console.warn(`[watchdog] ${reason}`);
+        }
+        continue;
+      }
+      throw err;
+    } finally {
+      const elapsed = Date.now() - episodeStarted;
+      metrics.episodeTimeMsTotal += elapsed;
+      metrics.maxEpisodeTimeMs = Math.max(metrics.maxEpisodeTimeMs, elapsed);
+    }
+    if (result.diagnostics) mergeDiagnostics(metrics, result.diagnostics);
 
     if (shouldStoreDatasetFile) {
       appendDataset(datasetPath, result, i);
@@ -460,6 +507,7 @@ async function main() {
     if ((i + 1) % 10 === 0) {
       console.log(`Completed ${i + 1}/${episodes} episodes`);
       console.log(formatTrainingMetrics(metrics));
+      console.log(formatDiagnosticMetrics(metrics, i + 1));
       // Phase 6 — Curriculum: log current weakness areas
       if (curriculumScheduler && (i + 1) % 50 === 0) {
         try {
@@ -538,6 +586,7 @@ async function main() {
   await closeDb();
   console.log("Training complete. Win distribution:", wins);
   console.log(formatTrainingMetrics(metrics));
+  console.log(formatDiagnosticMetrics(metrics, episodes));
   console.log(formatStorageMetrics(metrics, store, episodes));
 }
 
@@ -607,6 +656,38 @@ function updateTrainingMetrics(
   }
 }
 
+function mergeDiagnostics(metrics: TrainingMetrics, diagnostics: SimulationDiagnostics) {
+  metrics.actionsApplied += diagnostics.actionsApplied;
+  metrics.maxAvailableActions = Math.max(metrics.maxAvailableActions, diagnostics.maxAvailableActions);
+  metrics.maxStackDepth = Math.max(metrics.maxStackDepth, diagnostics.maxStackDepth);
+  metrics.priorityPasses += diagnostics.priorityPasses;
+  metrics.stackPushes += diagnostics.stackPushes;
+  metrics.stackResolutions += diagnostics.stackResolutions;
+  for (const [key, value] of Object.entries(diagnostics.timingsMs ?? {})) {
+    metrics.timingTotalsMs[key] = (metrics.timingTotalsMs[key] ?? 0) + value;
+  }
+}
+
+function formatDiagnosticMetrics(metrics: TrainingMetrics, completedEpisodes: number) {
+  const completed = Math.max(1, completedEpisodes);
+  const topTimings = Object.entries(metrics.timingTotalsMs)
+    .sort(([, left], [, right]) => right - left)
+    .slice(0, 5)
+    .map(([key, value]) => `${key}:${value.toFixed(1)}ms`)
+    .join(", ");
+  const aborts = Object.entries(metrics.watchdogReasons)
+    .map(([key, value]) => `${key}:${value}`)
+    .join(", ");
+  return (
+    `[diag] avgEpisodeMs=${(metrics.episodeTimeMsTotal / completed).toFixed(1)} ` +
+    `maxEpisodeMs=${metrics.maxEpisodeTimeMs} actions=${metrics.actionsApplied} ` +
+    `maxAvailableActions=${metrics.maxAvailableActions} maxStackDepth=${metrics.maxStackDepth} ` +
+    `priorityPasses=${metrics.priorityPasses} stackPushes=${metrics.stackPushes} ` +
+    `stackResolutions=${metrics.stackResolutions} watchdogAborts=${metrics.watchdogAborts}` +
+    `${aborts ? ` abortReasons=[${aborts}]` : ""} topTimings=[${topTimings || "none"}]`
+  );
+}
+
 function formatTrainingMetrics(metrics: TrainingMetrics): string {
   const decisions = Math.max(1, metrics.decisions);
   const rate = (value: number) => `${((value / decisions) * 100).toFixed(1)}%`;
@@ -657,6 +738,17 @@ function summarizeTrainingMetrics(metrics: TrainingMetrics, episodes: number) {
     actionCounts: metrics.actionTypes,
     archetypeWins: metrics.archetypeWins,
     anomalousEpisodes: metrics.anomalousEpisodes,
+    watchdogAborts: metrics.watchdogAborts,
+    watchdogReasons: metrics.watchdogReasons,
+    avgEpisodeMs: metrics.episodeTimeMsTotal / Math.max(1, episodes),
+    maxEpisodeMs: metrics.maxEpisodeTimeMs,
+    actionsApplied: metrics.actionsApplied,
+    maxAvailableActions: metrics.maxAvailableActions,
+    maxStackDepth: metrics.maxStackDepth,
+    priorityPasses: metrics.priorityPasses,
+    stackPushes: metrics.stackPushes,
+    stackResolutions: metrics.stackResolutions,
+    timingTotalsMs: metrics.timingTotalsMs,
   };
 }
 
