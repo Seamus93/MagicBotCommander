@@ -21,6 +21,8 @@ export interface FilteredPlayerState {
 }
 
 export interface FilteredGameState {
+  sessionId?: string;
+  stateVersion?: number;
   turn: number;
   phase: string;
   phaseStep: string;
@@ -32,7 +34,8 @@ export interface FilteredGameState {
 export function serializeForViewer(
   state: SimGameState,
   viewerIndex = 0,
-  startingPlayerIndex = 0
+  startingPlayerIndex = 0,
+  session?: { sessionId?: string; stateVersion?: number }
 ): FilteredGameState {
   const players: FilteredPlayerState[] = state.lifeTotals.map((life, i) => {
     const isViewer = i === viewerIndex;
@@ -58,6 +61,8 @@ export function serializeForViewer(
   });
 
   return {
+    sessionId: session?.sessionId,
+    stateVersion: session?.stateVersion,
     turn: state.turn,
     phase: state.phase,
     phaseStep: state.phaseStep,

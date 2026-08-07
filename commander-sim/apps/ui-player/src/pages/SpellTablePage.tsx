@@ -7,6 +7,7 @@ import { useViewerState } from "../hooks/useViewerState";
 import { useViewerControl } from "../hooks/useViewerControl";
 import { useGameSession, type FilteredPlayerState, type PendingDecision } from "../hooks/useGameSession";
 import { publishSharedGameSession } from "../hooks/useSharedGameSession";
+import { sessionModeForEngineSession, type SessionMode } from "../sessionMode";
 
 const GAME_SERVER_URL =
   (import.meta.env.VITE_GAME_SERVER_URL as string | undefined) ??
@@ -165,6 +166,23 @@ function aiToQuadrant(p: FilteredPlayerState): QuadrantPlayerData {
     handCount: p.handCount,
     hand: p.hand ?? [],
   };
+}
+
+export function buildSpellTablePlayers(params: {
+  mode: SessionMode;
+  viewerState: NonNullable<ReturnType<typeof useViewerState>> | null;
+  enginePlayers: FilteredPlayerState[];
+}) {
+  const entries: Array<[number, QuadrantPlayerData]> = [];
+  if (params.mode === "standalone") {
+    if (params.viewerState) entries.push([0, viewerToQuadrant(params.viewerState)]);
+    return new Map<number, QuadrantPlayerData>(entries);
+  }
+
+  for (const player of params.enginePlayers) {
+    entries.push([player.index, aiToQuadrant(player)]);
+  }
+  return new Map<number, QuadrantPlayerData>(entries);
 }
 
 function toDisplayStep(phase: string, phaseStep: string): TurnStepLabel {
@@ -506,6 +524,7 @@ export default function SpellTablePage() {
     gameLog,
     isConnected,
     gameOver,
+    stateOutOfSyncMessage,
     submitAction,
     submitAttackPlan,
     submitBlockPlan,
@@ -520,22 +539,57 @@ export default function SpellTablePage() {
   const lobbyCommander = viewerState?.commander ?? viewerState?.commandZone?.[0] ?? null;
   const lobbyFullDeck = viewerState?.fullDeck ?? null;
 
-  const humanData = viewerState ? viewerToQuadrant(viewerState) : null;
   const players = gameState?.players ?? [];
+  const engineHuman = players.find((player) => player.index === 0);
+  const mode: SessionMode = gameStarted
+    ? sessionModeForEngineSession(sessionId ?? "__creating__")
+    : "standalone";
+
+  useEffect(() => {
+    if (!pendingDecision || pendingDecision.decisionType !== "action") return;
+    const availableActions = pendingDecision.context.availableActions ?? [];
+    const playLandActions = availableActions.filter((action) => action.type === "PLAY_LAND");
+    if (!playLandActions.length) return;
+
+    const engineHand = engineHuman?.hand ?? [];
+    const viewerHand = mode === "standalone" ? viewerState?.hand ?? [] : engineHand;
+    const missingFromViewer = playLandActions.filter(
+      (action) => action.card && !viewerHand.includes(action.card)
+    );
+    const missingFromEngine = playLandActions.filter(
+      (action) => action.card && !engineHand.includes(action.card)
+    );
+    if (!missingFromViewer.length && !missingFromEngine.length) return;
+
+    const payload = {
+      invariant: "PLAY_LAND_CARD_MUST_BE_IN_CURRENT_HAND",
+      stage: "SpellTable.bridge",
+      sessionId,
+      gameState: gameState
+        ? {
+            turn: gameState.turn,
+            phase: gameState.phase,
+            phaseStep: gameState.phaseStep,
+            playerIndex: gameState.playerIndex,
+          }
+        : null,
+      viewerHand,
+      engineHand,
+      availableActions,
+      missingFromViewer,
+      missingFromEngine,
+    };
+    console.error("[available-actions-invariant]", payload);
+    console.assert(
+      missingFromEngine.length === 0,
+      "[available-actions-invariant] PLAY_LAND outside engine hand",
+      payload
+    );
+  }, [engineHuman?.hand, gameState, mode, pendingDecision, sessionId, viewerState?.hand]);
+
   const playersByIndex = useMemo(() => {
-    const entries: Array<[number, QuadrantPlayerData]> = [];
-
-    if (humanData) {
-      entries.push([0, humanData]);
-    }
-
-    for (const player of players) {
-      if (player.index === 0) continue;
-      entries.push([player.index, aiToQuadrant(player)]);
-    }
-
-    return new Map<number, QuadrantPlayerData>(entries);
-  }, [humanData, players]);
+    return buildSpellTablePlayers({ mode, viewerState, enginePlayers: players });
+  }, [mode, viewerState, players]);
 
   const activePlayerIndex = gameState?.playerIndex ?? 0;
   const startingPlayerIndex = gameState?.startingPlayerIndex ?? 0;
@@ -762,7 +816,7 @@ export default function SpellTablePage() {
     }
   };
 
-  const hasHumanData = humanData !== null;
+  const hasHumanData = mode === "engine-linked" ? Boolean(engineHuman) : viewerState !== null;
   const rightPanelOffset =
     (showLog ? LOG_DRAWER_WIDTH : 0) + (showSidebar ? SIDE_PANEL_WIDTH : 0);
 
@@ -845,7 +899,16 @@ export default function SpellTablePage() {
               hasHumanData ? "bg-blue-900/50 text-blue-400" : "bg-gray-800 text-gray-600"
             }`}
           >
-            {hasHumanData ? "MoxfieldUI Live" : "No human data"}
+            {mode === "engine-linked"
+              ? hasHumanData ? "Engine Hand" : "Waiting for engine"
+              : hasHumanData ? "MoxfieldUI Live" : "No human data"}
+          </span>
+          <span
+            className={`rounded px-1.5 py-0.5 text-[10px] ${
+              mode === "engine-linked" ? "bg-cyan-900/50 text-cyan-300" : "bg-gray-800 text-gray-500"
+            }`}
+          >
+            {mode}
           </span>
           <span
             className={`rounded px-1.5 py-0.5 text-[10px] ${
@@ -859,6 +922,7 @@ export default function SpellTablePage() {
         {gameState && (
           <div className="text-[11px] text-gray-400">
             Turn {displayTurn} | {currentPhaseGroup} - {currentStep} | {activeSeatLabel}
+            {typeof gameState.stateVersion === "number" ? ` | rev ${gameState.stateVersion}` : ""}
           </div>
         )}
 
@@ -936,6 +1000,12 @@ export default function SpellTablePage() {
               New Game
             </button>
           </div>
+        </div>
+      )}
+
+      {stateOutOfSyncMessage && (
+        <div className="fixed left-1/2 top-12 z-50 -translate-x-1/2 rounded border border-red-500/40 bg-red-950/90 px-3 py-2 text-xs font-semibold text-red-100 shadow-xl">
+          {stateOutOfSyncMessage}
         </div>
       )}
 

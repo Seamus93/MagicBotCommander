@@ -5,6 +5,9 @@ import type {
   BlockAssignment,
   BlockDecision,
   CardName,
+  DeckCardMetadata,
+  EffectDescriptor,
+  ParsedAbility,
   SimAgent,
   SimAction,
   SimGameState,
@@ -26,11 +29,14 @@ import {
   PatternStore,
   patternFromFeatures,
   actionToKey,
+  legacyActionKeyForSemanticKey,
 } from "./patterns.js";
 import type { PatternRecord } from "./patterns.js";
 import {
   selectTarget,
   threatAssessment,
+  creatureValue,
+  permanentValue,
   type AttackPlan,
   type BlockPlan,
 } from "./combatEvaluator.js";
@@ -41,6 +47,13 @@ import {
   isCounterspell,
   isPermanentCard,
 } from "../../game-state/src/cardUtils.js";
+import {
+  profileDecisionBlock,
+  recordDecisionCount,
+  timeDecisionBlock,
+  withDecisionTraceContext,
+} from "./decisionProfiler.js";
+import { parseCardRules } from "./oraclePatternRegistry.js";
 
 // Phase 1 feature flags - disable with env vars if needed
 const ENABLE_RICH_FEATURES = process.env.ENABLE_RICH_FEATURES !== "false";
@@ -163,6 +176,32 @@ export class LearningAgent implements SimAgent {
       };
     }
 
+    const immediateLethals = findImmediateLethalActions(state, state.playerIndex, availableActions);
+    if (immediateLethals.length) {
+      recordLethalCounters(immediateLethals, immediateLethals[0]);
+      const action = immediateLethals[0].action;
+      const pattern = patternFromFeatures({
+        ...this.extractFeatures(state),
+        actionHash: this.hashAction(action),
+      });
+      const key = this.buildExactActionKey(state, action);
+      this.history.push({ pattern, actionKey: key });
+      return {
+        action,
+        metadata: {
+          source: "heuristic",
+          pattern,
+          actionKey: key,
+          reasoning: immediateLethals[0].gameWinning
+            ? "immediate_game_winning_lethal"
+            : "immediate_opponent_elimination",
+          expectedReward: 1,
+          confidence: 1,
+          visits: 0,
+        },
+      };
+    }
+
     const scored = this.scoreActions(state, availableActions);
     const { choice, explored } = this.pickChoice(scored);
     this.history.push({ pattern: choice.pattern, actionKey: choice.key });
@@ -223,6 +262,14 @@ export class LearningAgent implements SimAgent {
   }
 
   decideAttackPlan(state: SimGameState, plans: AttackPlan[]): AttackPlan {
+    const immediateLethals = findImmediateLethalAttackPlans(state, state.playerIndex, plans);
+    if (immediateLethals.length) {
+      recordLethalCounters(immediateLethals, immediateLethals[0]);
+      const trace = this.attackPlanTrace(state, immediateLethals[0].plan);
+      this.history.push({ pattern: trace.pattern, actionKey: trace.key });
+      return immediateLethals[0].plan;
+    }
+
     const scored = this.scoreAttackPlanOptions(state, plans);
     const { choice } = this.pickChoice(scored);
     this.history.push({ pattern: choice.pattern, actionKey: choice.key });
@@ -376,7 +423,11 @@ export class LearningAgent implements SimAgent {
     state: SimGameState,
     availableActions: SimAction[]
   ): ScoredAction[] {
-    const patternBase = this.extractFeatures(state);
+    const patternBase = profileDecisionBlock(
+      "pattern.state feature extraction",
+      { inputSize: state.battlefields.reduce((sum, permanents) => sum + permanents.length, 0) + state.hands.reduce((sum, hand) => sum + hand.length, 0) },
+      () => this.extractFeatures(state)
+    );
     const playerIndex = state.playerIndex;
     const availableMana = getAvailableMana(state, playerIndex);
     const hasLandDrop = availableActions.some((candidate) => candidate.type === "PLAY_LAND");
@@ -387,57 +438,80 @@ export class LearningAgent implements SimAgent {
     const isPreCombatMain = phase.includes("prima fase principale");
     const isPostCombatMain = phase.includes("seconda fase principale");
 
-    return availableActions.map((action) => {
-      const pattern = patternFromFeatures({
-        ...patternBase,
-        actionHash: this.hashAction(action),
-      });
-      const key = actionToKey(action.type, "card" in action ? action.card : "", action);
+    return availableActions.map((action) => withDecisionTraceContext({
+      turn: state.turn,
+      phase: state.phaseStep || state.phase,
+      playerIndex,
+      actionType: action.type,
+      actionLabel: "card" in action ? action.card : action.type,
+      availableActionsCount: availableActions.length,
+      handCount: state.hands[playerIndex]?.length ?? 0,
+      permanentCount: state.battlefields.reduce((sum, permanents) => sum + permanents.length, 0),
+      creatureCount: state.creatures.reduce((sum, creatures) => sum + creatures.length, 0),
+      stackDepth: state.stack.length,
+    }, () => {
+      const actionHash = profileDecisionBlock("pattern.action feature extraction", { inputSize: 1 }, () =>
+        this.hashAction(action)
+      );
+      const pattern = timeDecisionBlock("AI pattern generation", () =>
+        patternFromFeatures({
+          ...patternBase,
+          actionHash,
+        })
+      );
+      const key = timeDecisionBlock("AI action serialization", () =>
+        profileDecisionBlock("pattern.exactActionKey", { inputSize: Object.keys(action).length }, () =>
+          this.buildExactActionKey(state, action)
+        )
+      );
       const policy = this.resolvePatternScore(pattern, key);
-      let heuristic = 0;
+      let heuristic = timeDecisionBlock("AI heuristic scoring", () => {
+        let value = 0;
       if (action.type === "PLAY_LAND") {
-        heuristic += 0.22;
-        if (representedInteractionCost !== null) heuristic += reserveInteractionCost !== null ? 0.08 : 0.04;
+        value += 0.22;
+        if (representedInteractionCost !== null) value += reserveInteractionCost !== null ? 0.08 : 0.04;
       } else if (action.type === "CAST_SPELL") {
         const metadata = getCardMetadata(state, playerIndex, action.card);
         const manaValue = metadata?.manaValue ?? 3;
         const remainingMana = Math.max(0, availableMana - manaValue);
         const efficiency = availableMana > 0 ? Math.min(1, manaValue / availableMana) : 0;
-        heuristic += (efficiency - 0.5) * 0.18;
-        heuristic -= Math.min(0.18, remainingMana * 0.025);
+        value += (efficiency - 0.5) * 0.18;
+        value -= Math.min(0.18, remainingMana * 0.025);
         if (isPermanentCard(action.card, metadata)) {
-          heuristic += this.boardDevelopmentBias(state, playerIndex, action.card);
+          value += this.boardDevelopmentBias(state, playerIndex, action.card);
         }
-        heuristic += this.interactionBias(action.card, metadata);
-        heuristic += this.cardAdvantageBias(metadata?.oracleText);
+        value += this.interactionBias(action.card, metadata);
+        value += this.cardAdvantageBias(metadata?.oracleText);
         if (isPreCombatMain && this.isCombatTrickOrRemoval(action.card, metadata)) {
-          heuristic -= 0.04;
+          value -= 0.04;
         }
         if (isPostCombatMain && isPermanentCard(action.card, metadata)) {
-          heuristic += 0.04;
+          value += 0.04;
         }
-        heuristic -= this.overcommitRisk(state, playerIndex, action.card);
+        value -= this.overcommitRisk(state, playerIndex, action.card);
         if (representedInteractionCost !== null) {
           const remainingMana = Math.max(0, availableMana - manaValue);
           if (remainingMana < representedInteractionCost) {
-            heuristic -= reserveInteractionCost !== null ? 0.22 : 0.14;
+            value -= reserveInteractionCost !== null ? 0.22 : 0.14;
           } else {
-            heuristic += 0.05;
+            value += 0.05;
           }
         }
       } else if (action.type === "PASS_TURN") {
         const otherPlayableActions = availableActions.filter(
           (candidate) => candidate.type !== "PASS_TURN"
         ).length;
-        if (otherPlayableActions > 0) heuristic -= 0.12;
+        if (otherPlayableActions > 0) value -= 0.12;
         if (representedInteractionCost !== null && availableMana >= representedInteractionCost) {
           if (hasLandDrop) {
-            heuristic += reserveInteractionCost !== null ? 0.06 : 0.03;
+            value += reserveInteractionCost !== null ? 0.06 : 0.03;
           } else {
-            heuristic += reserveInteractionCost !== null ? 0.24 : 0.16;
+            value += reserveInteractionCost !== null ? 0.24 : 0.16;
           }
         }
       }
+        return value;
+      });
 
       const score = this.blendPolicyAndHeuristic(policy, heuristic);
       return {
@@ -451,7 +525,7 @@ export class LearningAgent implements SimAgent {
         source: policy.source,
         record: policy.record,
       };
-    });
+    }));
   }
 
   private pickBestResponse(
@@ -521,7 +595,7 @@ export class LearningAgent implements SimAgent {
         canLethal: BINARY_ENCODING[bucketCanLethal(myReadyPower >= targetLife)],
       };
       const pattern = this.buildCombatPattern("combat_target:", features);
-      const key = `target:${opponentIndex}`;
+      const key = `target:${opponentIndex}:targetThreat=${bucketThreatLevel(threat)}:targetLife=${bucket(targetLife, [10, 20, 30, 40])}:blockers=${bucketBlockerCount(blockers)}:lethal=${bucketCanLethal(myReadyPower >= targetLife)}`;
       const heuristic =
         (opponentIndex === heuristicTarget ? 0.18 : 0) +
         (myReadyPower >= targetLife ? 0.45 : 0) +
@@ -552,16 +626,7 @@ export class LearningAgent implements SimAgent {
     );
 
     return plans.map((plan) => {
-      const targetLife = state.lifeTotals[plan.targetPlayer] ?? 0;
-      const targetBlockers = availableBlockers(state, plan.targetPlayer).length;
-      const features = {
-        myReadyPower: bucketReadyPower(myReadyPower),
-        targetLife: bucket(targetLife, [10, 20, 30, 40]),
-        targetBlockers: BLOCKER_COUNT_ENCODING[bucketBlockerCount(targetBlockers)],
-        canLethal: BINARY_ENCODING[bucketCanLethal(plan.expectedDamage >= targetLife)],
-      };
-      const pattern = this.buildCombatPattern("combat_attack:", features);
-      const key = `target:${plan.targetPlayer}|attackers:${serializeIds(plan.attackers)}`;
+      const { pattern, key } = this.attackPlanTrace(state, plan, myReadyPower);
       const policy = this.resolvePatternScore(pattern, key, normalizePlanScore(plan.score));
       return {
         choice: plan,
@@ -589,14 +654,27 @@ export class LearningAgent implements SimAgent {
     const myLife = state.lifeTotals[state.playerIndex] ?? 0;
 
     return plans.map((plan) => {
+      const blockerCountBucket = bucketBlockerCount(blockerCount);
+      const attackerCount = estimateAttackerCount(plan);
       const features = {
         incomingDamage: bucketIncomingDamage(incomingDamage),
         myLife: bucket(myLife, [10, 20, 30, 40]),
-        myBlockerCount: BLOCKER_COUNT_ENCODING[bucketBlockerCount(blockerCount)],
+        myBlockerCount: BLOCKER_COUNT_ENCODING[blockerCountBucket],
         bestTradeAvailable: BINARY_ENCODING[bucketCanLethal(bestTradeAvailable)],
       };
       const pattern = this.buildCombatPattern("combat_block:", features);
-      const key = `assignments:${serializePlanAssignments(plan.assignments)}`;
+      const key = [
+        "BLOCK_PLAN",
+        `assignments=${serializePlanAssignments(plan.assignments)}`,
+        `attackerCount=${bucketCount(attackerCount)}`,
+        `blockerCount=${blockerCountBucket}`,
+        `incoming=${bucketIncomingDamage(incomingDamage)}`,
+        `prevented=${bucket(plan.damagePrevented, [2, 5, 8, 12])}`,
+        `kills=${bucket(plan.creaturesKilledValue ?? plan.creaturesKilled, [1, 3, 6])}`,
+        `loss=${bucket(plan.blockersLostValue ?? plan.blockersLost, [1, 3, 6])}`,
+        `lethal=${bucketCanLethal(incomingDamage >= myLife && plan.damagePrevented >= myLife)}`,
+        `board=${bucket((plan.creaturesKilledValue ?? plan.creaturesKilled) - (plan.blockersLostValue ?? plan.blockersLost), [-2, 0, 2, 5])}`,
+      ].join(":");
       const policy = this.resolvePatternScore(pattern, key, normalizePlanScore(plan.score));
       return {
         choice: plan,
@@ -628,6 +706,8 @@ export class LearningAgent implements SimAgent {
         return action.mode === "ATTACK" ? 3 : 4;
       case "BLOCK_CHOICE":
         return action.targetId ? 5 : 6;
+      case "RESOLVE_CHOICE":
+        return 7;
       default:
         return 0;
     }
@@ -667,9 +747,16 @@ export class LearningAgent implements SimAgent {
     const exactPattern = this.archetypePolicy && this.archetype
       ? `${this.archetype}::${pattern}`
       : pattern;
-    let record = this.store.get(exactPattern, key);
+    let record = timeDecisionBlock("AI exact lookup", () => this.store.get(exactPattern, key));
     if (!record && exactPattern !== pattern) {
-      record = this.store.get(pattern, key);
+      record = timeDecisionBlock("AI exact lookup", () => this.store.get(pattern, key));
+    }
+    const legacyKey = legacyActionKeyForSemanticKey(key);
+    if (!record && legacyKey !== key) {
+      record = timeDecisionBlock("AI exact lookup", () => this.store.get(exactPattern, legacyKey));
+      if (!record && exactPattern !== pattern) {
+        record = timeDecisionBlock("AI exact lookup", () => this.store.get(pattern, legacyKey));
+      }
     }
 
     if (record && record.visits >= MIN_EXACT_VISITS) {
@@ -689,7 +776,7 @@ export class LearningAgent implements SimAgent {
     }
 
     if (ENABLE_FUZZY_MATCHING) {
-      const fuzzy = this.store.fuzzyRecord(pattern, key);
+      const fuzzy = timeDecisionBlock("AI fuzzy lookup total", () => this.store.fuzzyRecord(pattern, key));
       if (fuzzy) {
         const expectedReward = fuzzy.scorePerVisit;
         const confidence = this.confidenceFromVisits(fuzzy.visits) * 0.85;
@@ -812,6 +899,185 @@ export class LearningAgent implements SimAgent {
 
   private buildCombatPattern(prefix: string, features: Record<string, number>) {
     return `${prefix}${patternFromFeatures(features)}`;
+  }
+
+  private buildExactActionKey(state: SimGameState, action: SimAction): string {
+    if (action.type !== "CAST_SPELL" && action.type !== "ACTIVATE_ABILITY") {
+      return actionToKey(action.type, "card" in action ? action.card : "", action);
+    }
+    const targetSemantics = profileDecisionBlock(
+      "pattern.target semantic features",
+      { inputSize: "targets" in action ? action.targets?.length ?? 0 : 1 },
+      () => this.targetSemanticsForAction(state, action)
+    );
+    const indexParts = profileDecisionBlock(
+      "pattern.fuzzyFamilyKey static features",
+      { inputSize: Object.keys(action).length },
+      () => this.semanticIndexPartsForAction(state, action)
+    );
+    return actionToKey(action.type, "card" in action ? action.card : "", {
+      ...action,
+      targetSemantics,
+      ...indexParts,
+    });
+  }
+
+  private semanticIndexPartsForAction(
+    state: SimGameState,
+    action: Extract<SimAction, { type: "CAST_SPELL" | "ACTIVATE_ABILITY" }>
+  ) {
+    if (action.type === "CAST_SPELL") {
+      const metadata = getCardMetadata(state, state.playerIndex, action.card);
+      return {
+        spellType: spellTypeFamily(metadata),
+        manaBucket: String(bucket(metadata?.manaValue ?? 0, [2, 4, 6, 8])),
+        timing: timingFamily(state),
+        effectFamily: effectFamilyForAbilities(selectedAbilitiesForAction(metadata, action, "SPELL_EFFECT")),
+      };
+    }
+
+    const permanent = this.findPermanentLike(state, action.sourcePermanentId);
+    const metadata = permanent
+      ? getCardMetadata(state, permanent.controller, permanent.name)
+      : undefined;
+    const ability = selectedActivatedAbilityForAction(metadata, action);
+    return {
+      sourceCard: permanent?.name ?? "unknown",
+      effectFamily: effectFamilyForAbilities(ability ? [ability] : []),
+      costFamily: costFamilyForAbility(ability),
+      timing: timingFamily(state),
+    };
+  }
+
+  private attackPlanTrace(
+    state: SimGameState,
+    plan: AttackPlan,
+    readyPowerOverride?: number
+  ): { pattern: string; key: string } {
+    const myReadyPower = readyPowerOverride ?? availableAttackers(state, state.playerIndex).reduce(
+      (sum, creature) => sum + creature.power,
+      0
+    );
+    const targetLife = state.lifeTotals[plan.targetPlayer] ?? 0;
+    const targetBlockers = availableBlockers(state, plan.targetPlayer).length;
+    const selectedAttackers = this.creaturesByIds(state, state.playerIndex, plan.attackers);
+    const targetThreat = threatAssessment(state, plan.targetPlayer);
+    const totalPower = selectedAttackers.reduce((sum, creature) => sum + creature.power, 0);
+    const totalToughness = selectedAttackers.reduce((sum, creature) => sum + creature.toughness, 0);
+    const valueSum = selectedAttackers.reduce((sum, creature) => sum + creatureValue(state, state.playerIndex, creature), 0);
+    const evasionCount = selectedAttackers.filter((creature) => hasEvasion(state, state.playerIndex, creature)).length;
+    const commanderCount = selectedAttackers.filter((creature) => this.isCommanderCreature(state, state.playerIndex, creature)).length;
+    const features = {
+      myReadyPower: bucketReadyPower(myReadyPower),
+      targetLife: bucket(targetLife, [10, 20, 30, 40]),
+      targetBlockers: BLOCKER_COUNT_ENCODING[bucketBlockerCount(targetBlockers)],
+      canLethal: BINARY_ENCODING[bucketCanLethal(plan.expectedDamage >= targetLife)],
+    };
+    const pattern = this.buildCombatPattern("combat_attack:", features);
+    const key = [
+      "ATTACK_PLAN",
+      `target=${plan.targetPlayer}`,
+      `ids=${serializeIds(plan.attackers)}`,
+      `count=${bucketCount(plan.attackers.length)}`,
+      `power=${bucket(totalPower, [2, 5, 8, 12])}`,
+      `toughness=${bucket(totalToughness, [2, 5, 8, 12])}`,
+      `evasion=${bucket(evasionCount, [1, 2, 3])}`,
+      `value=${bucket(valueSum, [2, 5, 8, 12])}`,
+      `commander=${bucket(commanderCount, [1, 2])}`,
+      `lethal=${bucketCanLethal(plan.expectedDamage >= targetLife)}`,
+      `damage=${bucket(plan.expectedDamage, [2, 5, 8, 12])}`,
+      `loss=${bucket(plan.expectedLosses, [1, 3, 6])}`,
+      `targetThreat=${bucketThreatLevel(targetThreat)}`,
+      `board=${bucket(myReadyPower - targetBlockers * 2, [-4, 0, 4, 8])}`,
+    ].join(":");
+    return { pattern, key };
+  }
+
+  private targetSemanticsForAction(state: SimGameState, action: SimAction): string[] {
+    const refs = "targets" in action && action.targets?.length
+      ? action.targets
+      : [
+          ...("targetId" in action && action.targetId ? [{ type: "permanent" as const, id: action.targetId }] : []),
+          ...("targetPlayer" in action && action.targetPlayer !== undefined ? [{ type: "player" as const, id: action.targetPlayer }] : []),
+          ...("targetGraveyardCard" in action && action.targetGraveyardCard ? [{ type: "card" as const, id: action.targetGraveyardCard }] : []),
+          ...("targetStackId" in action && action.targetStackId ? [{ type: "stack" as const, id: action.targetStackId }] : []),
+        ];
+    return refs.map((target: { type: string; id: string | number }) =>
+      this.targetSemanticKey(state, target.type, target.id)
+    );
+  }
+
+  private targetSemanticKey(state: SimGameState, targetType: string, id: string | number): string {
+    if (targetType === "player") {
+      const player = Number(id);
+      const threat = Number.isFinite(player) ? threatAssessment(state, player) : 0;
+      const life = Number.isFinite(player) ? state.lifeTotals[player] ?? 0 : 0;
+      return `type=player,value=${bucket(threat, [10, 20, 30])},threat=${bucketThreatLevel(threat)},life=${bucket(life, [10, 20, 30, 40])}`;
+    }
+
+    const permanent = this.findPermanentLike(state, String(id));
+    if (!permanent) return `type=${targetType},value=0,commander=no,token=no`;
+    const value = permanent.creature
+      ? creatureValue(state, permanent.controller, permanent.creature)
+      : permanentValue(state, permanent.controller, permanent.name);
+    const power = permanent.creature?.power ?? 0;
+    const toughness = permanent.creature?.toughness ?? 0;
+    const engine = this.engineThreatBucket(state, permanent.controller, permanent.name);
+    return [
+      `type=${permanent.creature ? "creature" : targetType}`,
+      `value=${bucket(value, [1, 3, 6, 9])}`,
+      `commander=${permanent.isCommander ? "yes" : "no"}`,
+      `token=${permanent.isToken ? "yes" : "no"}`,
+      `pt=${bucket(power + toughness, [2, 5, 8, 12])}`,
+      `engine=${engine}`,
+    ].join(",");
+  }
+
+  private findPermanentLike(
+    state: SimGameState,
+    id: string
+  ): { controller: number; name: string; isCommander: boolean; isToken: boolean; creature?: CreaturePermanent } | null {
+    for (let player = 0; player < state.creatures.length; player++) {
+      const creature = state.creatures[player]?.find((candidate) => candidate.id === id);
+      if (!creature) continue;
+      return {
+        controller: player,
+        name: creature.name,
+        isCommander: this.isCommanderCreature(state, player, creature),
+        isToken: /^token/i.test(creature.id) || / token$/i.test(creature.name),
+        creature,
+      };
+    }
+    for (let player = 0; player < (state.permanents?.length ?? 0); player++) {
+      const permanent = state.permanents?.[player]?.find((candidate) => candidate.id === id);
+      if (!permanent) continue;
+      return {
+        controller: permanent.controller,
+        name: permanent.cardName,
+        isCommander: state.commanders[permanent.controller]?.toLowerCase() === permanent.cardName.toLowerCase(),
+        isToken: permanent.token === true,
+      };
+    }
+    return null;
+  }
+
+  private isCommanderCreature(state: SimGameState, playerIndex: number, creature: CreaturePermanent): boolean {
+    return state.commanders[playerIndex]?.toLowerCase() === creature.name.toLowerCase();
+  }
+
+  private creaturesByIds(state: SimGameState, playerIndex: number, ids: string[]): CreaturePermanent[] {
+    const wanted = new Set(ids);
+    return (state.creatures[playerIndex] ?? []).filter((creature) => wanted.has(creature.id));
+  }
+
+  private engineThreatBucket(state: SimGameState, controller: number, name: string): number {
+    const metadata = state.cardMetadata[controller]?.[name.toLowerCase()];
+    const text = `${metadata?.oracleText ?? ""} ${metadata?.typeLine ?? ""}`.toLowerCase();
+    return bucket(
+      (/whenever|at the beginning|draw|token|treasure|add .*mana|copy|combo|storm|cascade/.test(text) ? 2 : 0) +
+      (metadata?.manaValue ?? 0) / 3,
+      [1, 2, 4]
+    );
   }
 
   /** Original 8-feature extraction (kept for comparison / fallback). */
@@ -955,4 +1221,303 @@ function average(values: number[]): number {
 
 function normalizePlanScore(score: number): number {
   return clamp(score / 20, -1, 1);
+}
+
+function bucketCount(count: number): string {
+  if (count <= 0) return "0";
+  if (count <= 1) return "1";
+  if (count <= 2) return "2";
+  if (count <= 4) return "3-4";
+  return "5+";
+}
+
+function estimateAttackerCount(plan: BlockPlan): number {
+  const assigned = new Set([...plan.assignments.keys()]);
+  if (assigned.size > 0) return assigned.size;
+  return plan.totalIncomingDamage > 0 ? Math.max(1, Math.ceil(plan.totalIncomingDamage / 4)) : 0;
+}
+
+function hasEvasion(
+  state: SimGameState,
+  playerIndex: number,
+  creature: CreaturePermanent
+): boolean {
+  const metadata = state.cardMetadata[playerIndex]?.[creature.name.toLowerCase()];
+  const text = `${metadata?.oracleText ?? ""} ${metadata?.typeLine ?? ""}`.toLowerCase();
+  return /flying|menace|can't be blocked|unblockable|shadow|fear|intimidate/.test(text);
+}
+
+export type ImmediateLethalKind = "combat" | "spell" | "ability";
+
+export interface ImmediateLethalAction {
+  action: SimAction;
+  kind: ImmediateLethalKind;
+  targetPlayer: number;
+  damage: number;
+  gameWinning: boolean;
+}
+
+export interface ImmediateLethalAttackPlan {
+  plan: AttackPlan;
+  kind: "combat";
+  targetPlayer: number;
+  damage: number;
+  gameWinning: boolean;
+}
+
+export function findImmediateLethalActions(
+  state: SimGameState,
+  player: number,
+  availableActions: SimAction[]
+): ImmediateLethalAction[] {
+  const candidates: ImmediateLethalAction[] = [];
+  for (const action of availableActions) {
+    if (action.type !== "CAST_SPELL" && action.type !== "ACTIVATE_ABILITY") continue;
+    const abilities = immediateAbilitiesForAction(state, player, action);
+    const lethalTargets = lethalTargetsForAbilities(state, player, action, abilities);
+    for (const target of lethalTargets) {
+      candidates.push({
+        action,
+        kind: action.type === "CAST_SPELL" ? "spell" : "ability",
+        targetPlayer: target.player,
+        damage: target.amount,
+        gameWinning: target.gameWinning ?? isGameWinningElimination(state, player, target.player, target.amount),
+      });
+    }
+  }
+  return candidates.sort(compareImmediateLethals);
+}
+
+export function findImmediateLethalAttackPlans(
+  state: SimGameState,
+  player: number,
+  plans: AttackPlan[]
+): ImmediateLethalAttackPlan[] {
+  return plans
+    .filter((plan) => plan.targetPlayer !== player)
+    .filter((plan) => (state.lifeTotals[plan.targetPlayer] ?? 0) > 0)
+    .filter((plan) => plan.expectedDamage >= (state.lifeTotals[plan.targetPlayer] ?? Number.POSITIVE_INFINITY))
+    .map((plan) => ({
+      plan,
+      kind: "combat" as const,
+      targetPlayer: plan.targetPlayer,
+      damage: plan.expectedDamage,
+      gameWinning: isGameWinningElimination(state, player, plan.targetPlayer, plan.expectedDamage),
+    }))
+    .sort(compareImmediateLethals);
+}
+
+function immediateAbilitiesForAction(
+  state: SimGameState,
+  player: number,
+  action: Extract<SimAction, { type: "CAST_SPELL" | "ACTIVATE_ABILITY" }>
+): ParsedAbility[] {
+  if (action.type === "CAST_SPELL") {
+    const metadata = getCardMetadata(state, player, action.card);
+    return selectedAbilitiesForAction(metadata, action, "SPELL_EFFECT");
+  }
+  const permanent = findPermanentById(state, player, action.sourcePermanentId);
+  if (!permanent) return [];
+  const metadata =
+    getCardMetadata(state, player, permanent.cardName) ??
+    getCardMetadata(state, player, permanent.face ?? permanent.cardName);
+  const ability = selectedActivatedAbilityForAction(metadata, action);
+  return ability ? [ability] : [];
+}
+
+function lethalTargetsForAbilities(
+  state: SimGameState,
+  player: number,
+  action: Extract<SimAction, { type: "CAST_SPELL" | "ACTIVATE_ABILITY" }>,
+  abilities: ParsedAbility[]
+): Array<{ player: number; amount: number; gameWinning?: boolean }> {
+  const result: Array<{ player: number; amount: number; gameWinning?: boolean }> = [];
+  for (const ability of abilities) {
+    for (const effect of ability.effects) {
+      const amount = immediateDamageAmount(effect);
+      if (amount <= 0) continue;
+      const opponents = livingOpponents(state, player);
+      if (effect.target === "eachOpponent" && opponents.length > 0) {
+        const killsAllOpponents = opponents.every((opponent) => amount >= (state.lifeTotals[opponent] ?? Number.POSITIVE_INFINITY));
+        if (killsAllOpponents) {
+          result.push({ player: opponents[0], amount, gameWinning: true });
+          continue;
+        }
+      }
+      for (const target of playerTargetsForEffect(state, player, action, effect)) {
+        if (!isLegalOpponentTarget(state, player, target)) continue;
+        if (amount >= (state.lifeTotals[target] ?? Number.POSITIVE_INFINITY)) {
+          result.push({ player: target, amount });
+        }
+      }
+    }
+  }
+  return result;
+}
+
+function immediateDamageAmount(effect: EffectDescriptor): number {
+  if (effect.type !== "DEAL_DAMAGE" && effect.type !== "LOSE_LIFE") return 0;
+  return Number.isFinite(effect.amount) ? Math.max(0, effect.amount ?? 0) : 0;
+}
+
+function playerTargetsForEffect(
+  state: SimGameState,
+  player: number,
+  action: Extract<SimAction, { type: "CAST_SPELL" | "ACTIVATE_ABILITY" }>,
+  effect: EffectDescriptor
+): number[] {
+  if (effect.target === "eachOpponent") return livingOpponents(state, player);
+  if (effect.target === "eachPlayer") {
+    return state.lifeTotals
+      .map((life, index) => ({ life, index }))
+      .filter(({ life }) => life > 0)
+      .map(({ index }) => index);
+  }
+  const targetRef = action.targets?.find((target) => target.type === "player");
+  const legacyTarget = action.type === "CAST_SPELL" ? action.targetPlayer : undefined;
+  const target = targetRef?.id ?? legacyTarget;
+  if (typeof target === "number") return [target];
+  if (typeof target === "string" && /^\d+$/.test(target)) return [Number(target)];
+  if (effect.target === "opponent") {
+    const opponents = livingOpponents(state, player);
+    return opponents.length === 1 ? opponents : [];
+  }
+  return [];
+}
+
+function isLegalOpponentTarget(state: SimGameState, player: number, target: number): boolean {
+  return Number.isInteger(target) &&
+    target >= 0 &&
+    target < state.lifeTotals.length &&
+    target !== player &&
+    (state.lifeTotals[target] ?? 0) > 0;
+}
+
+function isGameWinningElimination(
+  state: SimGameState,
+  player: number,
+  targetPlayer: number,
+  amount: number
+): boolean {
+  return amount >= (state.lifeTotals[targetPlayer] ?? Number.POSITIVE_INFINITY) &&
+    livingOpponents(state, player)
+      .filter((opponent) => opponent !== targetPlayer)
+      .every((opponent) => (state.lifeTotals[opponent] ?? 0) <= 0);
+}
+
+function livingOpponents(state: SimGameState, player: number): number[] {
+  return state.lifeTotals
+    .map((life, index) => ({ life, index }))
+    .filter(({ life, index }) => index !== player && life > 0)
+    .map(({ index }) => index);
+}
+
+function compareImmediateLethals<T extends { gameWinning: boolean; damage: number; targetPlayer: number }>(
+  left: T,
+  right: T
+): number {
+  return Number(right.gameWinning) - Number(left.gameWinning) ||
+    right.damage - left.damage ||
+    left.targetPlayer - right.targetPlayer;
+}
+
+function recordLethalCounters(
+  opportunities: Array<{ kind: ImmediateLethalKind; gameWinning: boolean }>,
+  chosen?: { kind: ImmediateLethalKind; gameWinning: boolean }
+): void {
+  recordDecisionCount("lethalOpportunities", opportunities.length);
+  if (!chosen) {
+    recordDecisionCount("lethalMissed");
+    return;
+  }
+  recordDecisionCount("lethalActionsChosen");
+  if (chosen.gameWinning) recordDecisionCount("gameWinningLethalChosen");
+  else recordDecisionCount("opponentEliminationChosen");
+  if (chosen.kind === "combat") recordDecisionCount("lethalByCombat");
+  if (chosen.kind === "spell") recordDecisionCount("lethalBySpell");
+  if (chosen.kind === "ability") recordDecisionCount("lethalByAbility");
+}
+
+function selectedAbilitiesForAction(
+  metadata: DeckCardMetadata | undefined,
+  action: Extract<SimAction, { type: "CAST_SPELL" | "ACTIVATE_ABILITY" }>,
+  kind: ParsedAbility["kind"]
+): ParsedAbility[] {
+  const selectedModes = new Set(action.modes ?? []);
+  return parseCardRules(metadata ?? { name: "unknown" })
+    .abilities
+    .filter((ability) => ability.kind === kind)
+    .filter((ability) => selectedModes.size === 0 ? !ability.modeId : Boolean(ability.modeId && selectedModes.has(ability.modeId)))
+    .filter((ability) => {
+      const optionalId = ability.patternId ?? ability.abilityId ?? ability.modeId;
+      if (!optionalId || !ability.effects.some((effect) => effect.optional)) return true;
+      return action.optionalChoices?.[optionalId] !== false;
+    });
+}
+
+function selectedActivatedAbilityForAction(
+  metadata: DeckCardMetadata | undefined,
+  action: Extract<SimAction, { type: "ACTIVATE_ABILITY" }>
+): ParsedAbility | undefined {
+  return selectedAbilitiesForAction(metadata, action, "ACTIVATED")
+    .map((ability, index) => ({
+      ...ability,
+      abilityId: ability.abilityId ?? `${action.sourcePermanentId}:${ability.patternId ?? "activated"}:${index}`,
+    }))
+    .find((ability) => ability.abilityId === action.abilityId);
+}
+
+function findPermanentById(state: SimGameState, player: number, id: string) {
+  return state.permanents?.[player]?.find((permanent) => permanent.id === id);
+}
+
+function spellTypeFamily(metadata?: DeckCardMetadata): string {
+  const line = metadata?.typeLine?.toLowerCase() ?? "";
+  if (metadata?.isInstant || line.includes("instant")) return "instant";
+  if (metadata?.isSorcery || line.includes("sorcery")) return "sorcery";
+  if (metadata?.isCreature || line.includes("creature")) return "creature";
+  if (metadata?.isArtifact || line.includes("artifact")) return "artifact";
+  if (line.includes("enchantment")) return "enchantment";
+  if (line.includes("planeswalker")) return "planeswalker";
+  if (metadata?.isLand || line.includes("land")) return "land";
+  return "spell";
+}
+
+function timingFamily(state: SimGameState): string {
+  const phase = `${state.phase ?? ""} ${state.phaseStep ?? ""}`.toLowerCase();
+  if (phase.includes("combattimento") || phase.includes("combat")) return "combat";
+  if (phase.includes("principale") || phase.includes("main")) {
+    return phase.includes("seconda") || phase.includes("post") ? "main_post" : "main_pre";
+  }
+  if (phase.includes("upkeep") || phase.includes("mantenimento")) return "upkeep";
+  if (phase.includes("end") || phase.includes("fine")) return "end";
+  if ((state.stack?.length ?? 0) > 0) return "response";
+  return "other";
+}
+
+function effectFamilyForAbilities(abilities: ParsedAbility[]): string {
+  const effects = abilities.flatMap((ability) => ability.effects);
+  if (!effects.length) return "none";
+  if (effects.some((effect) => effect.type === "DEAL_DAMAGE" || effect.type === "LOSE_LIFE")) return "damage";
+  if (effects.some((effect) => effect.type === "DESTROY" || effect.type === "EXILE")) return "removal";
+  if (effects.some((effect) => effect.type === "DRAW_CARDS")) return "draw";
+  if (effects.some((effect) => effect.type === "CREATE_TOKEN")) return "token";
+  if (effects.some((effect) => effect.type === "ADD_MANA")) return "mana";
+  if (effects.some((effect) => effect.type === "GAIN_LIFE")) return "lifegain";
+  return effects[0]?.type.toLowerCase() ?? "other";
+}
+
+function costFamilyForAbility(ability?: ParsedAbility): string {
+  const costs = ability?.costs ?? [];
+  if (!costs.length) return "free";
+  const parts = costs
+    .map((cost) => {
+      if (cost.type === "MANA") return "mana";
+      if (cost.type === "TAP") return "tap";
+      if (cost.type === "SACRIFICE") return "sac";
+      if (cost.type === "PAY_LIFE") return "life";
+      return "other";
+    })
+    .sort();
+  return [...new Set(parts)].join("+");
 }

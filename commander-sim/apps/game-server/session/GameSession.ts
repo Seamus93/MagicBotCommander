@@ -9,6 +9,11 @@ export type SessionStatus = "pending" | "running" | "game_over";
 
 export interface WaitingMessage {
   type: "waiting_for_human";
+  sessionId: string;
+  stateVersion: number;
+  turn: number;
+  phase: string;
+  activePlayer: number;
   decisionType: WaitingType;
   context: WaitingContext;
 }
@@ -39,6 +44,7 @@ export class GameSession {
   status: SessionStatus = "pending";
   winner: number | null = null;
   private readonly startingPlayerIndex: number;
+  private stateVersion = 0;
 
   private humanAgent: HumanAgent;
   private onMessage: (msg: GameMessage) => void;
@@ -59,8 +65,21 @@ export class GameSession {
     this.onMessage = onMessage;
     this.startingPlayerIndex = Math.floor(Math.random() * 4);
 
-    this.humanAgent = new HumanAgent((type, ctx) => {
-      const msg: WaitingMessage = { type: "waiting_for_human", decisionType: type, context: ctx };
+    this.humanAgent = new HumanAgent(id, (type, ctx, decisionState) => {
+      if (decisionState) {
+        this.emitStateUpdate(decisionState);
+      }
+      const sourceState = decisionState ?? this.lastState;
+      const msg: WaitingMessage = {
+        type: "waiting_for_human",
+        sessionId: this.id,
+        stateVersion: this.stateVersion,
+        turn: sourceState?.turn ?? 0,
+        phase: sourceState?.phaseStep || sourceState?.phase || "",
+        activePlayer: sourceState?.playerIndex ?? 0,
+        decisionType: type,
+        context: ctx,
+      };
       this.lastWaitingMessage = msg;
       this.onMessage(msg);
     });
@@ -113,11 +132,7 @@ export class GameSession {
         this.onMessage({ type: "game_log", message: msg });
       },
       onStateChange: (state: SimGameState, event: GameEvent) => {
-        this.lastState = state;
-        this.onMessage({
-          type: "state_update",
-          state: serializeForViewer(state, 0, this.startingPlayerIndex),
-        });
+        this.emitStateUpdate(state);
         if (event.type === "game_over") {
           this.winner = event.winner;
           this.status = "game_over";
@@ -132,7 +147,9 @@ export class GameSession {
     }
   }
 
-  submitDecision(decision: unknown): void {
+  submitDecision(decision: unknown, expectedStateVersion?: number): void {
+    if (!this.assertSubmittedVersionCurrent(decision, expectedStateVersion)) return;
+    this.assertSubmittedPlayLandInCurrentHand(decision);
     this.lastWaitingMessage = null;
     this.humanAgent.submitDecision(decision);
     this.resetDisconnectTimer();
@@ -154,7 +171,10 @@ export class GameSession {
 
   getFilteredState(): FilteredGameState | null {
     if (!this.lastState) return null;
-    return serializeForViewer(this.lastState, 0, this.startingPlayerIndex);
+    return serializeForViewer(this.lastState, 0, this.startingPlayerIndex, {
+      sessionId: this.id,
+      stateVersion: this.stateVersion,
+    });
   }
 
   startSimulation(): void { /* already started in constructor */ }
@@ -174,5 +194,80 @@ export class GameSession {
 
   destroy(): void {
     if (this.disconnectTimer) clearTimeout(this.disconnectTimer);
+  }
+
+  private emitStateUpdate(state: SimGameState): void {
+    this.lastState = state;
+    this.stateVersion++;
+    this.onMessage({
+      type: "state_update",
+      state: serializeForViewer(state, 0, this.startingPlayerIndex, {
+        sessionId: this.id,
+        stateVersion: this.stateVersion,
+      }),
+    });
+  }
+
+  private assertSubmittedVersionCurrent(decision: unknown, expectedStateVersion?: number): boolean {
+    if (!this.lastWaitingMessage) return true;
+    if (
+      expectedStateVersion === this.stateVersion &&
+      expectedStateVersion === this.lastWaitingMessage.stateVersion
+    ) {
+      return true;
+    }
+    const payload = {
+      invariant: "SUBMITTED_DECISION_STATE_VERSION_MUST_MATCH_CURRENT_STATE",
+      stage: "GameSession.submitDecision",
+      sessionId: this.id,
+      expectedStateVersion,
+      currentStateVersion: this.stateVersion,
+      submittedDecision: decision,
+      pendingStateVersion: this.lastWaitingMessage?.stateVersion,
+    };
+    console.error("[state-version-invariant]", JSON.stringify(payload, null, 2));
+    this.onMessage({
+      type: "game_log",
+      message: `[state-version] rejected stale decision session=${this.id} expected=${expectedStateVersion} current=${this.stateVersion}`,
+    });
+    return false;
+  }
+
+  private assertSubmittedPlayLandInCurrentHand(decision: unknown): void {
+    if (!decision || typeof decision !== "object") return;
+    const action = decision as { type?: unknown; card?: unknown; cardName?: unknown };
+    if (action.type !== "PLAY_LAND") return;
+    const card = typeof action.card === "string"
+      ? action.card
+      : typeof action.cardName === "string"
+        ? action.cardName
+        : null;
+    if (!card || !this.lastState) return;
+
+    const player = this.lastState.playerIndex;
+    const hand = this.lastState.hands[player] ?? [];
+    if (hand.includes(card)) return;
+
+    const payload = {
+      invariant: "SUBMITTED_PLAY_LAND_CARD_MUST_BE_IN_CURRENT_HAND",
+      stage: "GameSession.submitDecision",
+      sessionId: this.id,
+      gameState: {
+        turn: this.lastState.turn,
+        phase: this.lastState.phase,
+        phaseStep: this.lastState.phaseStep,
+        playerIndex: this.lastState.playerIndex,
+      },
+      hand,
+      submittedAction: decision,
+      pendingAvailableActions: this.lastWaitingMessage?.context.availableActions ?? [],
+    };
+    console.error("[available-actions-invariant]", JSON.stringify(payload, null, 2));
+
+    if (process.env.DEBUG_AVAILABLE_ACTIONS === "true" || process.env.NODE_ENV !== "production") {
+      throw new Error(
+        `[available-actions-invariant] submitted PLAY_LAND outside hand session=${this.id}`
+      );
+    }
   }
 }

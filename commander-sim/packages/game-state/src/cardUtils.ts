@@ -23,6 +23,19 @@ const EMPTY_MANA_COST: ManaCost = {
 
 const EMPTY_MANA_POOL: ManaPool = { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 };
 
+const NUMBER_WORDS: Record<string, number> = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+};
+
 const PERMANENT_CARD_TYPES = [
   "land",
   "creature",
@@ -180,6 +193,117 @@ function detectUnconditionalEntersTapped(text?: string) {
     return false;
   }
   return true;
+}
+
+function findEntersTappedSentence(text?: string) {
+  return text
+    ?.split(/[\.\n]/)
+    .map((part) => part.trim())
+    .find((part) => /\benters(?: the battlefield)? tapped\b/i.test(part));
+}
+
+function parseNumberWord(raw: string | undefined) {
+  if (!raw) return undefined;
+  const normalized = raw.toLowerCase();
+  const parsed = NUMBER_WORDS[normalized] ?? Number(normalized);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseOtherPermanentEntryCondition(text?: string) {
+  const sentence = findEntersTappedSentence(text);
+  if (!sentence) return null;
+  const match = sentence.match(
+    /\benters(?: the battlefield)? tapped unless you control (one|two|three|four|five|six|seven|eight|nine|ten|\d+) or more other (lands?|creatures?|artifacts?|enchantments?|permanents?)\b/i
+  );
+  if (!match) return null;
+  const amount = parseNumberWord(match[1]);
+  const permanentType = match[2].toLowerCase().replace(/s$/, "");
+  return {
+    sourceSentence: sentence,
+    amount,
+    permanentType,
+  };
+}
+
+export interface LandEntryTappedEvaluation {
+  enteredTapped: boolean;
+  entryReason: string;
+  otherLandCount?: number;
+  conditionRecognized?: boolean;
+  conditionEvaluable?: boolean;
+  unsupported?: boolean;
+}
+
+function countControlledPermanentsByType(
+  state: SimGameState,
+  player: number,
+  permanentType: string
+) {
+  if (permanentType !== "land") return undefined;
+  const permanents = state.permanents?.[player];
+  if (permanents?.length) {
+    return permanents.filter((permanent) =>
+      isLandCard(state, player, permanent.face ?? permanent.cardName)
+    ).length;
+  }
+  return (state.battlefields[player] ?? []).filter((card) =>
+    isLandCard(state, player, card)
+  ).length;
+}
+
+export function evaluateLandEntryTapped(
+  state: SimGameState,
+  player: number,
+  _card: CardName,
+  metadata?: DeckCardMetadata
+): LandEntryTappedEvaluation {
+  const texts = [
+    metadata?.landFace?.oracleText,
+    metadata?.oracleText,
+  ].filter((text): text is string => Boolean(text));
+
+  for (const text of texts) {
+    const condition = parseOtherPermanentEntryCondition(text);
+    if (!condition) continue;
+
+    if (condition.amount === undefined || condition.permanentType !== "land") {
+      return {
+        enteredTapped: true,
+        entryReason: `conditional entry not evaluable: ${condition.sourceSentence}`,
+        conditionRecognized: true,
+        conditionEvaluable: false,
+        unsupported: true,
+      };
+    }
+
+    const otherLandCount = countControlledPermanentsByType(state, player, "land");
+    if (otherLandCount === undefined) {
+      return {
+        enteredTapped: true,
+        entryReason: `conditional entry not evaluable: ${condition.sourceSentence}`,
+        conditionRecognized: true,
+        conditionEvaluable: false,
+        unsupported: true,
+      };
+    }
+
+    const satisfied = otherLandCount >= condition.amount;
+    return {
+      enteredTapped: !satisfied,
+      entryReason: satisfied
+        ? `controls ${condition.amount === 2 ? "two" : condition.amount} or more other lands`
+        : `controls fewer than ${condition.amount === 2 ? "two" : condition.amount} other lands`,
+      otherLandCount,
+      conditionRecognized: true,
+      conditionEvaluable: true,
+    };
+  }
+
+  const entersTapped = landEntersTapped(metadata);
+  return {
+    enteredTapped: entersTapped,
+    entryReason: entersTapped ? "enters tapped" : "no tapped entry restriction",
+  };
 }
 
 export function landEntersTapped(metadata?: DeckCardMetadata) {

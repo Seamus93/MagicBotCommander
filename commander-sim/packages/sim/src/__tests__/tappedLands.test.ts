@@ -44,11 +44,23 @@ const pinnacleMetadata: DeckCardMetadata = {
 const basicLand = (name: string): DeckCardMetadata => ({
   name,
   typeLine: `Basic Land - ${name}`,
+  oracleText: "{T}: Add one mana of any color.",
   isLand: true,
   isPermanent: true,
   producesMana: true,
   manaProduction: 1,
 });
+
+const stormcarvedCoast: DeckCardMetadata = {
+  name: "Stormcarved Coast",
+  typeLine: "Land",
+  oracleText:
+    "Stormcarved Coast enters the battlefield tapped unless you control two or more other lands.\n{T}: Add {U} or {R}.",
+  isLand: true,
+  isPermanent: true,
+  producesMana: true,
+  manaProduction: 1,
+};
 
 function makeState(metadata: DeckCardMetadata[]): SimGameState {
   const state = createInitialState(
@@ -63,6 +75,10 @@ function makeState(metadata: DeckCardMetadata[]): SimGameState {
   state.battlefields[0] = [];
   state.manaSpent[0] = 0;
   return state;
+}
+
+function lastLandPlayedEvent(state: SimGameState) {
+  return [...(state.rulesEvents ?? [])].reverse().find((event) => event.type === "LAND_PLAYED");
 }
 
 describe("tapped land handling", () => {
@@ -126,6 +142,95 @@ describe("tapped land handling", () => {
 
     expect(state.tappedPermanents?.[0]?.["gain land"]).toBe(1);
     expect(getAvailableMana(state, 0)).toBe(0);
+  });
+
+  it("conditional lands enter tapped when played as the first land", () => {
+    const state = makeState([stormcarvedCoast]);
+    const log: string[] = [];
+    state.hands[0] = ["Stormcarved Coast"];
+
+    applyAction(state, { type: "PLAY_LAND", card: "Stormcarved Coast" }, 0, (msg) => log.push(msg));
+
+    expect(state.permanents?.[0]?.[0]).toMatchObject({
+      cardName: "Stormcarved Coast",
+      tapped: true,
+    });
+    expect(state.tappedPermanents?.[0]?.["stormcarved coast"]).toBe(1);
+    expect(getAvailableMana(state, 0)).toBe(0);
+    expect(state.rulesEvents?.find((event) => event.type === "LAND_PLAYED")?.data).toMatchObject({
+      card: "Stormcarved Coast",
+      player: 0,
+      enteredTapped: true,
+      entryReason: "controls fewer than two other lands",
+      otherLandCount: 0,
+    });
+    expect(log).toContain("Player 0 plays Stormcarved Coast tapped");
+    expect(log).toContain("Reason: controls fewer than two other lands");
+  });
+
+  it("conditional lands enter tapped with only one other land", () => {
+    const state = makeState([stormcarvedCoast, basicLand("Island")]);
+    state.hands[0] = ["Stormcarved Coast"];
+    applyAction(state, { type: "PLAY_LAND", card: "Island" }, 0, () => {});
+    state.hands[0] = ["Stormcarved Coast"];
+
+    applyAction(state, { type: "PLAY_LAND", card: "Stormcarved Coast" }, 0, () => {});
+
+    expect(state.permanents?.[0]?.find((permanent) => permanent.cardName === "Stormcarved Coast")?.tapped).toBe(true);
+    expect(lastLandPlayedEvent(state)?.data).toMatchObject({
+      enteredTapped: true,
+      entryReason: "controls fewer than two other lands",
+      otherLandCount: 1,
+    });
+  });
+
+  it("conditional lands enter untapped with two other lands", () => {
+    const state = makeState([stormcarvedCoast, basicLand("Island"), basicLand("Mountain")]);
+    const log: string[] = [];
+    state.hands[0] = ["Island"];
+    applyAction(state, { type: "PLAY_LAND", card: "Island" }, 0, () => {});
+    state.hands[0] = ["Mountain"];
+    applyAction(state, { type: "PLAY_LAND", card: "Mountain" }, 0, () => {});
+    state.hands[0] = ["Stormcarved Coast"];
+
+    applyAction(state, { type: "PLAY_LAND", card: "Stormcarved Coast" }, 0, (msg) => log.push(msg));
+
+    expect(state.permanents?.[0]?.find((permanent) => permanent.cardName === "Stormcarved Coast")?.tapped).toBe(false);
+    expect(state.tappedPermanents?.[0]?.["stormcarved coast"]).toBeUndefined();
+    expect(lastLandPlayedEvent(state)?.data).toMatchObject({
+      enteredTapped: false,
+      entryReason: "controls two or more other lands",
+      otherLandCount: 2,
+    });
+    expect(log).toContain("Player 0 plays Stormcarved Coast untapped");
+    expect(log).toContain("Reason: controls two or more other lands");
+  });
+
+  it("does not count the entering conditional land as another land", () => {
+    const state = makeState([stormcarvedCoast, basicLand("Island")]);
+    state.hands[0] = ["Island"];
+    applyAction(state, { type: "PLAY_LAND", card: "Island" }, 0, () => {});
+    state.hands[0] = ["Stormcarved Coast"];
+
+    applyAction(state, { type: "PLAY_LAND", card: "Stormcarved Coast" }, 0, () => {});
+
+    expect(state.battlefields[0]).toHaveLength(2);
+    expect(lastLandPlayedEvent(state)?.data?.otherLandCount).toBe(1);
+    expect(state.permanents?.[0]?.find((permanent) => permanent.cardName === "Stormcarved Coast")?.tapped).toBe(true);
+  });
+
+  it("conditional tapped lands untap normally on the next turn", () => {
+    const state = makeState([stormcarvedCoast]);
+    state.hands[0] = ["Stormcarved Coast"];
+    applyAction(state, { type: "PLAY_LAND", card: "Stormcarved Coast" }, 0, () => {});
+
+    expect(getAvailableMana(state, 0)).toBe(0);
+    state.turn += 1;
+    untapPermanentsForTurn(state, 0);
+
+    expect(state.permanents?.[0]?.[0]?.tapped).toBe(false);
+    expect(state.tappedPermanents?.[0]?.["stormcarved coast"]).toBeUndefined();
+    expect(getAvailableMana(state, 0)).toBe(1);
   });
 
   it("conditional tapped lands are not hardcoded as always tapped", () => {

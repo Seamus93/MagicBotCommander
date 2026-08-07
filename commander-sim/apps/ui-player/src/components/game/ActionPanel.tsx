@@ -34,6 +34,8 @@ export default function ActionPanel({
                 ? `Play Land: ${a.card}`
                 : a.type === "CAST_SPELL"
                 ? `Cast: ${a.card}`
+                : a.type === "RESOLVE_CHOICE"
+                ? `Return: ${a.card}`
                 : a.type === "PASS_TURN"
                 ? "Pass Turn"
                 : a.type;
