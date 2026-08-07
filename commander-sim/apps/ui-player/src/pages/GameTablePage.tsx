@@ -187,6 +187,7 @@ export default function GameTablePage() {
     gameLog,
     isConnected,
     gameOver,
+    stateOutOfSyncMessage,
     submitAction,
     submitAttackPlan,
     submitBlockPlan,
@@ -276,6 +277,9 @@ export default function GameTablePage() {
             ← Back
           </button>
           <span className="text-gray-500 text-xs">Session: {sessionId?.slice(0, 12)}…</span>
+          {typeof gameState?.stateVersion === "number" && (
+            <span className="text-gray-500 text-xs">rev {gameState.stateVersion}</span>
+          )}
           <span className={`text-xs px-1.5 py-0.5 rounded ${isConnected ? "bg-green-800 text-green-300" : "bg-red-900 text-red-400"}`}>
             {isConnected ? "Connected" : "Disconnected"}
           </span>
@@ -321,6 +325,12 @@ export default function GameTablePage() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {stateOutOfSyncMessage && (
+        <div className="fixed left-1/2 top-12 z-50 -translate-x-1/2 rounded border border-red-500/40 bg-red-950/90 px-3 py-2 text-xs font-semibold text-red-100 shadow-xl">
+          {stateOutOfSyncMessage}
         </div>
       )}
 

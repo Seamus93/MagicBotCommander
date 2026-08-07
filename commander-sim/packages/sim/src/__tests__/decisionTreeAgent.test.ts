@@ -167,8 +167,10 @@ describe("DecisionTreeAgent confidence", () => {
 
     const scored = agent.scorePublic(state, [targeted, ability]);
 
-    expect(scored[0].key).toBe("CAST_SPELL:Reliable Spell:mode=destroy:target=permanent_perm_12");
-    expect(scored[1].key).toBe("ACTIVATE:perm_8:ability=draw");
+    expect(scored[0].key).toBe(
+      "CAST_SPELL:Reliable Spell:spellType=sorcery:mana=1:timing=main_pre:effect=none:mode=destroy:target=permanent_perm_12:targetSemantic=type=permanent,value=0,commander=no,token=no"
+    );
+    expect(scored[1].key).toBe("ACTIVATE:perm_8:ability=draw:sourceCard=unknown:timing=main_pre:effect=none:cost=free");
   });
 });
 

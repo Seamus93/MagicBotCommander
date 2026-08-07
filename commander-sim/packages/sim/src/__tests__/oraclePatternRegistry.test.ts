@@ -85,6 +85,39 @@ describe("OraclePatternRegistry", () => {
     expect(parsed.unsupportedFragments).toEqual(["Prowess"]);
   });
 
+  it("parses conditional other-land tapped replacement effects", () => {
+    const parsed = parseCardRules(card({
+      name: "Stormcarved Coast",
+      typeLine: "Land",
+      oracleText:
+        "Stormcarved Coast enters the battlefield tapped unless you control two or more other lands.\n{T}: Add {U} or {R}.",
+      isLand: true,
+      isPermanent: true,
+    }));
+
+    const ability = parsed.abilities.find(
+      (candidate) => candidate.patternId === "ENTERS_TAPPED_UNLESS_OTHER_PERMANENTS"
+    );
+
+    expect(parsed.recognizedFragments.map((fragment) => fragment.patternId)).toContain(
+      "ENTERS_TAPPED_UNLESS_OTHER_PERMANENTS"
+    );
+    expect(parsed.recognizedFragments.map((fragment) => fragment.patternId)).not.toContain("ENTERS_TAPPED");
+    expect(ability).toMatchObject({
+      kind: "REPLACEMENT",
+      conditions: [{
+        type: "NOT",
+        condition: {
+          type: "CONTROLS_AT_LEAST_OTHER_PERMANENTS",
+          permanentType: "land",
+          amount: 2,
+        },
+      }],
+      effects: [{ type: "TAP", target: "self" }],
+      supportLevel: "FULL",
+    });
+  });
+
   it("parses dies, upkeep, token, counter, and damage patterns", () => {
     const parsed = parseCardRules(card({
       name: "Rules Sampler",

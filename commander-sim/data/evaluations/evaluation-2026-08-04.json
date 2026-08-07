@@ -1,0 +1,223 @@
+{
+  "config": {
+    "games": 500,
+    "seed": 42,
+    "agentA": "heuristic",
+    "agentB": "learned",
+    "policy": "policy-1000.json",
+    "deckIds": [
+      3
+    ],
+    "maxTurns": 40,
+    "outputDir": "data/evaluations",
+    "eloFile": "data\\evaluations\\elo.json",
+    "csvFile": "data\\evaluations\\evaluations.csv"
+  },
+  "seed": 42,
+  "agents": [
+    {
+      "slot": "A",
+      "id": "heuristic",
+      "kind": "heuristic"
+    },
+    {
+      "slot": "B",
+      "id": "learned:policy-1000.json",
+      "kind": "learned",
+      "policySnapshot": "policy-1000.json"
+    }
+  ],
+  "metrics": {
+    "heuristic": {
+      "games": 1000,
+      "winRate": 0.217,
+      "averagePlacement": 2.558,
+      "averageTurnSurvived": 21.32,
+      "averageGameLength": 21.32,
+      "commanderDamageDealt": 0,
+      "combatDamageDealt": 19.289,
+      "spellDamageDealt": 0,
+      "creaturesKilled": 2.488,
+      "creaturesLost": 1.812,
+      "cardsDrawn": 9.636,
+      "cardsCast": 6.059,
+      "landsPlayed": 6.847,
+      "manaSpent": 19.205,
+      "manaWasted": 520.59,
+      "unusedManaRate": 0.9644216786002093,
+      "removalUsed": 1.246,
+      "removalOnHighValueTargetRate": 0,
+      "counterspellEfficiency": 0,
+      "attackFrequency": 0.09784156528564221,
+      "blockFrequency": 0.028625890003924428,
+      "lethalOpportunities": 0.776,
+      "lethalChosen": 0.717,
+      "lethalMissed": 0,
+      "averageBoardValue": 17.443,
+      "averageHandSize": 5.819,
+      "averageChooseActionMs": 405.53846074999905,
+      "exactRate": 0,
+      "fuzzyRate": 0,
+      "heuristicRate": 0.8735325447104334
+    },
+    "learned:policy-1000.json": {
+      "games": 1000,
+      "winRate": 0.283,
+      "averagePlacement": 2.442,
+      "averageTurnSurvived": 21.32,
+      "averageGameLength": 21.32,
+      "commanderDamageDealt": 0,
+      "combatDamageDealt": 27.463,
+      "spellDamageDealt": 0,
+      "creaturesKilled": 3.191,
+      "creaturesLost": 3.256,
+      "cardsDrawn": 6.433,
+      "cardsCast": 8.784,
+      "landsPlayed": 7.478,
+      "manaSpent": 27.291,
+      "manaWasted": 454.375,
+      "unusedManaRate": 0.9433404060074824,
+      "removalUsed": 1.72,
+      "removalOnHighValueTargetRate": 0,
+      "counterspellEfficiency": 0,
+      "attackFrequency": 0.15584276700734834,
+      "blockFrequency": 0.04489970514994577,
+      "lethalOpportunities": 0.776,
+      "lethalChosen": 0.717,
+      "lethalMissed": 0,
+      "averageBoardValue": 21.266,
+      "averageHandSize": 4.838,
+      "averageChooseActionMs": 405.53846074999905,
+      "exactRate": 0.23154131720060497,
+      "fuzzyRate": 0.19486074827749514,
+      "heuristicRate": 0.37285546236460576
+    }
+  },
+  "delta": {
+    "games": 0,
+    "winRate": -0.066,
+    "averagePlacement": 0.116,
+    "averageTurnSurvived": 0,
+    "averageGameLength": 0,
+    "commanderDamageDealt": 0,
+    "combatDamageDealt": -8.174,
+    "spellDamageDealt": 0,
+    "creaturesKilled": -0.703,
+    "creaturesLost": -1.444,
+    "cardsDrawn": 3.203,
+    "cardsCast": -2.725,
+    "landsPlayed": -0.631,
+    "manaSpent": -8.086,
+    "manaWasted": 66.215,
+    "unusedManaRate": 0.021081,
+    "removalUsed": -0.474,
+    "removalOnHighValueTargetRate": 0,
+    "counterspellEfficiency": 0,
+    "attackFrequency": -0.058001,
+    "blockFrequency": -0.016274,
+    "lethalOpportunities": 0,
+    "lethalChosen": 0,
+    "lethalMissed": 0,
+    "averageBoardValue": -3.823,
+    "averageHandSize": 0.981,
+    "averageChooseActionMs": 0,
+    "exactRate": -0.231541,
+    "fuzzyRate": -0.194861,
+    "heuristicRate": 0.500677
+  },
+  "elo": {
+    "heuristic": {
+      "rating": 934,
+      "gamesPlayed": 1812,
+      "confidence": 0.9476987447698745
+    },
+    "learned:policy-1000.json": {
+      "rating": 1066,
+      "gamesPlayed": 1812,
+      "confidence": 0.9476987447698745
+    }
+  },
+  "regression": {
+    "passed": true,
+    "failures": []
+  },
+  "durationMs": 1862639.3149,
+  "commit": "0c293f2",
+  "policySnapshots": {
+    "learned:policy-1000.json": "policy-1000.json"
+  },
+  "lifecycle": {
+    "policyFileReads": 1,
+    "policyJsonParseCount": 1,
+    "patternStoreBuildCount": 2,
+    "patternIndexBuildCount": 1,
+    "evaluationAgentCreateCount": 2000
+  },
+  "patternGenerationBreakdown": {
+    "pattern.state feature extraction": {
+      "count": 129374,
+      "totalMs": 2036.305999998293,
+      "avgMs": 0.015739684944411497,
+      "p95Ms": 0.022663545150315254,
+      "maxMs": 12.826899999985471,
+      "maxInputSize": 94
+    },
+    "pattern.action feature extraction": {
+      "count": 470421,
+      "totalMs": 66.88069998788978,
+      "avgMs": 0.00014217201185297805,
+      "p95Ms": 0.0002365095280260296,
+      "maxMs": 0.41090000001713634,
+      "maxInputSize": 1
+    },
+    "pattern.state serialization": {
+      "count": 623714,
+      "totalMs": 7767.60209999389,
+      "avgMs": 0.012453788274744339,
+      "p95Ms": 0.019465947611551522,
+      "maxMs": 16.854700000025332,
+      "maxInputSize": 21
+    },
+    "pattern.actionToKey": {
+      "count": 470435,
+      "totalMs": 894.9424999640232,
+      "avgMs": 0.0019023722723947479,
+      "p95Ms": 0.0027916943530654193,
+      "maxMs": 13.304099999993923,
+      "maxInputSize": 10
+    },
+    "pattern.exactActionKey": {
+      "count": 470421,
+      "totalMs": 5143.346099989747,
+      "avgMs": 0.010933495953602724,
+      "p95Ms": 0.019470736253844965,
+      "maxMs": 17.367499999934807,
+      "maxInputSize": 5
+    },
+    "pattern.target semantic features": {
+      "count": 323149,
+      "totalMs": 789.9435999538132,
+      "avgMs": 0.002444518163304894,
+      "p95Ms": 0.0044134171908480685,
+      "maxMs": 15.637300000002142,
+      "maxInputSize": 1
+    },
+    "pattern.fuzzyFamilyKey static features": {
+      "count": 323149,
+      "totalMs": 1978.664500011204,
+      "avgMs": 0.006123071709988903,
+      "p95Ms": 0.010074193549770561,
+      "maxMs": 13.735500000002503,
+      "maxInputSize": 5
+    }
+  },
+  "diagnostics": {
+    "watchdogAborts": 0,
+    "fuzzyTimeouts": 1,
+    "fuzzyTimeoutReasons": {
+      "MONOTONIC_GAP": 1
+    },
+    "monotonicGapDetected": 1
+  },
+  "generatedAt": "2026-08-04T19:09:16.510Z"
+}

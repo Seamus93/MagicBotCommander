@@ -7,13 +7,14 @@ import type {
   SimGameState,
   StackEntry,
 } from "@game-state/types";
-import { getAvailableMana } from "../../../game-state/src/cardUtils.js";
+import { applyManaPaymentPlan, findManaPaymentPlan, getAvailableMana } from "../../../game-state/src/cardUtils.js";
 import {
   applyAction,
   activateAbilityToStack,
   castSpellToStack,
   cleanupTemporaryEffects,
   createInitialState,
+  dispatchRulesEvent,
   emitCombatDamageTriggers,
   generateActions,
   resolveStackWithPriority,
@@ -1387,16 +1388,66 @@ describe("explicit target, modal, optional, and activated action generation", ()
     expect(generateActions(state, 0, mainContext).some((action) => action.type === "ACTIVATE_ABILITY")).toBe(true);
   });
 
-  it("represents Sol Ring mana ability without producing infinite mana", () => {
+  it("does not expose Sol Ring pure mana ability as a generic AI action", () => {
     const state = makeState([solRing], []);
     setManaBoard(state, 0, [solRing]);
 
-    const action = generateActions(state, 0, mainContext).find((candidate) => candidate.type === "ACTIVATE_ABILITY");
-    expect(action).toBeTruthy();
-    applyAction(state, action!, 0, () => {});
+    expect(generateActions(state, 0, mainContext).some((candidate) => candidate.type === "ACTIVATE_ABILITY")).toBe(false);
+  });
+
+  it("does not expose land pure mana abilities as generic AI actions", () => {
+    const grove = meta({
+      name: "Green Test Land",
+      typeLine: "Land",
+      isLand: true,
+      isPermanent: true,
+      producesMana: true,
+      oracleText: "{T}: Add {G}.",
+    });
+    const state = makeState([grove], []);
+    setManaBoard(state, 0, [grove]);
+
+    expect(generateActions(state, 0, mainContext).some((candidate) => candidate.type === "ACTIVATE_ABILITY")).toBe(false);
+  });
+
+  it("keeps non-mana activated abilities as generic AI actions", () => {
+    const tome = meta({
+      name: "Action Tome Test",
+      typeLine: "Artifact",
+      isArtifact: true,
+      isPermanent: true,
+      oracleText: "{T}: Draw a card.",
+    });
+    const state = makeState([tome], []);
+    setManaBoard(state, 0, [tome]);
+
+    expect(generateActions(state, 0, mainContext).some((candidate) => candidate.type === "ACTIVATE_ABILITY")).toBe(true);
+  });
+
+  it("mana planner still uses Sol Ring and taps the source", () => {
+    const state = makeState([solRing], []);
+    setManaBoard(state, 0, [solRing]);
+
+    const plan = findManaPaymentPlan(state, 0, { generic: 2, white: 0, blue: 0, black: 0, red: 0, green: 0, colorless: 0 });
+    expect(plan.legal).toBe(true);
+    expect(plan.sources.some((source) => source.permanentId === state.permanents![0][0].id)).toBe(true);
+    applyManaPaymentPlan(state, 0, plan);
+    expect(state.permanents![0][0].tapped).toBe(true);
+  });
+
+  it("can still resolve an explicit Sol Ring mana activation once", () => {
+    const state = makeState([solRing], []);
+    setManaBoard(state, 0, [solRing]);
+    const ability = parseCardRules(solRing).abilities.find((candidate) => candidate.kind === "ACTIVATED");
+    const action: Extract<SimAction, { type: "ACTIVATE_ABILITY" }> = {
+      type: "ACTIVATE_ABILITY",
+      sourcePermanentId: state.permanents![0][0].id,
+      abilityId: `${state.permanents![0][0].id}:${ability?.patternId ?? "activated"}:0`,
+    };
+
+    applyAction(state, action, 0, () => {});
     expect(state.permanents![0][0].tapped).toBe(true);
     expect(state.artifactMana[0]).toBe(2);
-    expect(generateActions(state, 0, mainContext).some((candidate) => candidate.type === "ACTIVATE_ABILITY")).toBe(false);
   });
 
   it("serializes action keys with target, mode, and ability", () => {
@@ -1406,5 +1457,166 @@ describe("explicit target, modal, optional, and activated action generation", ()
       .toBe("CAST_SPELL:Command:mode=destroy:target=permanent_perm_3");
     expect(actionToKey("ACTIVATE_ABILITY", "", { type: "ACTIVATE_ABILITY", sourcePermanentId: "perm_8", abilityId: "draw" }))
       .toBe("ACTIVATE:perm_8:ability=draw");
+  });
+
+  it("parses Adéwalé as a single combat damage trigger", () => {
+    const adewale = meta({
+      name: "Adéwalé, Breaker of Chains",
+      typeLine: "Legendary Creature - Human Assassin Pirate",
+      isCreature: true,
+      isPermanent: true,
+      oracleText: "When Adéwalé enters, reveal the top six cards of your library. Put an Assassin, Pirate, or Vehicle card from among them into your hand and the rest on the bottom of your library in a random order.\nWhenever a Vehicle you control deals combat damage to a player, you may return this card from your graveyard to your hand.",
+    });
+
+    const triggers = parseCardRules(adewale).abilities.filter((ability) =>
+      ability.kind === "TRIGGERED" && ability.trigger?.eventType === "COMBAT_DAMAGE_DEALT"
+    );
+
+    expect(triggers).toHaveLength(1);
+  });
+
+  it("parses Gemcutter Buccaneer as one pirate-entered trigger", () => {
+    const gemcutter = meta({
+      name: "Gemcutter Buccaneer",
+      typeLine: "Creature - Orc Pirate Artificer",
+      isCreature: true,
+      isPermanent: true,
+      oracleText: "Whenever this creature or another Pirate you control enters, create a tapped Treasure token.\nTreasures you control are Equipment in addition to their other types and have \"Equipped creature gets +2/+0,\" equip Pirate {1}, and equip {3}.",
+    });
+
+    const triggers = parseCardRules(gemcutter).abilities.filter((ability) =>
+      ability.kind === "TRIGGERED" && ability.trigger?.eventType === "PERMANENT_ENTERED"
+    );
+
+    expect(triggers).toHaveLength(1);
+  });
+
+  it("does not queue the same source ability twice for the same event", () => {
+    const gemcutter = meta({
+      name: "Gemcutter Buccaneer",
+      typeLine: "Creature - Orc Pirate Artificer",
+      isCreature: true,
+      isPermanent: true,
+      oracleText: "Whenever this creature or another Pirate you control enters, create a tapped Treasure token.",
+    });
+    const pirate = meta({ name: "Test Pirate", typeLine: "Creature - Pirate", isCreature: true, isPermanent: true });
+    const state = makeState([gemcutter, pirate], []);
+    addTestCreature(state, 0, "gem_1", "Gemcutter Buccaneer", 2, 2, gemcutter);
+
+    const event = {
+      eventId: "event_same",
+      type: "PERMANENT_ENTERED" as const,
+      player: 0,
+      controller: 0,
+      card: "Test Pirate",
+      face: "Test Pirate",
+      permanentId: "pirate_1",
+      data: { sourceTypeLine: "Creature - Pirate", sourceIsCreature: true },
+    };
+    dispatchRulesEvent(state, event, () => {}, pirate);
+    dispatchRulesEvent(state, event, () => {}, pirate);
+
+    expect(state.stack.filter((entry) => entry.sourceCard === "Gemcutter Buccaneer")).toHaveLength(1);
+  });
+
+  it("queues the same trigger for two distinct events", () => {
+    const gemcutter = meta({
+      name: "Gemcutter Buccaneer",
+      typeLine: "Creature - Orc Pirate Artificer",
+      isCreature: true,
+      isPermanent: true,
+      oracleText: "Whenever this creature or another Pirate you control enters, create a tapped Treasure token.",
+    });
+    const pirate = meta({ name: "Test Pirate", typeLine: "Creature - Pirate", isCreature: true, isPermanent: true });
+    const state = makeState([gemcutter, pirate], []);
+    addTestCreature(state, 0, "gem_1", "Gemcutter Buccaneer", 2, 2, gemcutter);
+
+    for (const id of ["event_a", "event_b"]) {
+      dispatchRulesEvent(state, {
+        eventId: id,
+        type: "PERMANENT_ENTERED",
+        player: 0,
+        controller: 0,
+        card: "Test Pirate",
+        permanentId: `${id}_perm`,
+        data: { sourceTypeLine: "Creature - Pirate", sourceIsCreature: true },
+      }, () => {}, pirate);
+    }
+
+    expect(state.stack.filter((entry) => entry.sourceCard === "Gemcutter Buccaneer")).toHaveLength(2);
+  });
+
+  it("tap activated ability is not reactivatable after activation", () => {
+    const nexus = meta({
+      name: "Maskwood Nexus",
+      typeLine: "Artifact",
+      isArtifact: true,
+      isPermanent: true,
+      oracleText: "{3}, {T}: Create a 2/2 blue Shapeshifter creature token with changeling.",
+    });
+    const state = makeState([nexus, solRing], []);
+    setManaBoard(state, 0, [nexus, solRing, basicLand("Swamp"), basicLand("Swamp")]);
+    const nexusPermanent = state.permanents![0].find((permanent) => permanent.cardName === "Maskwood Nexus")!;
+    const action = generateActions(state, 0, mainContext).find((candidate): candidate is Extract<SimAction, { type: "ACTIVATE_ABILITY" }> =>
+      candidate.type === "ACTIVATE_ABILITY" && candidate.sourcePermanentId === nexusPermanent.id
+    )!;
+
+    const entry = activateAbilityToStack(state, 0, action, () => {});
+
+    expect(entry).toBeTruthy();
+    expect(nexusPermanent.tapped).toBe(true);
+    expect(generateActions(state, 0, mainContext).some((candidate) =>
+      candidate.type === "ACTIVATE_ABILITY" && candidate.sourcePermanentId === nexusPermanent.id
+    )).toBe(false);
+  });
+
+  it("sacrifice-this ability pays the source before the ability resolves and leaves the ability on stack", async () => {
+    const fetch = meta({
+      name: "Rocky Tar Pit",
+      typeLine: "Land",
+      isLand: true,
+      isPermanent: true,
+      oracleText: "This land enters tapped.\n{T}, Sacrifice this land: Search your library for a Swamp or Mountain card, put it onto the battlefield, then shuffle.",
+    });
+    const swamp = basicLand("Swamp");
+    const state = makeState([fetch, swamp], []);
+    setManaBoard(state, 0, [fetch]);
+    state.permanents![0][0].tapped = false;
+    state.libraries[0] = ["Swamp"];
+    const sourceId = state.permanents![0][0].id;
+    const action = generateActions(state, 0, mainContext).find((candidate): candidate is Extract<SimAction, { type: "ACTIVATE_ABILITY" }> =>
+      candidate.type === "ACTIVATE_ABILITY" && candidate.sourcePermanentId === sourceId
+    )!;
+
+    const entry = activateAbilityToStack(state, 0, action, () => {});
+
+    expect(entry).toBeTruthy();
+    expect(state.permanents![0].some((permanent) => permanent.id === sourceId)).toBe(false);
+    expect(state.graveyards[0]).toContain("Rocky Tar Pit");
+    expect(entry?.sourcePermanentId).toBe(sourceId);
+    state.stack.push(entry!);
+    await resolveStackWithPriority(state, 0, [0, 1, 2, 3].map((i) => new PassAgent(`p${i}`)), () => {});
+    expect(state.stack).toHaveLength(0);
+  });
+
+  it("stack entries include diagnostic identity", () => {
+    const tome = meta({
+      name: "Identity Tome",
+      typeLine: "Artifact",
+      isArtifact: true,
+      isPermanent: true,
+      oracleText: "{T}: Draw a card.",
+    });
+    const state = makeState([tome], []);
+    setManaBoard(state, 0, [tome]);
+    const action = generateActions(state, 0, mainContext).find((candidate): candidate is Extract<SimAction, { type: "ACTIVATE_ABILITY" }> =>
+      candidate.type === "ACTIVATE_ABILITY"
+    )!;
+    const entry = activateAbilityToStack(state, 0, action, () => {})!;
+
+    expect(entry.sourceCard).toBe("Identity Tome");
+    expect(entry.sourcePermanentId).toBe(action.sourcePermanentId);
+    expect(entry.abilityId).toBe(action.abilityId);
+    expect(entry.patternId).toBe("TAP_ACTIVATED_EFFECT");
   });
 });

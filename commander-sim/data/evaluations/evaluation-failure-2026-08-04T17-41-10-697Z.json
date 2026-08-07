@@ -1,0 +1,56 @@
+{
+  "config": {
+    "games": 500,
+    "seed": 42,
+    "agentA": "heuristic",
+    "agentB": "learned",
+    "policy": "policy-1000.json",
+    "deckIds": [
+      3
+    ],
+    "maxTurns": 40,
+    "outputDir": "data/evaluations",
+    "eloFile": "data\\evaluations\\elo.json",
+    "csvFile": "data\\evaluations\\evaluations.csv"
+  },
+  "failure": {
+    "gameIndex": 280,
+    "seed": 42,
+    "derivedSeed": 2409482592,
+    "reason": "MAX_EPISODE_MS",
+    "abortDump": "[watchdog] MAX_EPISODE_MS\nstate t=18|ph=Prima Fase Principale|ap=1|pp=-|sd=0|h=6,4,1,5|p=11,22,15,7|l=0,18,-9,18|a=none\ncurrentOperation=none elapsedOperationMs=0.0\nactions=189 stackPushes=54 stackResolutions=53 priorityPasses=188\nmaxActions=23 maxStack=6 maxPriorityIterations=6\ntimings AI chooseAction=1534351.5ms generateActions=32.7ms findManaPaymentPlan=13.6ms parseCardRules=8.5ms priority generateResponses=3.7ms getLegalTargets=1.9ms AI decideResponse=1.6ms\nrecent:\nT16 Sottofase di Mantenimento P1 PASS_TURN stack=0\nT16 Sottofase di Acquisizione P1 PASS_TURN stack=0\nT16 Prima Fase Principale P1 PASS_TURN stack=0\nT16 Sottofase di Inizio Combattimento P1 PASS_TURN stack=0\nresponse T16 Sottofase di Danno da Combattimento P1 CAST Flare of Denial target=stack:trigger_1785863736463_0_COMBAT_DAMAGE_TRIGGER stack=1\nT16 Sottofase di Fine Combattimento P1 PASS_TURN stack=0\nT16 Seconda Fase Principale P1 PASS_TURN stack=0\nT16 Sottofase Finale P1 PASS_TURN stack=0\nT16 Sottofase di Acquisizione P3 PASS_TURN stack=0\nT16 Prima Fase Principale P3 CAST Teval's Judgment stack=0\nT17 Sottofase di Mantenimento P0 PASS_TURN stack=0\nT17 Sottofase di Acquisizione P0 PASS_TURN stack=0\nT17 Prima Fase Principale P0 CAST Adéwalé, Breaker of Chains stack=0\nT17 Prima Fase Principale P0 PASS_TURN stack=0\nT17 Sottofase di Inizio Combattimento P0 PASS_TURN stack=0\nT17 Sottofase di Fine Combattimento P0 PASS_TURN stack=0\nT17 Seconda Fase Principale P0 PASS_TURN stack=0\nT17 Sottofase Finale P0 PASS_TURN stack=0\nT17 Sottofase di Mantenimento P1 PASS_TURN stack=0\nT17 Sottofase di Acquisizione P1 PASS_TURN stack=0\nT17 Prima Fase Principale P1 PASS_TURN stack=0\nT17 Sottofase di Inizio Combattimento P1 PASS_TURN stack=0\nT17 Sottofase di Fine Combattimento P1 PASS_TURN stack=0\nT17 Seconda Fase Principale P1 PASS_TURN stack=0\nT17 Sottofase Finale P1 PASS_TURN stack=0\nT17 Sottofase di Mantenimento P3 CAST Flare of Duplication stack=0\nT17 Prima Fase Principale P3 PLAY_LAND Command Tower stack=0\nT18 Sottofase di Mantenimento P1 PASS_TURN stack=0\nT18 Sottofase di Acquisizione P1 PASS_TURN stack=0\nT18 Prima Fase Principale P1 PLAY_LAND High Market stack=0",
+    "currentOperation": "none",
+    "elapsedOperationMs": 0,
+    "recentActions": [
+      "T17 Sottofase di Mantenimento P0 PASS_TURN stack=0",
+      "T17 Sottofase di Acquisizione P0 PASS_TURN stack=0",
+      "T17 Prima Fase Principale P0 CAST Adéwalé, Breaker of Chains stack=0",
+      "T17 Prima Fase Principale P0 PASS_TURN stack=0",
+      "T17 Sottofase di Inizio Combattimento P0 PASS_TURN stack=0",
+      "T17 Sottofase di Fine Combattimento P0 PASS_TURN stack=0",
+      "T17 Seconda Fase Principale P0 PASS_TURN stack=0",
+      "T17 Sottofase Finale P0 PASS_TURN stack=0",
+      "T17 Sottofase di Mantenimento P1 PASS_TURN stack=0",
+      "T17 Sottofase di Acquisizione P1 PASS_TURN stack=0",
+      "T17 Prima Fase Principale P1 PASS_TURN stack=0",
+      "T17 Sottofase di Inizio Combattimento P1 PASS_TURN stack=0",
+      "T17 Sottofase di Fine Combattimento P1 PASS_TURN stack=0",
+      "T17 Seconda Fase Principale P1 PASS_TURN stack=0",
+      "T17 Sottofase Finale P1 PASS_TURN stack=0",
+      "T17 Sottofase di Mantenimento P3 CAST Flare of Duplication stack=0",
+      "T17 Prima Fase Principale P3 PLAY_LAND Command Tower stack=0",
+      "T18 Sottofase di Mantenimento P1 PASS_TURN stack=0",
+      "T18 Sottofase di Acquisizione P1 PASS_TURN stack=0",
+      "T18 Prima Fase Principale P1 PLAY_LAND High Market stack=0"
+    ]
+  },
+  "lifecycle": {
+    "policyFileReads": 1,
+    "policyJsonParseCount": 1,
+    "patternStoreBuildCount": 2,
+    "patternIndexBuildCount": 1,
+    "evaluationAgentCreateCount": 1124
+  },
+  "generatedAt": "2026-08-04T17:41:10.699Z",
+  "commit": "0c293f2"
+}

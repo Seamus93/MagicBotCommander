@@ -10,7 +10,7 @@ export interface IGameSession {
   winner: number | null;
   getFilteredState(): FilteredGameState | null;
   getLastWaitingMessage(): WaitingMessage | null;
-  submitDecision(decision: unknown): void;
+  submitDecision(decision: unknown, expectedStateVersion?: number): void;
   concede(): void;
   startDisconnectTimer(): void;
   startSimulation(): void;

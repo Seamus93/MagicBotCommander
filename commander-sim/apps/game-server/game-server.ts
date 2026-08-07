@@ -257,12 +257,16 @@ app.post("/game/:id/action", (req, res) => {
     res.status(404).json({ error: "session not found" });
     return;
   }
-  const { decisionType, decision } = req.body as { decisionType: string; decision: unknown };
+  const { decisionType, decision, stateVersion } = req.body as {
+    decisionType: string;
+    decision: unknown;
+    stateVersion?: unknown;
+  };
   if (!decisionType || decision === undefined) {
     res.status(400).json({ error: "decisionType and decision required" });
     return;
   }
-  session.submitDecision(decision);
+  session.submitDecision(decision, numberOrUndefined(stateVersion));
   res.json({ ok: true });
 });
 
@@ -321,22 +325,22 @@ wss.on("connection", (ws, req) => {
 
     switch (msg.type) {
       case "submit_action":
-        session.submitDecision(msg.action);
+        session.submitDecision(msg.action, numberOrUndefined(msg.stateVersion));
         break;
       case "submit_attack_plan":
-        session.submitDecision(msg.plan);
+        session.submitDecision(msg.plan, numberOrUndefined(msg.stateVersion));
         break;
       case "submit_block_plan":
-        session.submitDecision(msg.plan);
+        session.submitDecision(msg.plan, numberOrUndefined(msg.stateVersion));
         break;
       case "submit_mulligan":
-        session.submitDecision({ keep: msg.keep, bottomCards: msg.bottomCards });
+        session.submitDecision({ keep: msg.keep, bottomCards: msg.bottomCards }, numberOrUndefined(msg.stateVersion));
         break;
       case "submit_target":
-        session.submitDecision(msg.targetIndex);
+        session.submitDecision(msg.targetIndex, numberOrUndefined(msg.stateVersion));
         break;
       case "submit_response":
-        session.submitDecision(msg.action ?? null);
+        session.submitDecision(msg.action ?? null, numberOrUndefined(msg.stateVersion));
         break;
       case "concede":
         session.concede();
@@ -349,6 +353,10 @@ wss.on("connection", (ws, req) => {
     if (c) c.delete(ws);
   });
 });
+
+function numberOrUndefined(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
 
 server.listen(PORT, () => {
   console.log(`[game-server] listening on port ${PORT}`);

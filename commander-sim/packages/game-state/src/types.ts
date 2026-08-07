@@ -121,6 +121,7 @@ export type RulesEventType =
   | "BLOCKER_DECLARED";
 
 export interface RulesEvent {
+  eventId?: string;
   type: RulesEventType;
   player?: number;
   controller?: number;
@@ -181,13 +182,23 @@ export interface EffectDescriptor {
   fromZone?: "library" | "graveyard" | "battlefield" | "hand";
   toZone?: "hand" | "battlefield" | "graveyard" | "exile" | "library";
   subtype?: string;
-  cardType?: "creature" | "artifact" | "enchantment" | "permanent" | "card";
+  cardType?: "land" | "creature" | "artifact" | "enchantment" | "permanent" | "card";
   controller?: "self" | "opponent" | "any";
   duration?: "PERMANENT" | "UNTIL_END_OF_TURN" | "UNTIL_YOUR_NEXT_TURN" | "WHILE_SOURCE_ON_BATTLEFIELD";
   powerDelta?: number;
   toughnessDelta?: number;
   keyword?: string;
   tapped?: boolean;
+  selection?: SelectionDescriptor;
+}
+
+export interface SelectionDescriptor {
+  zone: "battlefield";
+  controllerRelation: "YOU";
+  cardType: "land" | "creature" | "artifact" | "enchantment" | "permanent";
+  min: number;
+  max: number;
+  targeted: boolean;
 }
 
 export interface TemporaryEffect {
@@ -207,7 +218,7 @@ export interface CostDescriptor {
   amount?: number;
   mana?: ManaCost;
   life?: number;
-  cardType?: "creature" | "artifact" | "enchantment" | "permanent";
+  cardType?: "land" | "creature" | "artifact" | "enchantment" | "permanent";
   subtype?: string;
   controller?: "self";
   source?: boolean;
@@ -221,6 +232,11 @@ export type ConditionDescriptor =
   | { type: "HAS_COUNTER"; counterType: string }
   | { type: "OPPONENT_HAS_MORE_LIFE" }
   | { type: "OPPONENT_CONTROLS_MORE_LANDS" }
+  | {
+      type: "CONTROLS_AT_LEAST_OTHER_PERMANENTS";
+      permanentType: "land" | "creature" | "artifact" | "enchantment" | "permanent";
+      amount: number;
+    }
   | { type: "CREATURE_DIED_THIS_TURN" }
   | { type: "PERMANENT_ENTERED_THIS_TURN" }
   | { type: "ATTACKING_PLAYER"; playerRelation: string }
@@ -233,7 +249,7 @@ export interface TargetRequirement {
   zone?: "battlefield" | "graveyard" | "stack" | "hand" | "player";
   controller?: "self" | "opponent" | "any";
   owner?: "self" | "opponent" | "any";
-  cardType?: "creature" | "artifact" | "enchantment" | "permanent" | "card";
+  cardType?: "land" | "creature" | "artifact" | "enchantment" | "permanent" | "card";
   subtype?: string;
   required?: boolean;
   optional?: boolean;
@@ -292,6 +308,14 @@ export interface StackEntry {
   responses: StackEntry[];
   kind?: "spell" | "triggeredAbility" | "activatedAbility";
   sourceCard?: CardName;
+  sourcePermanentId?: string;
+  abilityId?: string;
+  patternId?: string;
+  triggeringEventId?: string;
+  parentStackEntryId?: string;
+  eventType?: RulesEventType | string;
+  turn?: number;
+  phase?: string;
   effects?: EffectDescriptor[];
   targets?: TargetRef[];
   ability?: ParsedAbility;
@@ -321,6 +345,7 @@ export interface SimGameState {
   handSizeModifiers: Record<number, HandSizeModifier[]>;
   drawHistory: Record<number, number>;
   rulesEvents?: RulesEvent[];
+  queuedTriggerInstanceKeys?: Record<string, true>;
   temporaryEffects?: TemporaryEffect[];
   rulesMetrics?: {
     unsupportedEffects: number;
@@ -379,6 +404,13 @@ export type SimAction =
       optionalChoices?: Record<string, boolean>;
     }
   | { type: "PASS_TURN" }
+  | {
+      type: "RESOLVE_CHOICE";
+      choiceType: "RETURN_TO_HAND";
+      sourceStackId: string;
+      permanentId: string;
+      card: CardName;
+    }
   | { type: "ATTACK_CHOICE"; card: CardName; mode: "ATTACK" | "HOLD" }
   | { type: "BLOCK_CHOICE"; card: CardName; targetId: string | null }
   | { type: "DECLARE_ATTACKERS"; player: number; attackers: string[] }
@@ -544,6 +576,7 @@ export interface SimulationDiagnostics {
   actionsApplied: number;
   maxAvailableActions: number;
   avgAvailableActions: number;
+  actionWindows: number;
   windowsOver50Actions: number;
   windowsOver100Actions: number;
   stackPushes: number;
@@ -552,6 +585,9 @@ export interface SimulationDiagnostics {
   responsesGenerated: number;
   maxStackDepth: number;
   maxPriorityIterationsPerWindow: number;
+  avgActivateActions: number;
+  activateActionWindows: number;
+  maxActivateActions: number;
   repeatedStateAborts: number;
   priorityIterationAborts: number;
   stackResolutionAborts: number;
@@ -571,6 +607,26 @@ export interface SimulationDiagnostics {
   }>;
   recentActions: string[];
   timingsMs: Record<string, number>;
+  decisionCounters?: Record<string, number>;
+  decisionSamples?: Record<string, number[]>;
+  decisionOperationBreakdowns?: Record<string, {
+    count: number;
+    totalMs: number;
+    avgMs: number;
+    p95Ms: number;
+    maxMs: number;
+    maxInputSize: number;
+  }>;
+  stackStorms?: Array<{
+    sourceCard?: string;
+    sourcePermanentId?: string;
+    triggerPatternId?: string;
+    triggeringEventId?: string;
+    eventType?: string;
+    stackDepth: number;
+    trace: string[];
+  }>;
+  stackEntryMissingIdentity?: number;
 }
 
 export interface StateDigest {

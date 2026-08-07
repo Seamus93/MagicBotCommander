@@ -15,6 +15,7 @@
     "all": "concurrently \"npm run dev\" \"npm run dev:spelltable\" \"npm run api\" \"npm run ai:server\" \"npm run sim:server\" \"npm run game:server\"",
     "game:server": "tsx --tsconfig tsconfig.base.json apps/game-server/game-server.ts",
     "train": "tsx --tsconfig tsconfig.base.json packages/sim/src/run-batch.ts",
+    "evaluate": "tsx --tsconfig tsconfig.base.json packages/sim/src/evaluate.ts",
     "eval:ab": "tsx --tsconfig tsconfig.base.json packages/sim/src/evaluate-ab.ts",
     "train:reset": "tsx --tsconfig tsconfig.base.json packages/sim/src/resetTrainingData.ts",
     "training:reset": "tsx --tsconfig tsconfig.base.json packages/sim/src/resetTrainingData.ts",

@@ -120,8 +120,36 @@ function standaloneMatcher(regex: RegExp) {
 
 export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
   {
+    id: "ENTERS_TAPPED_UNLESS_OTHER_PERMANENTS",
+    matcher: /\benters(?: the battlefield)? tapped unless you control (one|two|three|four|five|six|seven|eight|nine|ten|\d+) or more other (lands?|creatures?|artifacts?|enchantments?|permanents?)\b/i,
+    abilityKind: "REPLACEMENT",
+    supportLevel: "FULL",
+    parse: (fragment, match) => {
+      const groups = match as RegExpMatchArray;
+      const permanentType = groups[2].toLowerCase().replace(/s$/, "") as "land" | "creature" | "artifact" | "enchantment" | "permanent";
+      return [{
+        kind: "REPLACEMENT",
+        conditions: [{
+          type: "NOT",
+          condition: {
+            type: "CONTROLS_AT_LEAST_OTHER_PERMANENTS",
+            permanentType,
+            amount: amount(groups[1]),
+          },
+        }],
+        effects: [{ type: "TAP", target: "self" }],
+        sourceFragment: fragment.text,
+        patternId: "ENTERS_TAPPED_UNLESS_OTHER_PERMANENTS",
+        supportLevel: "FULL",
+      }];
+    },
+  },
+  {
     id: "ENTERS_TAPPED",
-    matcher: /\benters(?: the battlefield)? tapped\b/i,
+    matcher: (fragment) =>
+      /\b(if|unless|you may|as .* enters|choose)\b/i.test(fragment.text)
+        ? null
+        : fragment.text.match(/\benters(?: the battlefield)? tapped\b/i),
     abilityKind: "REPLACEMENT",
     supportLevel: "FULL",
     parse: (fragment) => [{
@@ -182,9 +210,42 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
     }],
   },
   {
+    id: "ETB_RETURN_CONTROLLED_PERMANENT_TO_HAND",
+    matcher: /\bwhen .+ enters(?: the battlefield)?, return (?:a|an|one) (land|creature|artifact|enchantment|permanent) you control to its owner's hand\b/i,
+    abilityKind: "TRIGGERED",
+    supportLevel: "FULL",
+    parse: (fragment, match) => {
+      const cardType = (match as RegExpMatchArray)[1].toLowerCase() as "land" | "creature" | "artifact" | "enchantment" | "permanent";
+      return [{
+        kind: "TRIGGERED",
+        trigger: trigger("PERMANENT_ENTERED"),
+        conditions: [{ type: "SOURCE_IS_THIS" }],
+        effects: [{
+          type: "RETURN_TO_HAND",
+          fromZone: "battlefield",
+          toZone: "hand",
+          cardType,
+          controller: "self",
+          selection: {
+            zone: "battlefield",
+            controllerRelation: "YOU",
+            cardType,
+            min: 1,
+            max: 1,
+            targeted: false,
+          },
+        }],
+        sourceFragment: fragment.text,
+        patternId: "ETB_RETURN_CONTROLLED_PERMANENT_TO_HAND",
+        supportLevel: "FULL",
+      }];
+    },
+  },
+  {
     id: "ETB_TRIGGER",
     matcher: (fragment) => {
       if (/\bwhen .+ enters(?: the battlefield)?, (?:draw|you gain)\b/i.test(fragment.text)) return null;
+      if (/\bwhen .+ enters(?: the battlefield)?, return (?:a|an|one) (?:land|creature|artifact|enchantment|permanent) you control to its owner's hand\b/i.test(fragment.text)) return null;
       return fragment.text.match(/\bwhen .+ enters(?: the battlefield)?,? (.+)$/i);
     },
     abilityKind: "TRIGGERED",
@@ -798,17 +859,24 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
   },
   {
     id: "SACRIFICE_ACTIVATED_COST",
-    matcher: /\bsacrifice (a|an|one|two|three|\d+)?\s*(creature|artifact|enchantment|permanent):\s*(.+)$/i,
+    matcher: /^(?:(.+?),\s*)?sacrifice (?:(this)\s+)?(?:(a|an|one|two|three|\d+)\s+)?(creature|artifact|enchantment|permanent|land):\s*(.+)$/i,
     abilityKind: "ACTIVATED",
     supportLevel: "PARTIAL",
-    parse: (fragment, match) => [{
-      kind: "ACTIVATED",
-      costs: [sacrificeCost(match)],
-      effects: parseEffectText((match as RegExpMatchArray)?.[3] ?? ""),
-      sourceFragment: fragment.text,
-      patternId: "SACRIFICE_ACTIVATED_COST",
-      supportLevel: "PARTIAL",
-    }],
+    parse: (fragment, match) => {
+      const effects = parseEffectText((match as RegExpMatchArray)?.[5] ?? "");
+      if (!effects.length) return [];
+      return [{
+        kind: "ACTIVATED",
+        costs: [
+          ...activationPrefixCosts((match as RegExpMatchArray)?.[1]),
+          sacrificeActivatedCost(match),
+        ],
+        effects,
+        sourceFragment: fragment.text,
+        patternId: "SACRIFICE_ACTIVATED_COST",
+        supportLevel: "PARTIAL",
+      }];
+    },
   },
   {
     id: "FETCH_LAND_ACTIVATED",
@@ -834,22 +902,42 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
     }],
   },
   {
-    id: "ADD_MANA",
-    matcher: /\b(?:\{T\}:\s*)?add ((?:\{[^}]+\})+|one mana|two mana|three mana)/i,
+    id: "ADD_ONE_OF_MANA",
+    matcher: /\b(?:\{T\}:\s*)?add \{[WUBRGC]\}(?:\s+or\s+\{[WUBRGC]\})+/i,
     abilityKind: "ACTIVATED",
-    supportLevel: "PARTIAL",
+    supportLevel: "FULL",
+    parse: (fragment) => [{
+      kind: "ACTIVATED",
+      costs: /\{T\}/i.test(fragment.text) ? [{ type: "TAP" }] : [],
+      effects: [{ type: "ADD_MANA", amount: 1, target: "self" }],
+      sourceFragment: fragment.text,
+      patternId: "ADD_ONE_OF_MANA",
+      supportLevel: "FULL",
+    }],
+  },
+  {
+    id: "ADD_MANA",
+    matcher: (fragment) =>
+      /\badd \{[WUBRGC]\}(?:\s+or\s+\{[WUBRGC]\})+/i.test(fragment.text)
+        ? null
+        : fragment.text.match(/\b(?:\{T\}:\s*)?add ((?:\{[^}]+\})+|one mana|two mana|three mana)/i),
+    abilityKind: "ACTIVATED",
+    supportLevel: "FULL",
     parse: (fragment, match) => [{
       kind: "ACTIVATED",
       costs: /\{T\}/i.test(fragment.text) ? [{ type: "TAP" }] : [],
       effects: [{ type: "ADD_MANA", amount: manaAmount((match as RegExpMatchArray)?.[1]), target: "self" }],
       sourceFragment: fragment.text,
       patternId: "ADD_MANA",
-      supportLevel: "PARTIAL",
+      supportLevel: "FULL",
     }],
   },
   {
     id: "TAP_ACTIVATED_EFFECT",
-    matcher: /(?:(\{[^}]+\}),\s*)?\{T\}:\s*(.+)$/i,
+    matcher: (fragment) =>
+      /\{T\}:\s*add\b/i.test(fragment.text)
+        ? null
+        : fragment.text.match(/(?:(\{[^}]+\}),\s*)?\{T\}:\s*(.+)$/i),
     abilityKind: "ACTIVATED",
     supportLevel: "PARTIAL",
     parse: (fragment, match) => {
@@ -898,17 +986,33 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
 
 function parseGenericManaCost(raw?: string) {
   if (!raw) return undefined;
-  const match = raw.match(/\{(\d+)\}/);
-  if (!match) return undefined;
-  return {
-    generic: Number(match[1]),
-    white: 0,
-    blue: 0,
-    black: 0,
-    red: 0,
-    green: 0,
-    colorless: 0,
-  };
+  const symbols = raw.match(/\{[^}]+\}/g);
+  if (!symbols?.length) return undefined;
+  const cost = { generic: 0, white: 0, blue: 0, black: 0, red: 0, green: 0, colorless: 0 };
+  let foundMana = false;
+  for (const symbol of symbols) {
+    const value = symbol.slice(1, -1).toUpperCase();
+    if (value === "T") continue;
+    foundMana = true;
+    if (/^\d+$/.test(value)) cost.generic += Number(value);
+    else if (value === "W") cost.white += 1;
+    else if (value === "U") cost.blue += 1;
+    else if (value === "B") cost.black += 1;
+    else if (value === "R") cost.red += 1;
+    else if (value === "G") cost.green += 1;
+    else if (value === "C") cost.colorless += 1;
+  }
+  if (!foundMana) return undefined;
+  return cost;
+}
+
+function activationPrefixCosts(raw?: string): CostDescriptor[] {
+  if (!raw) return [];
+  const costs: CostDescriptor[] = [];
+  const mana = parseGenericManaCost(raw);
+  if (mana) costs.push({ type: "MANA", mana });
+  if (/\{T\}/i.test(raw)) costs.push({ type: "TAP" });
+  return costs;
 }
 
 function manaAmount(raw?: string) {
@@ -1022,6 +1126,17 @@ function sacrificeCost(match: RegExpMatchArray | boolean | null): CostDescriptor
     amount: amount(array?.[1]),
     cardType: cardTypeFromText(array?.[2] ?? "permanent") as NonNullable<CostDescriptor["cardType"]>,
     controller: "self",
+  };
+}
+
+function sacrificeActivatedCost(match: RegExpMatchArray | boolean | null): CostDescriptor {
+  const array = match as RegExpMatchArray;
+  return {
+    type: "SACRIFICE",
+    amount: array?.[2] ? 1 : amount(array?.[3]),
+    cardType: cardTypeFromText(array?.[4] ?? "permanent") as NonNullable<CostDescriptor["cardType"]>,
+    controller: "self",
+    source: Boolean(array?.[2]),
   };
 }
 
@@ -1264,13 +1379,50 @@ export function parseCardRules(metadata: DeckCardMetadata): ParsedCardRules {
     supportLevel = metadata.isLand || type.includes("land") ? "FULL" : metadata.isCreature || type.includes("creature") ? "PARTIAL" : "UNSUPPORTED";
   }
 
+  const dedupedAbilities = dedupeParsedAbilities(abilities);
   const parsed = {
     card: metadata.name,
     supportLevel,
-    abilities,
+    abilities: dedupedAbilities,
     recognizedFragments,
     unsupportedFragments,
   };
   parsedRulesCache.set(cacheKey, parsed);
   return parsed;
+}
+
+function dedupeParsedAbilities(abilities: ParsedAbility[]): ParsedAbility[] {
+  const seen = new Set<string>();
+  const result: ParsedAbility[] = [];
+  for (const ability of abilities) {
+    const key = abilityDedupKey(ability);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(ability);
+  }
+  return result;
+}
+
+function abilityDedupKey(ability: ParsedAbility): string {
+  const effectSignature = (ability.effects ?? [])
+    .map((effect) => [
+      effect.type,
+      effect.target ?? "",
+      effect.fromZone ?? "",
+      effect.toZone ?? "",
+      effect.cardType ?? "",
+      effect.token?.name ?? "",
+      effect.amount ?? "",
+    ].join(":"))
+    .join("|");
+  return JSON.stringify({
+    kind: ability.kind,
+    trigger: ability.trigger,
+    conditions: ability.conditions,
+    costs: ability.costs,
+    effects: effectSignature,
+    targets: ability.targets,
+    sourceFragment: ability.sourceFragment,
+    modeId: ability.modeId,
+  });
 }

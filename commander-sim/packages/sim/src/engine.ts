@@ -55,7 +55,7 @@ import {
   isCastableSpellCard,
   getLandPermanentName,
   getSpellPermanentName,
-  landEntersTapped,
+  evaluateLandEntryTapped,
   activeFaceMetadata,
   hasFlash,
   isInstantLike,
@@ -78,6 +78,12 @@ import {
   type BlockPlan,
 } from "./combatEvaluator.js";
 import { parseCardRules as parseCardRulesRaw } from "./oraclePatternRegistry.js";
+import {
+  currentDecisionOperation,
+  decisionExternalPauseMs,
+  decisionTelemetrySnapshot,
+  resetDecisionTimings,
+} from "./decisionProfiler.js";
 
 const DEFAULT_DECK = [
   ...Array(18).fill("Basic Land"),
@@ -195,6 +201,8 @@ interface DiagnosticContext {
   enabled: boolean;
   debugEpisode: boolean;
   startedAt: number;
+  lastWatchdogCheckMs: number;
+  externalPauseMs: number;
   limits: {
     maxEpisodeMs: number;
     maxActionsPerEpisode: number;
@@ -205,7 +213,11 @@ interface DiagnosticContext {
   data: SimulationDiagnostics;
   actionWindowTotal: number;
   actionWindowCount: number;
+  activateActionWindowTotal: number;
+  activateActionWindowCount: number;
   fingerprintCounts: Map<string, number>;
+  stackTrace: string[];
+  stackStormRecorded: boolean;
 }
 
 let activeDiagnostics: DiagnosticContext | null = null;
@@ -216,10 +228,13 @@ const envNumber = (name: string, fallback: number) => {
 };
 
 function createDiagnosticContext(): DiagnosticContext {
+  const startedAt = performance.now();
   return {
     enabled: true,
     debugEpisode: process.env.DEBUG_EPISODE === "true",
-    startedAt: Date.now(),
+    startedAt,
+    lastWatchdogCheckMs: startedAt,
+    externalPauseMs: 0,
     limits: {
       maxEpisodeMs: envNumber("MAX_EPISODE_MS", 120_000),
       maxActionsPerEpisode: envNumber("MAX_ACTIONS_PER_EPISODE", 2_000),
@@ -231,6 +246,7 @@ function createDiagnosticContext(): DiagnosticContext {
       actionsApplied: 0,
       maxAvailableActions: 0,
       avgAvailableActions: 0,
+      actionWindows: 0,
       windowsOver50Actions: 0,
       windowsOver100Actions: 0,
       stackPushes: 0,
@@ -239,6 +255,9 @@ function createDiagnosticContext(): DiagnosticContext {
       responsesGenerated: 0,
       maxStackDepth: 0,
       maxPriorityIterationsPerWindow: 0,
+      avgActivateActions: 0,
+      activateActionWindows: 0,
+      maxActivateActions: 0,
       repeatedStateAborts: 0,
       priorityIterationAborts: 0,
       stackResolutionAborts: 0,
@@ -247,10 +266,18 @@ function createDiagnosticContext(): DiagnosticContext {
       topActionWindows: [],
       recentActions: [],
       timingsMs: {},
+      decisionCounters: {},
+      decisionSamples: {},
+      stackStorms: [],
+      stackEntryMissingIdentity: 0,
     },
     actionWindowTotal: 0,
     actionWindowCount: 0,
+    activateActionWindowTotal: 0,
+    activateActionWindowCount: 0,
     fingerprintCounts: new Map(),
+    stackTrace: [],
+    stackStormRecorded: false,
   };
 }
 
@@ -271,9 +298,17 @@ async function timeAsync<T>(name: string, fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } finally {
+    const elapsed = performance.now() - start;
     const diagnostics = activeDiagnostics;
     if (diagnostics) {
-      diagnostics.data.timingsMs[name] = (diagnostics.data.timingsMs[name] ?? 0) + performance.now() - start;
+      diagnostics.data.timingsMs[name] = (diagnostics.data.timingsMs[name] ?? 0) + elapsed;
+      if (name === "AI chooseAction") {
+        const samples = diagnostics.data.decisionSamples ?? {};
+        const bucket = samples.chooseActionMs ?? [];
+        bucket.push(elapsed);
+        samples.chooseActionMs = bucket;
+        diagnostics.data.decisionSamples = samples;
+      }
     }
   }
 }
@@ -314,6 +349,9 @@ function actionSummary(action?: SimAction | null) {
     const targets = action.targets?.map((target) => `${target.type}:${target.id}`).join(",") ?? "";
     return `ACTIVATE ${action.sourcePermanentId} ability=${action.abilityId}${targets ? ` target=${targets}` : ""}`;
   }
+  if (action.type === "RESOLVE_CHOICE") {
+    return `${action.type} ${action.choiceType} ${action.card}`;
+  }
   if ("card" in action) return `${action.type} ${action.card}`;
   return action.type;
 }
@@ -352,14 +390,32 @@ function diagnosticDump(state: SimGameState, reason: string) {
     .slice(0, 8)
     .map(([key, value]) => `${key}=${value.toFixed(1)}ms`)
     .join(" ");
+  const currentOperation = currentDecisionOperation();
   return [
     `[watchdog] ${reason}`,
     `state ${compactFingerprint(state)}`,
+    `currentOperation=${currentOperation?.name ?? "none"} elapsedOperationMs=${currentOperation?.elapsedMs.toFixed(1) ?? "0.0"}`,
     `actions=${data?.actionsApplied ?? 0} stackPushes=${data?.stackPushes ?? 0} stackResolutions=${data?.stackResolutions ?? 0} priorityPasses=${data?.priorityPasses ?? 0}`,
     `maxActions=${data?.maxAvailableActions ?? 0} maxStack=${data?.maxStackDepth ?? 0} maxPriorityIterations=${data?.maxPriorityIterationsPerWindow ?? 0}`,
     `timings ${topTimings || "none"}`,
     `recent:\n${(data?.recentActions ?? []).slice(-30).join("\n")}`,
   ].join("\n");
+}
+
+function attachDecisionTelemetry(diagnostics: SimulationDiagnostics) {
+  const decisionTelemetry = decisionTelemetrySnapshot();
+  for (const [key, value] of Object.entries(decisionTelemetry.timingsMs)) {
+    diagnostics.timingsMs[key] = (diagnostics.timingsMs[key] ?? 0) + value;
+  }
+  diagnostics.decisionCounters = {
+    ...(diagnostics.decisionCounters ?? {}),
+    ...decisionTelemetry.counters,
+  };
+  diagnostics.decisionSamples = {
+    ...(diagnostics.decisionSamples ?? {}),
+    ...decisionTelemetry.samples,
+  };
+  diagnostics.decisionOperationBreakdowns = decisionTelemetry.operationBreakdowns;
 }
 
 function abortEpisode(state: SimGameState, reason: string): never {
@@ -373,6 +429,7 @@ function abortEpisode(state: SimGameState, reason: string): never {
     if (reason === "MAX_STACK_RESOLUTIONS") diagnostics.data.stackResolutionAborts++;
     if (reason === "LOOP_DETECTED") diagnostics.data.repeatedStateAborts++;
     if (reason === "MAX_PRIORITY_ITERATIONS") diagnostics.data.priorityIterationAborts++;
+    attachDecisionTelemetry(diagnostics.data);
   }
   throw new EpisodeAbort(reason, diagnostics?.data);
 }
@@ -380,7 +437,20 @@ function abortEpisode(state: SimGameState, reason: string): never {
 function checkEpisodeWatchdog(state: SimGameState, action?: SimAction | null, priorityPlayer?: number) {
   const diagnostics = activeDiagnostics;
   if (!diagnostics) return;
-  if (Date.now() - diagnostics.startedAt > diagnostics.limits.maxEpisodeMs) {
+  const now = performance.now();
+  const watchdogGapMs = envNumber("EPISODE_MONOTONIC_GAP_MS", 5_000);
+  const gap = now - diagnostics.lastWatchdogCheckMs;
+  diagnostics.lastWatchdogCheckMs = now;
+  if (gap > watchdogGapMs) {
+    diagnostics.externalPauseMs += gap;
+    diagnostics.data.decisionCounters ??= {};
+    diagnostics.data.decisionCounters.monotonicGapDetected =
+      (diagnostics.data.decisionCounters.monotonicGapDetected ?? 0) + 1;
+    diagnostics.data.timingsMs["AI external pause"] =
+      (diagnostics.data.timingsMs["AI external pause"] ?? 0) + gap;
+  }
+  const elapsedEpisodeMs = now - diagnostics.startedAt - Math.max(diagnostics.externalPauseMs, decisionExternalPauseMs());
+  if (elapsedEpisodeMs > diagnostics.limits.maxEpisodeMs) {
     abortEpisode(state, "MAX_EPISODE_MS");
   }
   if (diagnostics.data.actionsApplied > diagnostics.limits.maxActionsPerEpisode) {
@@ -405,7 +475,13 @@ function recordActionWindow(state: SimGameState, player: number, actions: SimAct
   diagnostics.actionWindowTotal += actions.length;
   diagnostics.actionWindowCount += 1;
   diagnostics.data.avgAvailableActions = diagnostics.actionWindowTotal / Math.max(1, diagnostics.actionWindowCount);
+  diagnostics.data.actionWindows = diagnostics.actionWindowCount;
   diagnostics.data.maxAvailableActions = Math.max(diagnostics.data.maxAvailableActions, actions.length);
+  diagnostics.activateActionWindowTotal += activate;
+  diagnostics.activateActionWindowCount += 1;
+  diagnostics.data.avgActivateActions = diagnostics.activateActionWindowTotal / Math.max(1, diagnostics.activateActionWindowCount);
+  diagnostics.data.activateActionWindows = diagnostics.activateActionWindowCount;
+  diagnostics.data.maxActivateActions = Math.max(diagnostics.data.maxActivateActions, activate);
   if (actions.length > 50) diagnostics.data.windowsOver50Actions++;
   if (actions.length > 100) diagnostics.data.windowsOver100Actions++;
   const byCard = new Map<string, number>();
@@ -451,10 +527,44 @@ interface StepSnapshotEntry {
 interface TurnContext {
   landDropsUsedThisTurn: number;
   maxLandDrops: number;
+  secondMainLandDropAvailable: boolean;
+  lastSecondMainActionCount: number;
+}
+
+function recordStackTrace(state: SimGameState, event: "push" | "resolve", entry: StackEntry) {
+  const diagnostics = activeDiagnostics;
+  if (!diagnostics) return;
+  const sourceCard = entry.sourceCard ?? (entry.action.type === "CAST_SPELL" ? entry.action.card : entry.action.type);
+  const patternId = entry.ability?.patternId ?? entry.ability?.abilityId ?? "";
+  const abilityLabel = (entry.abilityId ?? entry.patternId ?? patternId) || "-";
+  const missingIdentity = !entry.sourceCard || !(entry.abilityId ?? entry.patternId ?? entry.ability?.patternId);
+  if (missingIdentity) diagnostics.data.stackEntryMissingIdentity = (diagnostics.data.stackEntryMissingIdentity ?? 0) + 1;
+  diagnostics.stackTrace.push(
+    `${event} id=${entry.id} depth=${state.stack.length} kind=${entry.kind ?? "spell"} source=${sourceCard ?? "unknown"} sourceId=${entry.sourcePermanentId ?? "-"} ability=${abilityLabel} triggerEvent=${entry.triggeringEventId ?? "-"} event=${entry.eventType ?? "-"} turn=${entry.turn ?? state.turn} phase=${entry.phase ?? state.phaseStep ?? state.phase} action=${actionSummary(entry.action)}`
+  );
+  if (diagnostics.stackTrace.length > 30) diagnostics.stackTrace.shift();
+}
+
+function maybeRecordStackStorm(state: SimGameState, entry: StackEntry) {
+  const diagnostics = activeDiagnostics;
+  if (!diagnostics || diagnostics.stackStormRecorded || diagnostics.data.stackResolutions <= 100) return;
+  diagnostics.stackStormRecorded = true;
+  diagnostics.data.stackStorms ??= [];
+  diagnostics.data.stackStorms.push({
+    sourceCard: entry.sourceCard ?? (entry.action.type === "CAST_SPELL" ? entry.action.card : undefined),
+    sourcePermanentId: entry.sourcePermanentId,
+    triggerPatternId: entry.patternId ?? entry.ability?.patternId ?? entry.ability?.abilityId,
+    triggeringEventId: entry.triggeringEventId,
+    eventType: entry.kind,
+    stackDepth: state.stack.length,
+    trace: diagnostics.stackTrace.slice(-30),
+  });
 }
 
 let permanentCounter = 0;
+let rulesEventCounter = 0;
 const nextPermanentId = () => `perm_${++permanentCounter}`;
+const nextRulesEventId = () => `event_${++rulesEventCounter}`;
 
 function ensurePermanentZones(state: SimGameState) {
   state.permanents ??= Array.from({ length: state.lifeTotals.length }, () => []);
@@ -508,6 +618,18 @@ function removePermanentState(
   if (index >= 0) list.splice(index, 1);
 }
 
+function removePermanentStateById(
+  state: SimGameState,
+  controller: number,
+  permanentId: string
+): PermanentState | null {
+  const list = state.permanents?.[controller];
+  if (!list) return null;
+  const index = list.findIndex((permanent) => permanent.id === permanentId);
+  if (index < 0) return null;
+  return list.splice(index, 1)[0] ?? null;
+}
+
 export function tapPermanent(state: SimGameState, player: number, card: CardName) {
   const key = card.trim().toLowerCase();
   if (!key) return;
@@ -548,22 +670,27 @@ function emitRulesEvent(state: SimGameState, event: RulesEvent) {
   state.rulesEvents.push(event);
 }
 
-function dispatchRulesEvent(
+function ensureRulesEventIdentity(event: RulesEvent): RulesEvent {
+  return event.eventId ? event : { ...event, eventId: nextRulesEventId() };
+}
+
+export function dispatchRulesEvent(
   state: SimGameState,
   event: RulesEvent,
   log: (msg: string) => void,
   metadata?: DeckCardMetadata
 ) {
+  const identifiedEvent = ensureRulesEventIdentity(event);
   const enrichedEvent = metadata
     ? {
-        ...event,
+        ...identifiedEvent,
         data: {
-          ...(event.data ?? {}),
+          ...(identifiedEvent.data ?? {}),
           sourceTypeLine: metadata.typeLine ?? "",
           sourceIsCreature: metadata.isCreature ?? (metadata.typeLine ?? "").toLowerCase().includes("creature"),
         },
       }
-    : event;
+    : identifiedEvent;
   emitRulesEvent(state, enrichedEvent);
   if (enrichedEvent.type === "CREATURE_DIED") {
     if (metadata) queueOracleTriggersForEvent(state, enrichedEvent, log, metadata);
@@ -583,6 +710,7 @@ function queueAllPermanentTriggersForEvent(
   log: (msg: string) => void
 ) {
   ensurePermanentZones(state);
+  const queuedForEvent = new Set<string>();
   for (let controller = 0; controller < state.permanents!.length; controller++) {
     for (const permanent of state.permanents![controller] ?? []) {
       const metadata = getCardMetadata(state, controller, permanent.cardName) ??
@@ -596,7 +724,9 @@ function queueAllPermanentTriggersForEvent(
         },
         log,
         metadata,
-        permanent.face ?? permanent.cardName
+        permanent.face ?? permanent.cardName,
+        permanent,
+        queuedForEvent
       );
     }
   }
@@ -607,27 +737,56 @@ function queueOracleTriggersForEvent(
   event: RulesEvent,
   log: (msg: string) => void,
   metadata?: DeckCardMetadata,
-  sourceNameOverride?: CardName
+  sourceNameOverride?: CardName,
+  sourcePermanent?: PermanentState,
+  queuedForEvent?: Set<string>
 ) {
   if (!metadata || event.controller == null) return;
   const sourceName = sourceNameOverride ?? event.face ?? event.card ?? metadata.name;
+  const sourcePermanentId = sourcePermanent?.id ?? event.permanentId;
   const parsed = parseCardRules(metadata);
   for (const ability of parsed.abilities) {
     if (ability.kind !== "TRIGGERED") continue;
     if (ability.trigger?.eventType !== event.type) continue;
-    if (!conditionsSatisfied(state, ability, event, sourceName)) continue;
+    if (!conditionsSatisfied(state, ability, event, sourceName, sourcePermanentId)) continue;
+    const abilityId = ability.abilityId ?? ability.patternId ?? "triggered";
+    const triggerInstanceKey = `${event.eventId ?? "event"}:${sourcePermanentId ?? sourceName}:${abilityId}:${ability.sourceFragment ?? ""}`;
+    state.queuedTriggerInstanceKeys ??= {};
+    if (state.queuedTriggerInstanceKeys[triggerInstanceKey]) continue;
+    if (queuedForEvent?.has(triggerInstanceKey)) continue;
+    queuedForEvent?.add(triggerInstanceKey);
+    state.queuedTriggerInstanceKeys[triggerInstanceKey] = true;
     const entry: StackEntry = {
-      id: `trigger_${Date.now()}_${state.stack.length}`,
+      id: `trigger_${Date.now()}_${state.stack.length}_${abilityId}`,
       action: { type: "CAST_SPELL", card: sourceName },
       casterIndex: event.controller,
       resolved: false,
       responses: [],
       kind: "triggeredAbility",
       sourceCard: sourceName,
+      sourcePermanentId,
+      abilityId,
+      patternId: ability.patternId,
+      triggeringEventId: event.eventId,
+      eventType: event.type,
+      turn: state.turn,
+      phase: state.phaseStep || state.phase,
       effects: ability.effects,
+      ability,
     };
     state.stack.push(entry);
-    log(`[Trigger] ${sourceName} ${ability.patternId ?? "ability"} put on stack`);
+    if (activeDiagnostics) {
+      activeDiagnostics.data.stackPushes++;
+      activeDiagnostics.data.maxStackDepth = Math.max(activeDiagnostics.data.maxStackDepth, state.stack.length);
+      recordStackTrace(state, "push", entry);
+    }
+    const effectText = ability.sourceFragment?.replace(/^when .+ enters(?: the battlefield)?,?\s*/i, "") ?? "ability";
+    if (ability.patternId === "ETB_RETURN_CONTROLLED_PERMANENT_TO_HAND") {
+      log(`${sourceName} ETB trigger added to stack:`);
+      log(effectText);
+    } else {
+      log(`[Trigger] ${sourceName} ${ability.patternId ?? "ability"} put on stack`);
+    }
   }
 }
 
@@ -635,12 +794,18 @@ function conditionsSatisfied(
   state: SimGameState,
   ability: ParsedAbility,
   event: RulesEvent,
-  sourceName: string
+  sourceName: string,
+  sourcePermanentId?: string
 ): boolean {
   return (ability.conditions ?? []).every((condition) => {
     switch (condition.type) {
       case "SOURCE_IS_THIS":
+        if (event.permanentId && sourcePermanentId) {
+          return event.permanentId === sourcePermanentId;
+        }
         if (event.type === "COMBAT_DAMAGE_DEALT") {
+          const damagePermanentId = String(event.data?.sourcePermanentId ?? "");
+          if (damagePermanentId && sourcePermanentId) return damagePermanentId === sourcePermanentId;
           const damageSource = String(event.data?.sourceCard ?? event.data?.sourceFace ?? "").toLowerCase();
           return damageSource === sourceName.toLowerCase();
         }
@@ -654,17 +819,30 @@ function conditionsSatisfied(
         return state.lifeTotals.some((life, idx) => idx !== event.controller && life >= state.lifeTotals[event.controller ?? 0]);
       case "OPPONENT_CONTROLS_MORE_LANDS":
         return state.battlefields.some((battlefield, idx) => idx !== event.controller && battlefield.length > (state.battlefields[event.controller ?? 0]?.length ?? 0));
+      case "CONTROLS_AT_LEAST_OTHER_PERMANENTS": {
+        if (condition.permanentType !== "land") return false;
+        const controller = event.controller ?? event.player ?? 0;
+        const permanents = state.permanents?.[controller] ?? [];
+        const count = permanents.length
+          ? permanents.filter((permanent) =>
+              isLandCard(state, controller, permanent.face ?? permanent.cardName)
+            ).length
+          : (state.battlefields[controller] ?? []).filter((card) =>
+              isLandCard(state, controller, card)
+            ).length;
+        return count >= condition.amount;
+      }
       case "HAS_SUBTYPE":
         return String(event.data?.sourceTypeLine ?? "").toLowerCase().includes(condition.subtype.toLowerCase());
       case "IS_CREATURE":
         return Boolean(event.data?.sourceIsCreature) ||
           String(event.data?.sourceTypeLine ?? "").toLowerCase().includes("creature");
       case "AND":
-        return condition.conditions.every((inner) => conditionsSatisfied(state, { ...ability, conditions: [inner] }, event, sourceName));
+        return condition.conditions.every((inner) => conditionsSatisfied(state, { ...ability, conditions: [inner] }, event, sourceName, sourcePermanentId));
       case "OR":
-        return condition.conditions.some((inner) => conditionsSatisfied(state, { ...ability, conditions: [inner] }, event, sourceName));
+        return condition.conditions.some((inner) => conditionsSatisfied(state, { ...ability, conditions: [inner] }, event, sourceName, sourcePermanentId));
       case "NOT":
-        return !conditionsSatisfied(state, { ...ability, conditions: [condition.condition] }, event, sourceName);
+        return !conditionsSatisfied(state, { ...ability, conditions: [condition.condition] }, event, sourceName, sourcePermanentId);
       default:
         return true;
     }
@@ -709,6 +887,7 @@ export async function simulateGame(
   const diagnostics = createDiagnosticContext();
   activeDiagnostics = diagnostics;
   const history: SimulationResult["history"] = [];
+  resetDecisionTimings();
   // Phase 2 — parallel snapshot array (one entry per history entry)
   const snapshotEntries: StepSnapshotEntry[] = [];
 
@@ -804,6 +983,8 @@ export async function simulateGame(
       const turnContext: TurnContext = {
         landDropsUsedThisTurn: 0,
         maxLandDrops: normalizeMaxLandDrops(options.maxLandDrops),
+        secondMainLandDropAvailable: false,
+        lastSecondMainActionCount: 0,
       };
 
       for (const step of TURN_STRUCTURE) {
@@ -885,12 +1066,11 @@ export async function simulateGame(
       if (
         winnerIndex === null &&
         hasLandDropCapacity(turnContext) &&
+        turnContext.secondMainLandDropAvailable &&
         hasPlayableLandInHand(state, p)
       ) {
         missedLandDropOpportunity++;
-        log(
-          `[Metrics] Player ${p} ended turn ${turn} with an unused legal land drop`
-        );
+        log(missedLandDropDiagnostic(state, p, turn, turnContext));
       }
     }
   }
@@ -939,6 +1119,8 @@ export async function simulateGame(
       );
     }
   }
+
+  attachDecisionTelemetry(diagnostics.data);
 
   return {
     winnerIndex,
@@ -1020,6 +1202,13 @@ async function executeCombatPhase(
       casterIndex: attackerIndex,
       resolved: false,
       responses: [],
+      kind: "spell",
+      sourceCard: "DECLARE_ATTACKERS",
+      abilityId: "DECLARE_ATTACKERS",
+      patternId: "DECLARE_ATTACKERS",
+      eventType: "DECLARE_ATTACKERS",
+      turn: state.turn,
+      phase: state.phaseStep || state.phase,
     };
     state.stack.push(stackEntry);
     await resolveStackWithPriority(state, attackerIndex, agents, log, onStateChange, pauseForAction);
@@ -1235,6 +1424,7 @@ async function passPriority(
     if (activeDiagnostics) {
       activeDiagnostics.data.stackPushes++;
       activeDiagnostics.data.maxStackDepth = Math.max(activeDiagnostics.data.maxStackDepth, state.stack.length);
+      recordStackTrace(state, "push", responseEntry);
     }
     log(`[Stack] Player ${opponentIndex} responds with ${response.type}`);
     consecutivePasses = 0;
@@ -1257,8 +1447,10 @@ export async function resolveStackWithPriority(
     const entry = state.stack.pop()!;
     if (entry.resolved) continue;
     entry.resolved = true;
+    recordStackTrace(state, "resolve", entry);
     if (activeDiagnostics) {
       activeDiagnostics.data.stackResolutions++;
+      maybeRecordStackStorm(state, entry);
       if (activeDiagnostics.data.stackResolutions > activeDiagnostics.limits.maxStackResolutions) {
         abortEpisode(state, "MAX_STACK_RESOLUTIONS");
       }
@@ -1274,7 +1466,7 @@ export async function resolveStackWithPriority(
         activePlayer = state.playerIndex;
         continue;
       }
-      resolveEffectDescriptors(state, entry, log);
+      await resolveEffectDescriptorsWithChoices(state, entry, agents, log);
       applyStateBasedActions(state, log);
       activePlayer = state.playerIndex;
       continue;
@@ -1296,6 +1488,25 @@ export async function resolveStackWithPriority(
     }
     applyStateBasedActions(state, log);
     activePlayer = state.playerIndex;
+  }
+}
+
+async function resolveEffectDescriptorsWithChoices(
+  state: SimGameState,
+  entry: StackEntry,
+  agents: SimAgent[],
+  log: (msg: string) => void
+) {
+  for (const effect of entry.effects ?? []) {
+    if (
+      effect.type === "RETURN_TO_HAND" &&
+      effect.selection?.zone === "battlefield" &&
+      effect.selection.targeted === false
+    ) {
+      await resolveSelectedReturnToHandEffect(state, entry, effect, agents, log);
+      continue;
+    }
+    resolveEffectDescriptors(state, { ...entry, effects: [effect] }, log);
   }
 }
 
@@ -1566,6 +1777,69 @@ function resolveReturnToHandEffect(
   removePermanentFromBattlefieldOnly(state, target.controller, target.card);
   state.hands[target.controller].push(target.card);
   log(`Player ${target.controller}'s ${target.card} returns to hand`);
+}
+
+async function resolveSelectedReturnToHandEffect(
+  state: SimGameState,
+  entry: StackEntry,
+  effect: NonNullable<StackEntry["effects"]>[number],
+  agents: SimAgent[],
+  log: (msg: string) => void
+) {
+  const choices = selectablePermanentsForEffect(state, entry.casterIndex, effect);
+  if (!choices.length) {
+    log(`${entry.sourceCard ?? "Triggered ability"} resolves with no legal permanents to return`);
+    return;
+  }
+
+  const choiceActions: Extract<SimAction, { type: "RESOLVE_CHOICE" }>[] = choices.map((choice) => ({
+    type: "RESOLVE_CHOICE",
+    choiceType: "RETURN_TO_HAND",
+    sourceStackId: entry.id,
+    permanentId: choice.permanent.id,
+    card: choice.permanent.face ?? choice.permanent.cardName,
+  }));
+  const agent = agents[entry.casterIndex];
+  const decision = await Promise.resolve(
+    agent.decideAction(cloneState(state), choiceActions)
+  );
+  const chosenPermanentId = decision.action.type === "RESOLVE_CHOICE"
+    ? decision.action.permanentId
+    : null;
+  const selectedAction = choiceActions.find((action) =>
+    action.permanentId === chosenPermanentId
+  ) ?? choiceActions[0];
+  const selected = choices.find((choice) => choice.permanent.id === selectedAction.permanentId);
+  if (!selected) {
+    log(`${entry.sourceCard ?? "Triggered ability"} resolves with no legal permanents to return`);
+    return;
+  }
+
+  const removed = removePermanentFromBattlefieldById(state, selected.controller, selected.permanent.id);
+  if (!removed) {
+    log(`${entry.sourceCard ?? "Triggered ability"} resolves with no legal permanents to return`);
+    return;
+  }
+
+  state.hands[removed.owner].push(removed.cardName);
+  emitRulesEvent(state, {
+    type: "PERMANENT_LEFT",
+    player: entry.casterIndex,
+    controller: selected.controller,
+    sourceCard: entry.sourceCard,
+    permanentId: removed.id,
+    card: removed.cardName,
+    face: removed.face,
+    data: {
+      sourceCard: entry.sourceCard,
+      sourcePermanentId: entry.sourcePermanentId,
+      abilityId: entry.abilityId,
+      selectedPermanentId: removed.id,
+      returnedCard: removed.cardName,
+      destinationZone: "hand",
+    },
+  });
+  log(`Player ${entry.casterIndex} returns ${removed.face ?? removed.cardName} to its owner's hand`);
 }
 
 function returnFromGraveyard(
@@ -2078,6 +2352,37 @@ function sacrificeBattlefieldPermanent(
   log(`Player ${controller} sacrifices ${card}`);
 }
 
+function sacrificePermanentById(
+  state: SimGameState,
+  controller: number,
+  permanentId: string,
+  log: (msg: string) => void
+) {
+  const permanent = state.permanents?.[controller]?.find((candidate) => candidate.id === permanentId);
+  if (!permanent) return false;
+  const card = permanent.face ?? permanent.cardName;
+  const creature = state.creatures[controller]?.find((candidate) => candidate.id === permanentId);
+  if (creature) {
+    destroyCreatureWithEvents(state, controller, creature.id, log);
+    log(`Player ${controller} sacrifices ${card}`);
+    return true;
+  }
+  removeStringFromZone(state.battlefields[controller], card);
+  removeStringFromZone(state.artifacts[controller] ?? [], card);
+  removePermanentStateById(state, controller, permanentId);
+  state.graveyards[controller].push(permanent.cardName);
+  dispatchRulesEvent(state, {
+    type: "PERMANENT_LEFT",
+    controller,
+    card: permanent.cardName,
+    face: permanent.face,
+    permanentId,
+    sourceCard: permanent.cardName,
+  }, log, getCardMetadata(state, controller, permanent.cardName));
+  log(`Player ${controller} sacrifices ${card}`);
+  return true;
+}
+
 function movePermanentController(
   state: SimGameState,
   fromController: number,
@@ -2216,6 +2521,36 @@ function selectEffectPermanentTarget(
   return selectBattlefieldPermanent(state, player, () => true);
 }
 
+function selectablePermanentsForEffect(
+  state: SimGameState,
+  player: number,
+  effect: NonNullable<StackEntry["effects"]>[number]
+): Array<{ controller: number; permanent: PermanentState }> {
+  const selection = effect.selection;
+  if (!selection || selection.zone !== "battlefield" || selection.controllerRelation !== "YOU") return [];
+  ensurePermanentZones(state);
+  return (state.permanents?.[player] ?? [])
+    .filter((permanent) => permanentMatchesSelection(state, player, permanent, selection.cardType))
+    .map((permanent) => ({ controller: player, permanent }));
+}
+
+function permanentMatchesSelection(
+  state: SimGameState,
+  controller: number,
+  permanent: PermanentState,
+  cardType: NonNullable<NonNullable<StackEntry["effects"]>[number]["selection"]>["cardType"]
+) {
+  const card = permanent.face ?? permanent.cardName;
+  const metadata = getCardMetadata(state, controller, permanent.cardName) ??
+    getCardMetadata(state, controller, card);
+  if (cardType === "land") return isLandCard(state, controller, card);
+  if (cardType === "creature") return isCreatureCard(card, metadata);
+  if (cardType === "artifact") return isArtifactCard(card, metadata);
+  if (cardType === "permanent") return isPermanentCard(card, metadata);
+  const typeLine = metadata?.typeLine?.toLowerCase() ?? "";
+  return typeLine.includes(cardType);
+}
+
 function removePermanentFromBattlefieldOnly(
   state: SimGameState,
   controller: number,
@@ -2227,6 +2562,34 @@ function removePermanentFromBattlefieldOnly(
   removePermanentState(state, controller, card);
   const creatureIndex = state.creatures[controller]?.findIndex((creature) => creature.name === card) ?? -1;
   if (creatureIndex >= 0) state.creatures[controller].splice(creatureIndex, 1);
+}
+
+function removePermanentFromBattlefieldById(
+  state: SimGameState,
+  controller: number,
+  permanentId: string
+): PermanentState | null {
+  const permanent = removePermanentStateById(state, controller, permanentId);
+  if (!permanent) return null;
+  const face = permanent.face ?? permanent.cardName;
+  const battlefield = state.battlefields[controller] ?? [];
+  const battlefieldIndex = battlefield.indexOf(face);
+  if (battlefieldIndex >= 0) battlefield.splice(battlefieldIndex, 1);
+  const creatureIndex = state.creatures[controller]?.findIndex((creature) =>
+    creature.id === permanent.id ||
+    creature.name === face ||
+    creature.name === permanent.cardName
+  ) ?? -1;
+  if (creatureIndex >= 0) state.creatures[controller].splice(creatureIndex, 1);
+  if (permanent.tapped) {
+    const key = face.toLowerCase();
+    const tapped = state.tappedPermanents?.[controller];
+    if (tapped?.[key]) {
+      tapped[key] -= 1;
+      if (tapped[key] <= 0) delete tapped[key];
+    }
+  }
+  return permanent;
 }
 
 function ensureExileZones(state: SimGameState): CardName[][] {
@@ -2277,6 +2640,12 @@ function createStackEntryForAction(
       responses: [],
       kind: "activatedAbility",
       sourceCard: ability?.sourcePermanent?.face ?? ability?.sourcePermanent?.cardName,
+      sourcePermanentId: action.sourcePermanentId,
+      abilityId: action.abilityId,
+      patternId: ability?.ability.patternId,
+      eventType: "ACTIVATED",
+      turn: state.turn,
+      phase: state.phaseStep || state.phase,
       effects: selectedAbilityEffects([ability?.ability].filter(Boolean) as ParsedAbility[], action),
       targets: action.targets,
       ability: ability?.ability,
@@ -2292,6 +2661,11 @@ function createStackEntryForAction(
     responses: [],
     kind: "spell",
     sourceCard: action.card,
+    abilityId: "SPELL",
+    patternId: "SPELL",
+    eventType: "SPELL_CAST",
+    turn: state.turn,
+    phase: state.phaseStep || state.phase,
     effects: selectedAbilityEffects(abilities, action),
     targets: action.targets,
   };
@@ -2445,6 +2819,12 @@ export function activateAbilityToStack(
     responses: [],
     kind: "activatedAbility",
     sourceCard: sourceName,
+    sourcePermanentId: found.sourcePermanent.id,
+    abilityId: action.abilityId,
+    patternId: found.ability.patternId,
+    eventType: "ACTIVATED",
+    turn: state.turn,
+    phase: state.phaseStep || state.phase,
     effects: selectedAbilityEffects([found.ability], action),
     targets: action.targets,
     ability: found.ability,
@@ -2490,7 +2870,9 @@ function payAbilityCosts(
     }
     if (cost.type === "SACRIFICE") {
       if (cost.source) {
-        sacrificeBattlefieldPermanent(state, player, source.face ?? source.cardName, log);
+        if (!sacrificePermanentById(state, player, source.id, log)) {
+          throw new Error("Cannot pay source sacrifice cost");
+        }
         continue;
       }
       for (let i = 0; i < (cost.amount ?? 1); i++) {
@@ -2534,6 +2916,9 @@ async function processActionWindow(
         allowLand: rules.allowLand,
       })
     );
+    if (isSecondMainPhase(state)) {
+      turnContextRecordSecondMainLandDrop(context, available);
+    }
     recordActionWindow(state, player, available);
     const availableSnapshot = cloneActions(available);
     const requiresManualPass = agents[player]?.id === "human";
@@ -2597,6 +2982,7 @@ async function processActionWindow(
       state.stack.push(stackEntry);
       activeDiagnostics!.data.stackPushes++;
       activeDiagnostics!.data.maxStackDepth = Math.max(activeDiagnostics!.data.maxStackDepth, state.stack.length);
+      recordStackTrace(state, "push", stackEntry);
       await timeAsync("resolveStack", () =>
         resolveStackWithPriority(state, player, agents, log, onStateChange, pauseForAction)
       );
@@ -2614,6 +3000,53 @@ async function processActionWindow(
     const winner = checkForWinner(state);
     if (winner !== null) return winner;
     if (action.type === "PASS_TURN") break;
+  }
+
+  while (rules.allowLand) {
+    const landActions = generateActions(state, player, {
+      landDropsUsedThisTurn: context.landDropsUsedThisTurn,
+      maxLandDrops: context.maxLandDrops,
+      allowInstant: false,
+      allowSorcery: false,
+      allowLand: true,
+    });
+    if (isSecondMainPhase(state)) {
+      turnContextRecordSecondMainLandDrop(context, landActions);
+    }
+    const landAction = selectForcedSecondMainLandDrop(
+      state,
+      context,
+      landActions
+    );
+    if (!landAction) break;
+
+    const snapshot = cloneState(state);
+    const prevSnap = captureSnapshot(state);
+    const decision = {
+      action: landAction,
+      metadata: {
+        source: "heuristic" as const,
+        reasoning: "strategic_land_drop_invariant_post_window",
+      },
+    };
+    activeDiagnostics!.data.actionsApplied++;
+    recordRecentAction(state, landAction, "forced ");
+    history.push({
+      playerIndex: player,
+      agentId: agents[player].id,
+      action: landAction,
+      state: snapshot,
+      availableActions: [landAction],
+      metadata: decision.metadata,
+    });
+    context.landDropsUsedThisTurn++;
+    applyAction(state, landAction, player, log);
+    onStateChange?.(cloneState(state), { type: "action_applied", player, action: landAction });
+    await pauseForAction();
+    const nextSnap = captureSnapshot(state);
+    snapshotEntries.push({ playerIndex: player, prevSnapshot: prevSnap, nextSnapshot: nextSnap, action: landAction });
+    const winner = checkForWinner(state);
+    if (winner !== null) return winner;
   }
 
   return null;
@@ -2797,6 +3230,7 @@ export function emitCombatDamageTriggers(
         sourceController: attackerIndex,
         sourceCard: attacker.name,
         sourceFace: permanent?.face,
+        sourcePermanentId: permanent?.id ?? attacker.id,
         sourceTypeLine: metadata?.typeLine ?? "",
       },
     }, log);
@@ -3093,6 +3527,53 @@ function selectForcedSecondMainLandDrop(
   return (
     availableActions.find((action) => action.type === "PLAY_LAND") ?? null
   );
+}
+
+function turnContextRecordSecondMainLandDrop(
+  context: TurnContext,
+  availableActions: SimAction[]
+) {
+  if (availableActions.some((action) => action.type === "PLAY_LAND")) {
+    context.secondMainLandDropAvailable = true;
+  }
+  context.lastSecondMainActionCount = availableActions.length;
+}
+
+function missedLandDropDiagnostic(
+  state: SimGameState,
+  player: number,
+  turn: number,
+  context: TurnContext
+) {
+  const legalLands = (state.hands[player] ?? []).filter((card) =>
+    canPlayLand(state, player, card, {
+      landDropsUsedThisTurn: context.landDropsUsedThisTurn,
+      maxLandDrops: context.maxLandDrops,
+      allowInstant: false,
+      allowSorcery: false,
+      allowLand: true,
+    })
+  );
+  const secondMainActions = generateActions(state, player, {
+    landDropsUsedThisTurn: context.landDropsUsedThisTurn,
+    maxLandDrops: context.maxLandDrops,
+    allowInstant: false,
+    allowSorcery: false,
+    allowLand: true,
+  });
+  const recent = activeDiagnostics?.data.recentActions.slice(-10).join(" | ") ?? "";
+  const reason = legalLands.length
+    ? "Second Main ended without applying a legal PLAY_LAND"
+    : "Playable land by metadata remained in hand but no legal PLAY_LAND was generated";
+  return [
+    `[Metrics] missedLandDropOpportunity turn=${turn} phase=${state.phaseStep || state.phase} player=${player}`,
+    `hand=${(state.hands[player] ?? []).join(",")}`,
+    `legalLands=${legalLands.join(",") || "none"}`,
+    `landDrops=${context.landDropsUsedThisTurn}/${context.maxLandDrops}`,
+    `secondMainActionCount=${context.lastSecondMainActionCount || secondMainActions.length}`,
+    `reason=${reason}`,
+    `recent=${recent}`,
+  ].join(" ");
 }
 
 function isOwnMainPhaseWithEmptyStack(state: SimGameState, player: number) {
@@ -3510,6 +3991,7 @@ function buildActivatedAbilityActions(
     const metadata = getCardMetadata(state, player, permanent.cardName) ?? getCardMetadata(state, player, permanent.face ?? permanent.cardName);
     const abilities = activatedAbilitiesForPermanent(metadata, permanent);
     for (const ability of abilities) {
+      if (isPureManaAbility(ability)) continue;
       if (!canActivateAbility(state, player, permanent, ability, context)) continue;
       const base: Extract<SimAction, { type: "ACTIVATE_ABILITY" }> = {
         type: "ACTIVATE_ABILITY",
@@ -3533,6 +4015,13 @@ function activatedAbilitiesForPermanent(
       ...ability,
       abilityId: ability.abilityId ?? `${permanent.id}:${ability.patternId ?? "activated"}:${index}`,
     }));
+}
+
+export function isPureManaAbility(ability: ParsedAbility) {
+  if (ability.kind !== "ACTIVATED") return false;
+  if (ability.targets?.length) return false;
+  if (ability.effects.length === 0 || !ability.effects.every((effect) => effect.type === "ADD_MANA")) return false;
+  return (ability.costs ?? []).every((cost) => cost.type === "TAP" || cost.type === "MANA");
 }
 
 function canActivateAbility(
@@ -3574,7 +4063,10 @@ function canPayAbilityCosts(
       continue;
     }
     if (cost.type === "SACRIFICE") {
-      if (cost.source) continue;
+      if (cost.source) {
+        if (!state.permanents?.[player]?.some((candidate) => candidate.id === permanent.id)) return false;
+        continue;
+      }
       const available = getControlledPermanentsByType(state, player, cost.cardType ?? "permanent");
       if (available.length < (cost.amount ?? 1)) return false;
       continue;
@@ -3612,30 +4104,42 @@ export function applyAction(
       if (idx >= 0) state.hands[player].splice(idx, 1);
       const metadata = getCardMetadata(state, player, action.card);
       const landName = action.face ?? getLandPermanentName(action.card, metadata);
+      const entry = evaluateLandEntryTapped(state, player, action.card, metadata);
+      if (entry.unsupported) {
+        ensureRulesMetrics(state).unsupportedEffects++;
+      }
       state.battlefields[player].push(landName);
-      addPermanentState(state, {
+      const permanent = addPermanentState(state, {
         cardName: action.card,
         owner: player,
         controller: player,
         face: landName,
-        tapped: landEntersTapped(metadata),
+        tapped: entry.enteredTapped,
       });
-      if (landEntersTapped(metadata)) {
+      if (entry.enteredTapped) {
         state.tappedPermanents ??= {};
         state.tappedPermanents[player] ??= {};
         state.tappedPermanents[player][landName.toLowerCase()] =
           (state.tappedPermanents[player][landName.toLowerCase()] ?? 0) + 1;
       }
-      log(
-        `Player ${player} plays land ${landName}` +
-          (landEntersTapped(metadata) ? " tapped" : "")
-      );
+      log(`Player ${player} plays ${landName} ${entry.enteredTapped ? "tapped" : "untapped"}`);
+      log(`Reason: ${entry.entryReason}`);
       emitRulesEvent(state, {
         type: "LAND_PLAYED",
         player,
         controller: player,
         card: action.card,
         face: landName,
+        permanentId: permanent.id,
+        data: {
+          card: action.card,
+          player,
+          sourceCard: action.card,
+          sourcePermanentId: permanent.id,
+          enteredTapped: entry.enteredTapped,
+          entryReason: entry.entryReason,
+          otherLandCount: entry.otherLandCount,
+        },
       });
       dispatchRulesEvent(state, {
         type: "PERMANENT_ENTERED",
@@ -3643,6 +4147,16 @@ export function applyAction(
         controller: player,
         card: action.card,
         face: landName,
+        permanentId: permanent.id,
+        data: {
+          card: action.card,
+          player,
+          sourceCard: action.card,
+          sourcePermanentId: permanent.id,
+          enteredTapped: entry.enteredTapped,
+          entryReason: entry.entryReason,
+          otherLandCount: entry.otherLandCount,
+        },
       }, log, metadata);
       handleLandEntered(state, player, landName, log, "play");
       handlePermanentEntersBattlefield(state, player, landName, metadata, log);

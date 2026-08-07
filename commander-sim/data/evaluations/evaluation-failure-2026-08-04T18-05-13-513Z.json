@@ -1,0 +1,56 @@
+{
+  "config": {
+    "games": 100,
+    "seed": 42,
+    "agentA": "heuristic",
+    "agentB": "learned",
+    "policy": "policy-1000.json",
+    "deckIds": [
+      3
+    ],
+    "maxTurns": 40,
+    "outputDir": "data/evaluations",
+    "eloFile": "data\\evaluations\\elo.json",
+    "csvFile": "data\\evaluations\\evaluations.csv"
+  },
+  "failure": {
+    "gameIndex": 51,
+    "seed": 42,
+    "derivedSeed": 2834076232,
+    "reason": "MAX_EPISODE_MS",
+    "abortDump": "[watchdog] MAX_EPISODE_MS\nstate t=4|ph=Sottofase Finale|ap=2|pp=-|sd=0|h=5,4,5,3|p=3,4,7,4|l=39,36,39,40|a=none\ncurrentOperation=none elapsedOperationMs=0.0\nactions=35 stackPushes=1 stackResolutions=1 priorityPasses=4\nmaxActions=5 maxStack=1 maxPriorityIterations=4\ntimings AI chooseAction=22.4ms generateActions=5.1ms parseCardRules=1.2ms findManaPaymentPlan=1.1ms getLegalTargets=0.1ms priority generateResponses=0.1ms\nrecent:\nT2 Prima Fase Principale P3 PLAY_LAND Swamp stack=0\nT2 Prima Fase Principale P0 PLAY_LAND Malakir Rebirth / Malakir Mire stack=0\nT2 Prima Fase Principale P1 PLAY_LAND Pinnacle Monk / Mystic Peak stack=0\nT2 Prima Fase Principale P2 PLAY_LAND Mountain stack=0\nT2 Prima Fase Principale P2 PASS_TURN stack=0\nT2 Seconda Fase Principale P2 CAST Metallic Mimic stack=0\nT3 Prima Fase Principale P3 PLAY_LAND Swamp stack=0\nT3 Prima Fase Principale P3 CAST Forerunner of the Coalition stack=0\nT3 Seconda Fase Principale P2 PLAY_LAND Island stack=0\nT3 Seconda Fase Principale P2 CAST Mary Read and Anne Bonny stack=0\nT3 Seconda Fase Principale P2 ACTIVATE perm_2858 ability=perm_2858:TAP_ACTIVATED_EFFECT:0 stack=0\nT4 Prima Fase Principale P3 PASS_TURN stack=0\nT4 Seconda Fase Principale P3 PASS_TURN stack=0\nT4 Prima Fase Principale P0 PLAY_LAND Swamp stack=0\nT4 Prima Fase Principale P0 PASS_TURN stack=0\nT4 Sottofase di Inizio Combattimento P0 PASS_TURN stack=0\nT4 Sottofase di Fine Combattimento P0 PASS_TURN stack=0\nT4 Seconda Fase Principale P0 PASS_TURN stack=0\nT4 Sottofase Finale P0 PASS_TURN stack=0\nT4 Prima Fase Principale P1 PLAY_LAND Island stack=0\nT4 Prima Fase Principale P1 CAST Captain Storm, Cosmium Raider stack=0\nT4 Sottofase di Mantenimento P2 PASS_TURN stack=0\nT4 Sottofase di Acquisizione P2 PASS_TURN stack=0\nT4 Prima Fase Principale P2 PLAY_LAND Bad River stack=0\nT4 Prima Fase Principale P2 CAST Pyre of Heroes stack=0\nT4 Prima Fase Principale P2 PASS_TURN stack=0\nT4 Sottofase di Inizio Combattimento P2 PASS_TURN stack=0\nT4 Sottofase di Fine Combattimento P2 PASS_TURN stack=0\nT4 Seconda Fase Principale P2 PASS_TURN stack=0\nT4 Sottofase Finale P2 PASS_TURN stack=0",
+    "currentOperation": "none",
+    "elapsedOperationMs": 0,
+    "recentActions": [
+      "T3 Seconda Fase Principale P2 ACTIVATE perm_2858 ability=perm_2858:TAP_ACTIVATED_EFFECT:0 stack=0",
+      "T4 Prima Fase Principale P3 PASS_TURN stack=0",
+      "T4 Seconda Fase Principale P3 PASS_TURN stack=0",
+      "T4 Prima Fase Principale P0 PLAY_LAND Swamp stack=0",
+      "T4 Prima Fase Principale P0 PASS_TURN stack=0",
+      "T4 Sottofase di Inizio Combattimento P0 PASS_TURN stack=0",
+      "T4 Sottofase di Fine Combattimento P0 PASS_TURN stack=0",
+      "T4 Seconda Fase Principale P0 PASS_TURN stack=0",
+      "T4 Sottofase Finale P0 PASS_TURN stack=0",
+      "T4 Prima Fase Principale P1 PLAY_LAND Island stack=0",
+      "T4 Prima Fase Principale P1 CAST Captain Storm, Cosmium Raider stack=0",
+      "T4 Sottofase di Mantenimento P2 PASS_TURN stack=0",
+      "T4 Sottofase di Acquisizione P2 PASS_TURN stack=0",
+      "T4 Prima Fase Principale P2 PLAY_LAND Bad River stack=0",
+      "T4 Prima Fase Principale P2 CAST Pyre of Heroes stack=0",
+      "T4 Prima Fase Principale P2 PASS_TURN stack=0",
+      "T4 Sottofase di Inizio Combattimento P2 PASS_TURN stack=0",
+      "T4 Sottofase di Fine Combattimento P2 PASS_TURN stack=0",
+      "T4 Seconda Fase Principale P2 PASS_TURN stack=0",
+      "T4 Sottofase Finale P2 PASS_TURN stack=0"
+    ]
+  },
+  "lifecycle": {
+    "policyFileReads": 1,
+    "policyJsonParseCount": 1,
+    "patternStoreBuildCount": 2,
+    "patternIndexBuildCount": 1,
+    "evaluationAgentCreateCount": 208
+  },
+  "generatedAt": "2026-08-04T18:05:13.514Z",
+  "commit": "0c293f2"
+}

@@ -39,6 +39,26 @@ class AlwaysPassAgent implements SimAgent {
   }
 }
 
+class ActivateBeforeLandAgent implements SimAgent {
+  constructor(public readonly id: string) {}
+
+  decideAction(state: SimGameState, availableActions: SimAction[]): AgentDecision {
+    if (state.phaseStep === "Seconda Fase Principale") {
+      return {
+        action:
+          availableActions.find((action) => action.type === "ACTIVATE_ABILITY") ??
+          availableActions.find((action) => action.type === "PLAY_LAND") ??
+          { type: "PASS_TURN" },
+      };
+    }
+    return { action: { type: "PASS_TURN" } };
+  }
+
+  decideMulligan(): { keep: boolean } {
+    return { keep: true };
+  }
+}
+
 class InspectableDecisionTreeAgent extends DecisionTreeAgent {
   patternFor(state: SimGameState, action: SimAction) {
     return patternFromFeatures({
@@ -65,6 +85,14 @@ const spellMeta = (name: string, manaValue = 3): DeckCardMetadata => ({
   typeLine: "Sorcery",
   manaValue,
   oracleText: "Draw a card.",
+});
+
+const utilityLandMeta = (name: string): DeckCardMetadata => ({
+  name,
+  typeLine: "Land",
+  isLand: true,
+  isPermanent: true,
+  oracleText: "{T}: Draw a card.",
 });
 
 const deck = (card: CardName): CardName[] => Array(40).fill(card);
@@ -252,5 +280,25 @@ describe("land drop strategic invariant", () => {
     expect(p0LandPlays).toHaveLength(2);
     expect(p0LandPlays.every((entry) => entry.state.phaseStep === "Seconda Fase Principale")).toBe(true);
     expect(result.metrics?.missedLandDropOpportunity).toBe(0);
+  });
+
+  it("H: forza il land drop anche dopo molte activated abilities in Main 2", async () => {
+    const utilityDeck = deck("Utility Draw Land");
+    const metadata = [[utilityLandMeta("Utility Draw Land")], [landMeta("Island")]];
+
+    const result = await simulateGame(
+      [new ActivateBeforeLandAgent("activator"), new AlwaysPassAgent("p1")],
+      {
+        maxTurns: 6,
+        maxMulligans: 0,
+        startingPlayerIndex: 0,
+        playerDecks: [utilityDeck, playableLandDecks[1]],
+        playerDeckMetadata: metadata,
+      }
+    );
+
+    expect(result.metrics?.missedLandDropOpportunity).toBe(0);
+    expect(playerHistory(result).some((entry) => entry.action.type === "ACTIVATE_ABILITY")).toBe(true);
+    expect(playerHistory(result).some((entry) => entry.action.type === "PLAY_LAND")).toBe(true);
   });
 });

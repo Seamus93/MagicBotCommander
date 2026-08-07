@@ -1,0 +1,12 @@
+{
+  "heuristic": {
+    "rating": 934,
+    "gamesPlayed": 1812,
+    "confidence": 0.9476987447698745
+  },
+  "learned:policy-1000.json": {
+    "rating": 1066,
+    "gamesPlayed": 1812,
+    "confidence": 0.9476987447698745
+  }
+}

@@ -131,16 +131,41 @@ type TrainingMetrics = {
   episodeTimeMsTotal: number;
   maxEpisodeTimeMs: number;
   actionsApplied: number;
+  availableActionWindowTotal: number;
+  availableActionWindowCount: number;
   maxAvailableActions: number;
+  activateActionWindowTotal: number;
+  activateActionWindowCount: number;
+  maxActivateActions: number;
   maxStackDepth: number;
   priorityPasses: number;
   stackPushes: number;
   stackResolutions: number;
+  maxStackResolutionsPerEpisode: number;
+  stackEntryMissingIdentity: number;
   timingTotalsMs: Record<string, number>;
+  decisionCounters: Record<string, number>;
+  decisionSamples: Record<string, number[]>;
+  chooseActionEpisodeMs: number[];
+  fuzzyCandidates: number[];
+  similarityComparisonsPerDecision: number[];
+  fuzzyLookupTimeouts: number;
+  stackStormSources: Record<string, number>;
+  stackStormTraces: Array<{
+    sourceCard?: string;
+    triggerPatternId?: string;
+    eventType?: string;
+    stackDepth: number;
+    trace: string[];
+  }>;
   replayEpisodesStored: number;
   episodeStepRowsStored: number;
   policyDbWrites: number;
   policyFlushes: number;
+  policyDbRetries: number;
+  policyDbFailures: number;
+  newPolicyRecords: number;
+  newPolicyRecordsByFamily: Record<string, number>;
   approximatePolicyBytes: number;
   approximateReplayBytes: number;
 };
@@ -358,19 +383,39 @@ async function main() {
     episodeTimeMsTotal: 0,
     maxEpisodeTimeMs: 0,
     actionsApplied: 0,
+    availableActionWindowTotal: 0,
+    availableActionWindowCount: 0,
     maxAvailableActions: 0,
+    activateActionWindowTotal: 0,
+    activateActionWindowCount: 0,
+    maxActivateActions: 0,
     maxStackDepth: 0,
     priorityPasses: 0,
     stackPushes: 0,
     stackResolutions: 0,
+    maxStackResolutionsPerEpisode: 0,
+    stackEntryMissingIdentity: 0,
     timingTotalsMs: {},
+    decisionCounters: {},
+    decisionSamples: {},
+    chooseActionEpisodeMs: [],
+    fuzzyCandidates: [],
+    similarityComparisonsPerDecision: [],
+    fuzzyLookupTimeouts: 0,
+    stackStormSources: {},
+    stackStormTraces: [],
     replayEpisodesStored: 0,
     episodeStepRowsStored: 0,
     policyDbWrites: 0,
     policyFlushes: 0,
+    policyDbRetries: 0,
+    policyDbFailures: 0,
+    newPolicyRecords: 0,
+    newPolicyRecordsByFamily: {},
     approximatePolicyBytes: 0,
     approximateReplayBytes: 0,
   };
+  store.consumeNewRecordMetrics();
   const runRow = shouldStoreDb
     ? await createSimulationRun({
         episodes,
@@ -484,6 +529,7 @@ async function main() {
       wins[result.winnerIndex] += 1;
     }
     updateTrainingMetrics(metrics, result, assignment.map((a) => a.archetype));
+    collectPolicyGrowth(metrics, store);
 
     if (shouldStoreDb && (i + 1) % policyFlushEveryEpisodes === 0) {
       await flushPolicy(runRow?.id ?? null, store, metrics);
@@ -508,6 +554,9 @@ async function main() {
       console.log(`Completed ${i + 1}/${episodes} episodes`);
       console.log(formatTrainingMetrics(metrics));
       console.log(formatDiagnosticMetrics(metrics, i + 1));
+      if ((i + 1) % 100 === 0) {
+        console.log(formatPolicyGrowthMetrics(metrics, store, i + 1));
+      }
       // Phase 6 — Curriculum: log current weakness areas
       if (curriculumScheduler && (i + 1) % 50 === 0) {
         try {
@@ -587,6 +636,7 @@ async function main() {
   console.log("Training complete. Win distribution:", wins);
   console.log(formatTrainingMetrics(metrics));
   console.log(formatDiagnosticMetrics(metrics, episodes));
+  console.log(formatPolicyGrowthMetrics(metrics, store, episodes));
   console.log(formatStorageMetrics(metrics, store, episodes));
 }
 
@@ -658,13 +708,41 @@ function updateTrainingMetrics(
 
 function mergeDiagnostics(metrics: TrainingMetrics, diagnostics: SimulationDiagnostics) {
   metrics.actionsApplied += diagnostics.actionsApplied;
+  metrics.availableActionWindowTotal += diagnostics.avgAvailableActions * Math.max(0, diagnostics.actionWindows);
+  metrics.availableActionWindowCount += diagnostics.actionWindows;
   metrics.maxAvailableActions = Math.max(metrics.maxAvailableActions, diagnostics.maxAvailableActions);
+  metrics.activateActionWindowTotal += diagnostics.avgActivateActions * Math.max(0, diagnostics.activateActionWindows);
+  metrics.activateActionWindowCount += diagnostics.activateActionWindows;
+  metrics.maxActivateActions = Math.max(metrics.maxActivateActions, diagnostics.maxActivateActions);
   metrics.maxStackDepth = Math.max(metrics.maxStackDepth, diagnostics.maxStackDepth);
   metrics.priorityPasses += diagnostics.priorityPasses;
   metrics.stackPushes += diagnostics.stackPushes;
   metrics.stackResolutions += diagnostics.stackResolutions;
+  metrics.maxStackResolutionsPerEpisode = Math.max(metrics.maxStackResolutionsPerEpisode, diagnostics.stackResolutions);
+  metrics.stackEntryMissingIdentity += diagnostics.stackEntryMissingIdentity ?? 0;
   for (const [key, value] of Object.entries(diagnostics.timingsMs ?? {})) {
     metrics.timingTotalsMs[key] = (metrics.timingTotalsMs[key] ?? 0) + value;
+  }
+  for (const [key, value] of Object.entries(diagnostics.decisionCounters ?? {})) {
+    metrics.decisionCounters[key] = (metrics.decisionCounters[key] ?? 0) + value;
+  }
+  for (const [key, values] of Object.entries(diagnostics.decisionSamples ?? {})) {
+    const bucket = metrics.decisionSamples[key] ?? [];
+    bucket.push(...values);
+    metrics.decisionSamples[key] = bucket;
+  }
+  metrics.fuzzyCandidates.push(...(diagnostics.decisionSamples?.fuzzyCandidates ?? []));
+  metrics.similarityComparisonsPerDecision.push(...(diagnostics.decisionSamples?.similarityComparisonsPerDecision ?? []));
+  metrics.fuzzyLookupTimeouts += diagnostics.decisionCounters?.fuzzyLookupTimeouts ?? 0;
+  metrics.lethalMissed += diagnostics.decisionCounters?.lethalMissed ?? 0;
+  metrics.chooseActionEpisodeMs.push(...(diagnostics.decisionSamples?.chooseActionMs ?? []));
+  if (!(diagnostics.decisionSamples?.chooseActionMs?.length)) {
+    metrics.chooseActionEpisodeMs.push(diagnostics.timingsMs?.["AI chooseAction"] ?? 0);
+  }
+  for (const storm of diagnostics.stackStorms ?? []) {
+    const key = `${storm.sourceCard ?? "unknown"}:${storm.triggerPatternId ?? storm.eventType ?? "unknown"}`;
+    metrics.stackStormSources[key] = (metrics.stackStormSources[key] ?? 0) + 1;
+    if (metrics.stackStormTraces.length < 20) metrics.stackStormTraces.push(storm);
   }
 }
 
@@ -681,11 +759,71 @@ function formatDiagnosticMetrics(metrics: TrainingMetrics, completedEpisodes: nu
   return (
     `[diag] avgEpisodeMs=${(metrics.episodeTimeMsTotal / completed).toFixed(1)} ` +
     `maxEpisodeMs=${metrics.maxEpisodeTimeMs} actions=${metrics.actionsApplied} ` +
+    `avgAvailableActions=${(metrics.availableActionWindowTotal / Math.max(1, metrics.availableActionWindowCount)).toFixed(1)} ` +
     `maxAvailableActions=${metrics.maxAvailableActions} maxStackDepth=${metrics.maxStackDepth} ` +
+    `avgActivateActions=${(metrics.activateActionWindowTotal / Math.max(1, metrics.activateActionWindowCount)).toFixed(1)} ` +
+    `maxActivateActions=${metrics.maxActivateActions} ` +
     `priorityPasses=${metrics.priorityPasses} stackPushes=${metrics.stackPushes} ` +
-    `stackResolutions=${metrics.stackResolutions} watchdogAborts=${metrics.watchdogAborts}` +
-    `${aborts ? ` abortReasons=[${aborts}]` : ""} topTimings=[${topTimings || "none"}]`
+    `stackResolutions=${metrics.stackResolutions} maxStackResolutions=${metrics.maxStackResolutionsPerEpisode} ` +
+    `stackEntryMissingIdentity=${metrics.stackEntryMissingIdentity} watchdogAborts=${metrics.watchdogAborts}` +
+    `${aborts ? ` abortReasons=[${aborts}]` : ""} ` +
+    `fuzzyCandidates avg/p50/p95/max=${formatDistribution(metrics.fuzzyCandidates)} ` +
+    `similarityComparisons=${metrics.decisionCounters.similarityComparisons ?? 0} ` +
+    `fuzzyTimeouts=${metrics.fuzzyLookupTimeouts} ${formatLethalDecisionMetrics(metrics)} ` +
+    `topTimings=[${topTimings || "none"}]`
   );
+}
+
+function formatLethalDecisionMetrics(metrics: TrainingMetrics): string {
+  return (
+    `lethalOpportunities=${metrics.decisionCounters.lethalOpportunities ?? 0} ` +
+    `lethalActionsChosen=${metrics.decisionCounters.lethalActionsChosen ?? 0} ` +
+    `gameWinningLethalChosen=${metrics.decisionCounters.gameWinningLethalChosen ?? 0} ` +
+    `opponentEliminationChosen=${metrics.decisionCounters.opponentEliminationChosen ?? 0} ` +
+    `lethalByCombat=${metrics.decisionCounters.lethalByCombat ?? 0} ` +
+    `lethalBySpell=${metrics.decisionCounters.lethalBySpell ?? 0} ` +
+    `lethalByAbility=${metrics.decisionCounters.lethalByAbility ?? 0}`
+  );
+}
+
+function formatPolicyGrowthMetrics(metrics: TrainingMetrics, store: PatternStore, completedEpisodes: number) {
+  const chooseAvg = average(metrics.chooseActionEpisodeMs);
+  const chooseP95 = percentile(metrics.chooseActionEpisodeMs, 0.95);
+  const chooseMax = maxValue(metrics.chooseActionEpisodeMs);
+  return (
+    `[policy] ep=${completedEpisodes} policyRecords=${store.entries().length} ` +
+    `newRecordsPerEpisode=${(metrics.newPolicyRecords / Math.max(1, completedEpisodes)).toFixed(1)} ` +
+    `recordsByFamily=[${formatRecordFamilies(metrics.newPolicyRecordsByFamily) || "none"}] ` +
+    `approxDbBytes=${approximateJsonBytes(store.entries())} ` +
+    `fuzzyCandidates avg=${average(metrics.fuzzyCandidates).toFixed(1)} p95=${percentile(metrics.fuzzyCandidates, 0.95).toFixed(0)} ` +
+    `similarityComparisons=${metrics.decisionCounters.similarityComparisons ?? 0} ` +
+    `chooseActionMs avg=${chooseAvg.toFixed(1)} p95=${chooseP95.toFixed(1)} max=${chooseMax.toFixed(1)}`
+  );
+}
+
+function formatDistribution(values: number[]): string {
+  if (!values.length) return "0/0/0/0";
+  return `${average(values).toFixed(1)}/${percentile(values, 0.5).toFixed(0)}/${percentile(values, 0.95).toFixed(0)}/${maxValue(values)}`;
+}
+
+function average(values: number[]): number {
+  if (!values.length) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function percentile(values: number[], p: number): number {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((left, right) => left - right);
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * p) - 1));
+  return sorted[idx];
+}
+
+function maxValue(values: number[]): number {
+  let max = 0;
+  for (const value of values) {
+    if (value > max) max = value;
+  }
+  return max;
 }
 
 function formatTrainingMetrics(metrics: TrainingMetrics): string {
@@ -715,10 +853,23 @@ async function flushPolicy(
   metrics: TrainingMetrics
 ) {
   if (store.dirtyCount === 0) return;
-  const stats = await upsertPolicyRecords(runId, store, { dirtyOnly: true });
-  metrics.policyDbWrites += stats.recordsUpdated;
-  metrics.policyFlushes += stats.recordsUpdated > 0 ? 1 : 0;
-  metrics.approximatePolicyBytes += stats.approximatePolicyBytes;
+  try {
+    const stats = await upsertPolicyRecords(runId, store, { dirtyOnly: true });
+    metrics.policyDbWrites += stats.recordsUpdated;
+    metrics.policyFlushes += stats.recordsUpdated > 0 ? 1 : 0;
+    metrics.policyDbRetries += stats.retryCount;
+    metrics.approximatePolicyBytes += stats.approximatePolicyBytes;
+  } catch (err) {
+    const attempts = (err as { attempts?: number }).attempts ?? 1;
+    metrics.policyDbRetries += Math.max(0, attempts - 1);
+    metrics.policyDbFailures += 1;
+    const snapshotPath = snapshotDirtyPolicy(store);
+    console.error(
+      `[policy] flush failed; dirty=${store.dirtyCount} snapshot=${snapshotPath} error=`,
+      err
+    );
+    throw err;
+  }
 }
 
 function summarizeTrainingMetrics(metrics: TrainingMetrics, episodes: number) {
@@ -735,6 +886,13 @@ function summarizeTrainingMetrics(metrics: TrainingMetrics, episodes: number) {
     avgVisits: metrics.visitsSum / decisions,
     missedLandDropOpportunity: metrics.missedLandDropOpportunity,
     lethalMissed: metrics.lethalMissed,
+    lethalOpportunities: metrics.decisionCounters.lethalOpportunities ?? 0,
+    lethalActionsChosen: metrics.decisionCounters.lethalActionsChosen ?? 0,
+    gameWinningLethalChosen: metrics.decisionCounters.gameWinningLethalChosen ?? 0,
+    opponentEliminationChosen: metrics.decisionCounters.opponentEliminationChosen ?? 0,
+    lethalByCombat: metrics.decisionCounters.lethalByCombat ?? 0,
+    lethalBySpell: metrics.decisionCounters.lethalBySpell ?? 0,
+    lethalByAbility: metrics.decisionCounters.lethalByAbility ?? 0,
     actionCounts: metrics.actionTypes,
     archetypeWins: metrics.archetypeWins,
     anomalousEpisodes: metrics.anomalousEpisodes,
@@ -743,12 +901,40 @@ function summarizeTrainingMetrics(metrics: TrainingMetrics, episodes: number) {
     avgEpisodeMs: metrics.episodeTimeMsTotal / Math.max(1, episodes),
     maxEpisodeMs: metrics.maxEpisodeTimeMs,
     actionsApplied: metrics.actionsApplied,
+    avgAvailableActions: metrics.availableActionWindowTotal / Math.max(1, metrics.availableActionWindowCount),
     maxAvailableActions: metrics.maxAvailableActions,
+    avgActivateActions: metrics.activateActionWindowTotal / Math.max(1, metrics.activateActionWindowCount),
+    maxActivateActions: metrics.maxActivateActions,
     maxStackDepth: metrics.maxStackDepth,
     priorityPasses: metrics.priorityPasses,
     stackPushes: metrics.stackPushes,
     stackResolutions: metrics.stackResolutions,
+    maxStackResolutions: metrics.maxStackResolutionsPerEpisode,
+    stackEntryMissingIdentity: metrics.stackEntryMissingIdentity,
     timingTotalsMs: metrics.timingTotalsMs,
+    fuzzyTelemetry: {
+      lookupCount: metrics.decisionCounters.fuzzyLookupCount ?? 0,
+      candidatesAvg: average(metrics.fuzzyCandidates),
+      candidatesP50: percentile(metrics.fuzzyCandidates, 0.5),
+      candidatesP95: percentile(metrics.fuzzyCandidates, 0.95),
+      candidatesMax: maxValue(metrics.fuzzyCandidates),
+      similarityComparisons: metrics.decisionCounters.similarityComparisons ?? 0,
+      similarityComparisonsPerDecision:
+        (metrics.decisionCounters.similarityComparisons ?? 0) / Math.max(1, metrics.decisionCounters.fuzzyLookupCount ?? 0),
+      fuzzyLookupMs: metrics.timingTotalsMs["AI fuzzy lookup wall"] ?? metrics.timingTotalsMs["AI fuzzy lookup total"] ?? 0,
+      similarityMs: metrics.timingTotalsMs["AI fuzzy similarity wall"] ?? metrics.timingTotalsMs["AI fuzzy similarity scoring"] ?? 0,
+      fuzzyLookupTimeouts: metrics.fuzzyLookupTimeouts,
+    },
+    policyGrowth: {
+      newPolicyRecords: metrics.newPolicyRecords,
+      newPolicyRecordsPerEpisode: metrics.newPolicyRecords / Math.max(1, episodes),
+      recordsByFamily: metrics.newPolicyRecordsByFamily,
+    },
+    dbFlush: {
+      retryCount: metrics.policyDbRetries,
+      failures: metrics.policyDbFailures,
+    },
+    stackStormSources: metrics.stackStormSources,
   };
 }
 
@@ -765,6 +951,8 @@ function summarizeStorage(
     approximateReplayBytes: metrics.approximateReplayBytes,
     policyDbWrites: metrics.policyDbWrites,
     policyFlushes: metrics.policyFlushes,
+    policyDbRetries: metrics.policyDbRetries,
+    policyDbFailures: metrics.policyDbFailures,
     recordsUpdatedPerFlush:
       metrics.policyDbWrites / Math.max(1, metrics.policyFlushes),
   };
@@ -780,12 +968,39 @@ function formatStorageMetrics(
     `[storage] episodes=${episodes} decisions=${metrics.decisions} ` +
     `policyRecords=${summary.policyRecordCount} replayEpisodes=${summary.storedReplayCount} ` +
     `episodeStepRows=${summary.episodeStepCount} policyDbWrites=${summary.policyDbWrites} ` +
+    `dbRetries=${metrics.policyDbRetries} dbFailures=${metrics.policyDbFailures} ` +
+    `newRecordsPerEpisode=${(metrics.newPolicyRecords / Math.max(1, episodes)).toFixed(2)} ` +
+    `recordsByFamily=[${formatRecordFamilies(metrics.newPolicyRecordsByFamily) || "none"}] ` +
     `dbWritesPerEpisode=${(summary.policyDbWrites / Math.max(1, episodes)).toFixed(2)} ` +
     `recordsPerFlush=${summary.recordsUpdatedPerFlush.toFixed(1)} ` +
     `approxPolicyBytes=${summary.approximatePolicyBytes} approxReplayBytes=${summary.approximateReplayBytes} ` +
     `mode=${process.env.EPISODE_STEP_STORAGE ?? "off"} sample=${process.env.EPISODE_SAMPLE_RATE ?? "0.01"} ` +
     `anomaly=${process.env.SAVE_ANOMALOUS_EPISODES ?? "true"}`
   );
+}
+
+function collectPolicyGrowth(metrics: TrainingMetrics, store: PatternStore): void {
+  const growth = store.consumeNewRecordMetrics();
+  metrics.newPolicyRecords += growth.total;
+  for (const [family, count] of Object.entries(growth.byFamily)) {
+    metrics.newPolicyRecordsByFamily[family] = (metrics.newPolicyRecordsByFamily[family] ?? 0) + count;
+  }
+}
+
+function formatRecordFamilies(families: Record<string, number>): string {
+  return Object.entries(families)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([family, count]) => `${family}:${count}`)
+    .join(", ");
+}
+
+function snapshotDirtyPolicy(store: PatternStore): string {
+  const dir = path.resolve(__dirname, "../../../data/recovery");
+  fs.mkdirSync(dir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const filePath = path.join(dir, `dirty-policy-${stamp}.json`);
+  fs.writeFileSync(filePath, JSON.stringify(store.dirtyEntries(), null, 2), "utf8");
+  return filePath;
 }
 
 function approximateReplayBytes(

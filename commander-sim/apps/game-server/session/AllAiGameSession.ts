@@ -20,6 +20,7 @@ export class AllAiGameSession {
 
   private onMessage: (msg: GameMessage) => void;
   private lastState: SimGameState | null = null;
+  private stateVersion = 0;
   private simulationStarted = false;
 
   private playerDecks: CardName[][];
@@ -74,9 +75,13 @@ export class AllAiGameSession {
       },
       onStateChange: (state: SimGameState, event: GameEvent) => {
         this.lastState = state;
+        this.stateVersion++;
         this.onMessage({
           type: "state_update",
-          state: serializeForViewer(state, 0),
+          state: serializeForViewer(state, 0, 0, {
+            sessionId: this.id,
+            stateVersion: this.stateVersion,
+          }),
         });
         if (event.type === "game_over") {
           this.winner = event.winner;
@@ -94,12 +99,15 @@ export class AllAiGameSession {
 
   getFilteredState(): FilteredGameState | null {
     if (!this.lastState) return null;
-    return serializeForViewer(this.lastState, 0);
+    return serializeForViewer(this.lastState, 0, 0, {
+      sessionId: this.id,
+      stateVersion: this.stateVersion,
+    });
   }
 
   // Stub methods for compatibility with SessionManager
   getLastWaitingMessage() { return null; }
-  submitDecision(_decision: unknown) { /* no-op */ }
+  submitDecision(_decision: unknown, _expectedStateVersion?: number) { /* no-op */ }
   concede() {
     this.status = "game_over";
     this.winner = null;

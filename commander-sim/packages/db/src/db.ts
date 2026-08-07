@@ -1,5 +1,5 @@
 import { Prisma, PrismaClient } from "@prisma/client";
-import { PatternStore } from "@sim/patterns";
+import { PatternStore } from "../../sim/src/patterns.js";
 import type { DeckCardMetadata, SimulationResult } from "@game-state/types";
 import { buildStateDigest } from "@game-state/stateDigest";
 
@@ -27,6 +27,20 @@ export interface EpisodeReplayDecision {
 export interface PolicyFlushStats {
   recordsUpdated: number;
   approximatePolicyBytes: number;
+  retryCount: number;
+  failedAttempts: number;
+}
+
+export class PolicyFlushError extends Error {
+  constructor(
+    message: string,
+    public readonly cause: unknown,
+    public readonly attempts: number,
+    public readonly dirtyRecordCount: number
+  ) {
+    super(message);
+    this.name = "PolicyFlushError";
+  }
 }
 
 export function getEpisodeStepStorageMode(): EpisodeStepStorageMode {
@@ -177,45 +191,77 @@ export async function upsertPolicyRecords(
 ): Promise<PolicyFlushStats> {
   const records = options.dirtyOnly ? store.dirtyEntries() : store.entries();
   if (!records.length) {
-    return { recordsUpdated: 0, approximatePolicyBytes: 0 };
+    return { recordsUpdated: 0, approximatePolicyBytes: 0, retryCount: 0, failedAttempts: 0 };
   }
 
-  await prisma.$transaction(
-    records.map((record) =>
-      prisma.policyRecord.upsert({
-        where: {
-          pattern_actionKey: {
-            pattern: record.pattern,
-            actionKey: record.actionKey,
-          },
-        },
-        update: {
-          score: record.score,
-          visits: record.visits,
-          rewardSquaredSum: record.rewardSquaredSum ?? null,
-          winCount: record.winCount ?? 0,
-          lossCount: record.lossCount ?? 0,
-          runId,
-          updatedAt: new Date(),
-        },
-        create: {
-          pattern: record.pattern,
-          actionKey: record.actionKey,
-          score: record.score,
-          visits: record.visits,
-          rewardSquaredSum: record.rewardSquaredSum ?? null,
-          winCount: record.winCount ?? 0,
-          lossCount: record.lossCount ?? 0,
-          runId,
-        },
-      })
-    )
+  const maxRetries = Math.max(0, Number(process.env.POLICY_FLUSH_RETRIES ?? 5));
+  const baseDelayMs = Math.max(1, Number(process.env.POLICY_FLUSH_RETRY_BASE_MS ?? 500));
+  let failedAttempts = 0;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      await prisma.$transaction(
+        records.map((record) =>
+          prisma.policyRecord.upsert({
+            where: {
+              pattern_actionKey: {
+                pattern: record.pattern,
+                actionKey: record.actionKey,
+              },
+            },
+            update: {
+              score: record.score,
+              visits: record.visits,
+              rewardSquaredSum: record.rewardSquaredSum ?? null,
+              winCount: record.winCount ?? 0,
+              lossCount: record.lossCount ?? 0,
+              runId,
+              updatedAt: new Date(),
+            },
+            create: {
+              pattern: record.pattern,
+              actionKey: record.actionKey,
+              score: record.score,
+              visits: record.visits,
+              rewardSquaredSum: record.rewardSquaredSum ?? null,
+              winCount: record.winCount ?? 0,
+              lossCount: record.lossCount ?? 0,
+              runId,
+            },
+          })
+        )
+      );
+      store.markClean(records);
+      return {
+        recordsUpdated: records.length,
+        approximatePolicyBytes: approximateJsonBytes(records),
+        retryCount: attempt,
+        failedAttempts,
+      };
+    } catch (err) {
+      failedAttempts++;
+      if (!isTransientPolicyFlushError(err) || attempt >= maxRetries) {
+        throw new PolicyFlushError(
+          `Policy flush failed after ${failedAttempts} attempt(s); dirty records retained.`,
+          err,
+          failedAttempts,
+          records.length
+        );
+      }
+      const delayMs = baseDelayMs * 2 ** attempt;
+      console.warn(
+        `[policy] transient flush error, retry ${attempt + 1}/${maxRetries} in ${delayMs}ms: ${formatErrorCode(err)}`
+      );
+      await sleep(delayMs);
+    }
+  }
+
+  throw new PolicyFlushError(
+    "Policy flush failed unexpectedly; dirty records retained.",
+    null,
+    failedAttempts,
+    records.length
   );
-  store.markClean(records);
-  return {
-    recordsUpdated: records.length,
-    approximatePolicyBytes: approximateJsonBytes(records),
-  };
 }
 
 export async function loadPolicyStore(): Promise<PatternStore> {
@@ -386,4 +432,28 @@ function createDeckHash(cards: string[]): string {
 
 function approximateJsonBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+function isTransientPolicyFlushError(err: unknown): boolean {
+  const code = (err as { code?: string } | null)?.code;
+  if (code === "P1001") return true;
+  const message = String((err as { message?: string } | null)?.message ?? err).toLowerCase();
+  return (
+    message.includes("connection reset") ||
+    message.includes("timeout") ||
+    message.includes("timed out") ||
+    message.includes("temporary unavailable") ||
+    message.includes("temporarily unavailable") ||
+    message.includes("can't reach database server")
+  );
+}
+
+function formatErrorCode(err: unknown): string {
+  const code = (err as { code?: string } | null)?.code;
+  const message = String((err as { message?: string } | null)?.message ?? err);
+  return code ? `${code} ${message}` : message;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

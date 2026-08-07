@@ -23,13 +23,18 @@ import { generateFilteredComboFile } from "../utils/ComboEngine";
 import { getDecision, type GameState } from "../hooks/useDecisionAI";
 import { useGameSession } from "../hooks/useGameSession";
 import { useSharedGameSession } from "../hooks/useSharedGameSession";
+import {
+  sessionModeForEngineSession,
+  shouldPublishViewerRulesState,
+  shouldUseLocalShuffle,
+  type SessionMode,
+} from "../sessionMode";
 import ActionPanel from "./game/ActionPanel";
 import moxOrb from "../assets/mox-o.svg";
 import importIcon from "../assets/import-icon.svg";
 
 type ZoneKey = "library" | "graveyard" | "exile" | "hand" | "commander";
 type DragSourceZone = ZoneKey | "battlefield";
-
 const VIEWER_STATE_URL =
   (import.meta.env.VITE_VIEWER_STATE_URL as string | undefined) ??
   "http://localhost:3001";
@@ -83,6 +88,7 @@ const clampCoordinate = (
 export default function MoxfieldUI() {
   const viewerControl = useViewerControl();
   const sharedSession = useSharedGameSession(1000);
+  const sessionMode: SessionMode = sessionModeForEngineSession(sharedSession?.sessionId);
   const [notification, setNotification] = useState<{ message: string; type: "success" | "error" } | null>(null);
   const [aiDecisionText, setAiDecisionText] = useState<string | null>(null);
   const [dialog, setDialog] = useState<{
@@ -133,6 +139,7 @@ export default function MoxfieldUI() {
   const {
     gameState,
     pendingDecision,
+    stateOutOfSyncMessage,
     isConnected: isGameSessionConnected,
     submitAction,
     submitAttackPlan,
@@ -142,6 +149,7 @@ export default function MoxfieldUI() {
     submitResponse,
   } = useGameSession(sharedSession?.sessionId ?? null);
   const aiPlayers = gameState?.players.filter((player) => !player.isHuman) ?? [];
+  const engineHuman = gameState?.players.find((player) => player.isHuman);
 
   // Mappa base con le zone di gioco principali (senza battlefield)
 // Ogni zona ha uno stato (array di carte) e un setter
@@ -752,7 +760,9 @@ export default function MoxfieldUI() {
       confirmLabel: "Restart",
       cancelLabel: "Cancel",
       onConfirm: () => {
-        initializeGameState(fullDeck);
+        if (shouldUseLocalShuffle(sessionMode)) {
+          initializeGameState(fullDeck);
+        }
         void fetch(`${VIEWER_STATE_URL}/viewer-control/restart`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1005,6 +1015,7 @@ const autoplayAI = async () => {
   }, [notification]);
 
   useEffect(() => {
+    if (!shouldUseLocalShuffle(sessionMode)) return;
     if (!viewerControl?.restartToken || fullDeck.length === 0) return;
 
     if (lastRestartTokenRef.current === null) {
@@ -1020,10 +1031,12 @@ const autoplayAI = async () => {
       message: "La partita e stata riavviata dalla SpellTable",
       type: "success",
     });
-  }, [fullDeck, viewerControl?.restartToken]);
+  }, [fullDeck, sessionMode, viewerControl?.restartToken]);
 
   useEffect(() => {
+    if (!shouldPublishViewerRulesState(sessionMode)) return;
     const payload = {
+      mode: sessionMode,
       deckId: currentDeckId,
       turn,
       life,
@@ -1065,6 +1078,7 @@ const autoplayAI = async () => {
     hand.length,
     library.length,
     life,
+    sessionMode,
     turn,
   ]);
 
@@ -1360,13 +1374,20 @@ const autoplayAI = async () => {
               {gameState && (
                 <div className="mt-1 text-[11px] text-gray-300">
                   Turn {gameState.turn} | {gameState.phase} - {gameState.phaseStep} | Active P{gameState.playerIndex}
+                  {typeof gameState.stateVersion === "number" ? ` | rev ${gameState.stateVersion}` : ""}
                 </div>
               )}
             </div>
             <div className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-cyan-200">
-              Bridge
+              {sessionMode}
             </div>
           </div>
+
+          {stateOutOfSyncMessage && (
+            <div className="mb-2 rounded border border-red-500/30 bg-red-950/50 px-2 py-1 text-xs text-red-100">
+              {stateOutOfSyncMessage}
+            </div>
+          )}
 
           {pendingDecision && (
             <div className="mb-3">
@@ -1383,6 +1404,21 @@ const autoplayAI = async () => {
           )}
 
           <div className="space-y-2">
+            {engineHuman && (
+              <div className="rounded-xl border border-blue-400/20 bg-blue-950/20 px-3 py-2">
+                <div className="mb-1 flex items-center justify-between text-xs">
+                  <span className="font-semibold text-blue-100">
+                    You | Life {engineHuman.life}
+                  </span>
+                  <span className="text-blue-200/70">
+                    Hand {engineHuman.handCount} | Lib {engineHuman.libraryCount}
+                  </span>
+                </div>
+                <div className="text-[11px] leading-4 text-blue-100/80">
+                  {engineHuman.hand?.length ? engineHuman.hand.join(", ") : "Hand unavailable"}
+                </div>
+              </div>
+            )}
             {aiPlayers.map((player) => (
               <div
                 key={player.index}

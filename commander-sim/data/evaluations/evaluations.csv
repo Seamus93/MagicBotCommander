@@ -1,0 +1,10 @@
+generatedAt,commit,seed,games,agentA,agentB,winRateA,winRateB,deltaWinRate,placementA,placementB,lethalMissedA,lethalMissedB,deltaLethalMissed,eloA,eloB,passed
+2026-08-04T16:25:05.415Z,0c293f2,42,1,heuristic,learned:policy-1000.json,0,0.5,-0.5,3,2,0,0,0,998,1002,true
+2026-08-04T17:10:33.295Z,0c293f2,42,1,heuristic,learned:policy-1000.json,0,0.5,-0.5,3.5,1.5,0,0,0,996,1004,true
+2026-08-04T17:10:54.625Z,0c293f2,42,10,heuristic,learned:policy-1000.json,0.4,0.1,0.3,2.4,2.6,0,0,0,995,1005,true
+2026-08-04T17:12:06.365Z,0c293f2,42,100,heuristic,learned:policy-1000.json,0.205,0.295,-0.09,2.535,2.465,0,0,0,986,1014,true
+2026-08-04T18:07:41.028Z,0c293f2,42,100,heuristic,learned:policy-1000.json,0.205,0.295,-0.09,2.535,2.465,0,0,0,978,1022,true
+2026-08-04T18:23:15.875Z,0c293f2,42,500,heuristic,learned:policy-1000.json,0.217,0.283,-0.066,2.558,2.442,0,0,0,962,1038,true
+2026-08-04T18:29:36.597Z,0c293f2,1337,500,heuristic,learned:policy-1000.json,0.203,0.297,-0.094,2.545,2.455,0,0,0,948,1052,true
+2026-08-04T18:37:44.578Z,0c293f2,42,100,heuristic,learned:policy-1000.json,0.205,0.295,-0.09,2.535,2.465,0,0,0,943,1057,true
+2026-08-04T19:09:16.510Z,0c293f2,42,500,heuristic,learned:policy-1000.json,0.217,0.283,-0.066,2.558,2.442,0,0,0,934,1066,true
