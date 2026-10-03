@@ -225,6 +225,19 @@ function parseOtherPermanentEntryCondition(text?: string) {
   };
 }
 
+function parseLandSubtypeEntryCondition(text?: string) {
+  const sentence = findEntersTappedSentence(text);
+  if (!sentence) return null;
+  const match = sentence.match(
+    /\benters(?: the battlefield)? tapped unless you control an? ([A-Z][a-z]+) or an? ([A-Z][a-z]+)\b/
+  );
+  if (!match) return null;
+  return {
+    sourceSentence: sentence,
+    subtypes: [match[1], match[2]],
+  };
+}
+
 export interface LandEntryTappedEvaluation {
   enteredTapped: boolean;
   entryReason: string;
@@ -251,6 +264,47 @@ function countControlledPermanentsByType(
   ).length;
 }
 
+function parseLandSubtypes(typeLine?: string) {
+  const subtypeText = typeLine?.split(/\s+[-\u2014]\s+/)[1];
+  if (!subtypeText) return [];
+  return subtypeText.split(/\s+/).filter(Boolean);
+}
+
+function cardHasLandSubtype(
+  state: SimGameState,
+  player: number,
+  card: CardName,
+  subtype: string
+) {
+  const metadata = getCardMetadata(state, player, card);
+  const active = activeFaceMetadata(metadata, card);
+  const subtypes = parseLandSubtypes(active?.typeLine ?? metadata?.typeLine);
+  if (subtypes.includes(subtype)) return true;
+
+  const normalized = normalizeCardName(card);
+  return normalizeCardName(subtype) === normalized && ["plains", "island", "swamp", "mountain", "forest"].includes(normalized);
+}
+
+function controlsLandWithSubtype(
+  state: SimGameState,
+  player: number,
+  subtypes: string[]
+) {
+  const permanents = state.permanents?.[player];
+  if (permanents?.length) {
+    return permanents.some((permanent) => {
+      const card = permanent.face ?? permanent.cardName;
+      return isLandCard(state, player, card) &&
+        subtypes.some((subtype) => cardHasLandSubtype(state, player, card, subtype));
+    });
+  }
+
+  return (state.battlefields[player] ?? []).some((card) =>
+    isLandCard(state, player, card) &&
+    subtypes.some((subtype) => cardHasLandSubtype(state, player, card, subtype))
+  );
+}
+
 export function evaluateLandEntryTapped(
   state: SimGameState,
   player: number,
@@ -263,6 +317,19 @@ export function evaluateLandEntryTapped(
   ].filter((text): text is string => Boolean(text));
 
   for (const text of texts) {
+    const subtypeCondition = parseLandSubtypeEntryCondition(text);
+    if (subtypeCondition) {
+      const satisfied = controlsLandWithSubtype(state, player, subtypeCondition.subtypes);
+      return {
+        enteredTapped: !satisfied,
+        entryReason: satisfied
+          ? `controls ${subtypeCondition.subtypes.join(" or ")}`
+          : `controls no ${subtypeCondition.subtypes.join(" or ")}`,
+        conditionRecognized: true,
+        conditionEvaluable: true,
+      };
+    }
+
     const condition = parseOtherPermanentEntryCondition(text);
     if (!condition) continue;
 

@@ -62,6 +62,28 @@ const stormcarvedCoast: DeckCardMetadata = {
   manaProduction: 1,
 };
 
+const drownedCatacomb: DeckCardMetadata = {
+  name: "Drowned Catacomb",
+  typeLine: "Land",
+  oracleText:
+    "Drowned Catacomb enters tapped unless you control an Island or a Swamp.\n{T}: Add {U} or {B}.",
+  isLand: true,
+  isPermanent: true,
+  producesMana: true,
+  manaProduction: 1,
+};
+
+const wateryGrave: DeckCardMetadata = {
+  name: "Watery Grave",
+  typeLine: "Land - Island Swamp",
+  oracleText:
+    "As Watery Grave enters, you may pay 2 life. If you don't, it enters tapped.",
+  isLand: true,
+  isPermanent: true,
+  producesMana: true,
+  manaProduction: 1,
+};
+
 function makeState(metadata: DeckCardMetadata[]): SimGameState {
   const state = createInitialState(
     2,
@@ -79,6 +101,11 @@ function makeState(metadata: DeckCardMetadata[]): SimGameState {
 
 function lastLandPlayedEvent(state: SimGameState) {
   return [...(state.rulesEvents ?? [])].reverse().find((event) => event.type === "LAND_PLAYED");
+}
+
+function playLand(state: SimGameState, card: string) {
+  state.hands[0] = [card];
+  applyAction(state, { type: "PLAY_LAND", card }, 0, () => {});
 }
 
 describe("tapped land handling", () => {
@@ -233,21 +260,54 @@ describe("tapped land handling", () => {
     expect(getAvailableMana(state, 0)).toBe(1);
   });
 
-  it("conditional tapped lands are not hardcoded as always tapped", () => {
-    const checkLand: DeckCardMetadata = {
-      name: "Check Land",
-      typeLine: "Land",
-      oracleText:
-        "Check Land enters tapped unless you control an Island or a Swamp.\n{T}: Add {U}.",
-      isLand: true,
-      isPermanent: true,
-    };
-    const state = makeState([checkLand]);
-    state.hands[0] = ["Check Land"];
+  it.each([
+    { existingLand: undefined, expectedTapped: true },
+    { existingLand: "Mountain", expectedTapped: true },
+    { existingLand: "Forest", expectedTapped: true },
+    { existingLand: "Island", expectedTapped: false },
+    { existingLand: "Swamp", expectedTapped: false },
+    { existingLand: "Watery Grave", expectedTapped: false },
+  ])(
+    "Drowned Catacomb tapped state is based on controlled Island or Swamp subtype: $existingLand",
+    ({ existingLand, expectedTapped }) => {
+      const metadata = [
+        drownedCatacomb,
+        basicLand("Mountain"),
+        basicLand("Forest"),
+        basicLand("Island"),
+        basicLand("Swamp"),
+        wateryGrave,
+      ];
+      const state = makeState(metadata);
 
-    applyAction(state, { type: "PLAY_LAND", card: "Check Land" }, 0, () => {});
+      if (existingLand) {
+        playLand(state, existingLand);
+      }
+      playLand(state, "Drowned Catacomb");
 
-    expect(state.tappedPermanents?.[0]?.["check land"]).toBeUndefined();
+      expect(
+        state.permanents?.[0]?.find((permanent) => permanent.cardName === "Drowned Catacomb")?.tapped
+      ).toBe(expectedTapped);
+      expect(state.tappedPermanents?.[0]?.["drowned catacomb"]).toBe(
+        expectedTapped ? 1 : undefined
+      );
+      expect(lastLandPlayedEvent(state)?.data).toMatchObject({
+        card: "Drowned Catacomb",
+        enteredTapped: expectedTapped,
+      });
+    }
+  );
+
+  it("Drowned Catacomb does not treat Mountain's mana or landness as Island or Swamp", () => {
+    const state = makeState([drownedCatacomb, basicLand("Mountain")]);
+
+    playLand(state, "Mountain");
+    playLand(state, "Drowned Catacomb");
+
+    expect(lastLandPlayedEvent(state)?.data).toMatchObject({
+      enteredTapped: true,
+      entryReason: "controls no Island or Swamp",
+    });
     expect(getAvailableMana(state, 0)).toBe(1);
   });
 
