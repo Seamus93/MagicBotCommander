@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import './App.css';
 import MoxfieldUI from './components/MoxfieldUI';
 import GameTablePage from './pages/GameTablePage';
+import PlayerLobbyPage from './pages/PlayerLobbyPage';
 import SpellTablePage from './pages/SpellTablePage';
 
 declare const __SPELLTABLE_ONLY__: boolean;
@@ -20,7 +21,8 @@ function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/" element={<MoxfieldUI />} />
+        <Route path="/" element={<PlayerLobbyPage />} />
+        <Route path="/moxfield" element={<MoxfieldUI />} />
         <Route path="/game" element={<GameTablePage />} />
         <Route path="/spelltable" element={<SpellTablePage />} />
       </Routes>

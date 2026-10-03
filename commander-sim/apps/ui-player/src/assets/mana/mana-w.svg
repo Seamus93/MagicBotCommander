@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="White mana">
+  <circle cx="32" cy="32" r="30" fill="#f3ead2"/>
+  <circle cx="32" cy="32" r="22" fill="#f8f3e4" stroke="#c7b98f" stroke-width="3"/>
+  <g fill="#171717">
+    <circle cx="32" cy="32" r="7"/>
+    <path d="M32 8l4.2 14h-8.4L32 8zM32 56l-4.2-14h8.4L32 56zM8 32l14-4.2v8.4L8 32zM56 32l-14 4.2v-8.4L56 32zM15 15l12.9 6.9-6 6L15 15zM49 49l-12.9-6.9 6-6L49 49zM49 15l-6.9 12.9-6-6L49 15zM15 49l6.9-12.9 6 6L15 49z"/>
+  </g>
+</svg>

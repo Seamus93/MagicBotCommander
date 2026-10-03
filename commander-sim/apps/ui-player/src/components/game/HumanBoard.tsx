@@ -28,9 +28,15 @@ function buildBattlefieldCards(player: FilteredPlayerState) {
 export default function HumanBoard({ player }: HumanBoardProps) {
   const hand = player.hand ?? [];
   const battlefieldCards = buildBattlefieldCards(player);
+  const isConceded = player.isConceded || player.life <= 0;
 
   return (
-    <div className="border-t border-gray-600 bg-gray-850 p-3 text-white">
+    <div className={`relative border-t border-gray-600 bg-gray-850 p-3 text-white ${isConceded ? "opacity-70" : ""}`}>
+      {isConceded && (
+        <div className="absolute right-3 top-3 rounded border border-red-400/40 bg-red-950/70 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-red-100">
+          Conceded
+        </div>
+      )}
       <div className="mb-3 flex items-center gap-4 text-sm">
         <span className="font-bold text-red-400">Life: {player.life}</span>
         <span className="text-gray-400">Library: {player.libraryCount}</span>

@@ -2,8 +2,17 @@ import type { SimGameState, GameEvent, CardName, DeckCardMetadata } from "@game-
 import { simulateGame } from "@sim/engine.js";
 import { DecisionTreeAgent } from "@sim/decisionTreeAgent.js";
 import { loadTrainedPolicyStore } from "@sim/policyLoader.js";
-import { serializeForViewer, type FilteredGameState } from "../state/stateSerializer.js";
+import {
+  buildPlayerDescriptorsFromSeats,
+  buildSeatsFromControllers,
+  serializeForRecipient,
+  serializeForViewer,
+  sessionMappingLog,
+  type FilteredGameState,
+} from "../state/stateSerializer.js";
 import type { GameMessage, SessionStatus } from "./GameSession.js";
+import type { RecipientAuthResult } from "./SessionManager.js";
+import type { Seat, SessionMode, SessionRecipient } from "../../../packages/game-state/src/session";
 
 /**
  * Game session where ALL 4 players are AI.
@@ -15,6 +24,8 @@ import type { GameMessage, SessionStatus } from "./GameSession.js";
  */
 export class AllAiGameSession {
   readonly id: string;
+  readonly mode: SessionMode;
+  readonly seats: Seat[];
   status: SessionStatus = "pending";
   winner: number | null = null;
 
@@ -30,10 +41,13 @@ export class AllAiGameSession {
   constructor(
     id: string,
     decks: Array<{ deck: CardName[]; meta: DeckCardMetadata[]; commander?: CardName | null }>,
-    onMessage: (msg: GameMessage) => void
+    onMessage: (msg: GameMessage) => void,
+    options?: { mode?: SessionMode; seats?: Seat[] }
   ) {
     this.id = id;
     this.onMessage = onMessage;
+    this.mode = options?.mode ?? "debug";
+    this.seats = options?.seats ?? buildSeatsFromControllers(["ai", "ai", "ai", "ai"]);
 
     this.playerDecks = decks.map((d) => d.deck);
     this.playerDeckMetadata = decks.map((d) => d.meta);
@@ -56,6 +70,7 @@ export class AllAiGameSession {
         new DecisionTreeAgent({ id: `ai-${i}`, store: loadedPolicy.store })
       );
       this.status = "running";
+      this.logSessionMapping();
       this.onMessage({
         type: "game_log",
         message: `[policy] live_source=${loadedPolicy.source} records=${loadedPolicy.records}`,
@@ -81,6 +96,9 @@ export class AllAiGameSession {
           state: serializeForViewer(state, 0, 0, {
             sessionId: this.id,
             stateVersion: this.stateVersion,
+            gameMode: "ALL_AI",
+            mode: this.mode,
+            seats: this.seats,
           }),
         });
         if (event.type === "game_over") {
@@ -102,12 +120,38 @@ export class AllAiGameSession {
     return serializeForViewer(this.lastState, 0, 0, {
       sessionId: this.id,
       stateVersion: this.stateVersion,
+      gameMode: "ALL_AI",
+      mode: this.mode,
+      seats: this.seats,
+    });
+  }
+
+  getSnapshotForRecipient(recipient: SessionRecipient) {
+    if (!this.lastState) return null;
+    return serializeForRecipient(this.lastState, 0, {
+      sessionId: this.id,
+      stateVersion: this.stateVersion,
+      mode: this.mode,
+      recipient,
+      seats: this.seats,
+      gameMode: "ALL_AI",
     });
   }
 
   // Stub methods for compatibility with SessionManager
+  authenticateRecipient(recipient: SessionRecipient): RecipientAuthResult {
+    if (recipient.role === "debug" || recipient.role === "table") {
+      return { ok: true, recipient: { role: recipient.role } };
+    }
+    return {
+      ok: false,
+      code: "ALL_AI_HAS_NO_PLAYER_SEATS",
+      message: "All-AI sessions can only be joined as table or debug spectators.",
+    };
+  }
+  releaseConnection() { /* no-op */ }
   getLastWaitingMessage() { return null; }
-  submitDecision(_decision: unknown, _expectedStateVersion?: number) { /* no-op */ }
+  submitDecision() { /* no-op */ }
   concede() {
     this.status = "game_over";
     this.winner = null;
@@ -115,4 +159,11 @@ export class AllAiGameSession {
   }
   startDisconnectTimer() { /* no-op */ }
   destroy() { /* no-op */ }
+
+  private logSessionMapping(): void {
+    this.onMessage({
+      type: "game_log",
+      message: sessionMappingLog("ALL_AI", buildPlayerDescriptorsFromSeats(this.seats)),
+    });
+  }
 }

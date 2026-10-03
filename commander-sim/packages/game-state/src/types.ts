@@ -404,6 +404,7 @@ export type SimAction =
       optionalChoices?: Record<string, boolean>;
     }
   | { type: "PASS_TURN" }
+  | { type: "CONCEDE" }
   | {
       type: "RESOLVE_CHOICE";
       choiceType: "RETURN_TO_HAND";
@@ -508,7 +509,8 @@ export interface SimAgent {
   ): Promise<BlockDecision> | BlockDecision;
   decideMulligan?(
     hand: CardName[],
-    mulliganCount: number
+    mulliganCount: number,
+    state?: SimGameState
   ): Promise<{ keep: boolean; bottomCards?: CardName[] }> | { keep: boolean; bottomCards?: CardName[] };
   decideResponse?(
     state: SimGameState,
@@ -525,6 +527,7 @@ export type GameEvent =
   | { type: "turn_start"; turn: number; player: number }
   | { type: "phase_change"; phase: string; step: string }
   | { type: "mulligan_done"; player: number; mulliganCount: number }
+  | { type: "player_conceded"; player: number }
   | { type: "game_over"; winner: number | null };
 
 export interface SimulationOptions {
@@ -536,6 +539,7 @@ export interface SimulationOptions {
   playerCommanders?: Array<CardName | null | undefined>;
   startingPlayerIndex?: number;
   onStateChange?: (state: SimGameState, event: GameEvent) => void;
+  concededPlayers?: ReadonlySet<number>;
   enableStack?: boolean;
   phaseDelayMs?: number;
   actionDelayMs?: number;

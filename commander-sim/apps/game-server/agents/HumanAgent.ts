@@ -20,6 +20,7 @@ export type WaitingType =
 
 export interface WaitingContext {
   type: WaitingType;
+  playerIndex?: number;
   availableActions?: SimAction[];
   plans?: AttackPlan[] | BlockPlan[];
   opponentIndices?: number[];
@@ -110,11 +111,13 @@ export class HumanAgent implements SimAgent {
 
   async decideMulligan(
     hand: CardName[],
-    mulliganCount: number
+    mulliganCount: number,
+    state?: SimGameState
   ): Promise<{ keep: boolean; bottomCards?: CardName[] }> {
     return this.waitFor<{ keep: boolean; bottomCards?: CardName[] }>(
       "mulligan",
-      { type: "mulligan", hand, mulliganCount }
+      { type: "mulligan", hand, mulliganCount, playerIndex: state?.playerIndex ?? 0 },
+      state
     );
   }
 

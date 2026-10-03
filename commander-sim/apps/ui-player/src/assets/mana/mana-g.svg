@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Green mana">
+  <circle cx="32" cy="32" r="30" fill="#95c49b"/>
+  <circle cx="32" cy="32" r="22" fill="#abd5ae" stroke="#4d8758" stroke-width="3"/>
+  <path fill="#142315" d="M31 54V39c-8.6 8-18.6 3.5-20-5.9 8.3 1.1 12.4-3.3 15.4-10.2C29.2 16.5 34.8 10 43 8c.3 7.2 6.1 9.6 9.7 14.6 4.6 6.4 2.3 15.8-5.2 18.2-4.5 1.5-8.9-.2-12.5-3.8v17h-4z"/>
+  <path fill="#4f9b5b" d="M32 35c2.5-8.7 7-14.4 14.2-18.6C40 23 36.3 29.1 34.4 38.5L32 35z"/>
+</svg>

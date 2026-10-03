@@ -905,6 +905,19 @@ export async function simulateGame(
   const yieldToIO = () => waitMs(turnDelayMs);
   const pauseForPhase = () => waitMs(phaseDelayMs);
   const pauseForAction = () => waitMs(actionDelayMs);
+  const applyPendingConcessions = () => {
+    const concededPlayers = options.concededPlayers;
+    if (!concededPlayers?.size) return null;
+    let changed = false;
+    for (const player of concededPlayers) {
+      if (state.lifeTotals[player] === undefined || state.lifeTotals[player] <= 0) continue;
+      state.lifeTotals[player] = 0;
+      changed = true;
+      log(`[Concede] Player ${player} concedes`);
+      options.onStateChange?.(cloneState(state), { type: "player_conceded", player });
+    }
+    return changed ? checkForWinner(state) : null;
+  };
 
   // Emit game_start synchronously (before any await) so getFilteredState() returns
   // non-null immediately when the first WebSocket client connects.
@@ -921,7 +934,11 @@ export async function simulateGame(
         let bottomCards: CardName[] | undefined;
 
         if (typeof agent.decideMulligan === "function") {
-          const decision = await Promise.resolve(agent.decideMulligan(hand, mulliganCount));
+          const mulliganState = cloneState(state);
+          mulliganState.playerIndex = p;
+          mulliganState.phase = "Mulligan";
+          mulliganState.phaseStep = "Mulligan";
+          const decision = await Promise.resolve(agent.decideMulligan(hand, mulliganCount, mulliganState));
           keep = decision.keep;
           bottomCards = decision.bottomCards;
         } else {
@@ -978,6 +995,9 @@ export async function simulateGame(
       if (state.lifeTotals[p] <= 0) continue;
       state.playerIndex = p;
       await yieldToIO();
+      winnerIndex = applyPendingConcessions();
+      if (winnerIndex !== null) break;
+      if (state.lifeTotals[p] <= 0) continue;
       emitRulesEvent(state, { type: "TURN_STARTED", player: p, controller: p });
       options.onStateChange?.(cloneState(state), { type: "turn_start", turn, player: p });
       const turnContext: TurnContext = {
@@ -996,6 +1016,8 @@ export async function simulateGame(
         }
         options.onStateChange?.(cloneState(state), { type: "phase_change", phase: step.phase, step: step.step });
         await pauseForPhase();
+        winnerIndex = applyPendingConcessions();
+        if (winnerIndex !== null || state.lifeTotals[p] <= 0) break;
 
         const skipDrawStep =
           turn === 1 &&
@@ -1058,6 +1080,8 @@ export async function simulateGame(
           winnerIndex = windowWinner;
           break;
         }
+        winnerIndex = applyPendingConcessions();
+        if (winnerIndex !== null || state.lifeTotals[p] <= 0) break;
       }
 
       cleanupTemporaryEffects(state, p, log);
@@ -4099,6 +4123,13 @@ export function applyAction(
   log: (message: string) => void
 ) {
   switch (action.type) {
+    case "CONCEDE": {
+      if (state.lifeTotals[player] > 0) {
+        state.lifeTotals[player] = 0;
+        log(`[Concede] Player ${player} concedes`);
+      }
+      break;
+    }
     case "PLAY_LAND": {
       const idx = state.hands[player].indexOf(action.card);
       if (idx >= 0) state.hands[player].splice(idx, 1);

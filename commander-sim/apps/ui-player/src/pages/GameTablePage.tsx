@@ -10,8 +10,77 @@ import MulliganPanel from "../components/game/MulliganPanel";
 import PhaseTracker from "../components/game/PhaseTracker";
 import GameLog from "../components/game/GameLog";
 import { publishSharedGameSession } from "../hooks/useSharedGameSession";
+import type { ConnectionRole, SeatId } from "../../../../packages/game-state/src/session";
 
 const GAME_SERVER_URL = (import.meta.env.VITE_GAME_SERVER_URL as string | undefined) ?? "http://localhost:5300";
+const TABLE_CLIENT_URL = (import.meta.env.VITE_TABLE_CLIENT_URL as string | undefined) ?? "http://localhost:5174";
+const PLAYER_GAME_KEY = "player_game_connection";
+const SEAT_IDS: SeatId[] = ["northWest", "northEast", "southEast", "southWest"];
+const SEAT_LABELS = ["NORTH", "EAST", "SOUTH", "WEST"] as const;
+
+type LobbyController = "human" | "ai" | null;
+
+interface LobbySeat {
+  controller: LobbyController;
+  deckId: number | null;
+}
+
+interface StartOptions {
+  humanDeckId: number | null;
+  aiDeckIds: number[];
+  seats: LobbySeat[];
+  debugMode: boolean;
+  spectateAllAi: boolean;
+}
+
+interface ViewerConnection {
+  role: ConnectionRole;
+  seatId?: SeatId;
+  playerId?: string;
+  playerToken?: string;
+}
+
+function getStoredPlayerConnection(sessionId: string | null): ViewerConnection | null {
+  try {
+    const raw = localStorage.getItem(PLAYER_GAME_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<ViewerConnection> & { sessionId?: string };
+    if (parsed.sessionId !== sessionId) return null;
+    if (parsed.role !== "player" || !parsed.seatId || !parsed.playerId || !parsed.playerToken) return null;
+    return {
+      role: "player",
+      seatId: parsed.seatId,
+      playerId: parsed.playerId,
+      playerToken: parsed.playerToken,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function tableReturnUrl(sessionId: string | null, action?: "new-match") {
+  const url = new URL(TABLE_CLIENT_URL);
+  if (sessionId) url.searchParams.set("session", sessionId);
+  if (action) url.searchParams.set("action", action);
+  return url.toString();
+}
+
+function navigateToTable(sessionId: string | null, action?: "new-match") {
+  const url = tableReturnUrl(sessionId, action);
+  try {
+    window.opener?.postMessage({ type: "COMMANDER_RETURN_TO_TABLE", sessionId, action }, TABLE_CLIENT_URL);
+    window.opener?.focus();
+  } catch {
+    // Browser focus/window control is best effort only.
+  }
+  window.location.assign(url);
+}
+
+interface PlayerCredentialResponse {
+  seatId: SeatId;
+  playerId: string;
+  playerToken: string;
+}
 
 interface DbDeck {
   id: number;
@@ -21,12 +90,19 @@ interface DbDeck {
   metadataCount?: number | null;
 }
 
-function GameLobby({ onStart }: { onStart: (humanDeckId: number | null, aiDeckIds: number[]) => void }) {
+function GameLobby({ onStart }: { onStart: (options: StartOptions) => void }) {
   const [dbDecks, setDbDecks] = useState<DbDeck[]>([]);
   const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [aiSelections, setAiSelections] = useState<[number | null, number | null, number | null]>([null, null, null]);
+  const [seats, setSeats] = useState<LobbySeat[]>([
+    { controller: "human", deckId: null },
+    { controller: null, deckId: null },
+    { controller: null, deckId: null },
+    { controller: null, deckId: null },
+  ]);
+  const [debugMode, setDebugMode] = useState(false);
+  const [spectateAllAi, setSpectateAllAi] = useState(false);
   const viewerState = useViewerState(1500);
 
   const savedDeckIdRaw = localStorage.getItem("savedDeckId");
@@ -50,9 +126,6 @@ function GameLobby({ onStart }: { onStart: (humanDeckId: number | null, aiDeckId
     return () => window.removeEventListener("focus", fetchDecks);
   }, [fetchDecks]);
 
-  const setSlot = (i: 0 | 1 | 2, id: number | null) =>
-    setAiSelections((prev) => { const n = [...prev] as typeof prev; n[i] = id; return n; });
-
   const deleteDeck = async (deck: DbDeck) => {
     const label = deck.name ?? deck.commander ?? `Deck #${deck.id}`;
     if (!window.confirm(`Eliminare "${label}" dal database?`)) return;
@@ -65,7 +138,10 @@ function GameLobby({ onStart }: { onStart: (humanDeckId: number | null, aiDeckId
         throw new Error(payload?.error ?? "Impossibile eliminare il deck.");
       }
       setDbDecks((prev) => prev.filter((item) => item.id !== deck.id));
-      setAiSelections((prev) => prev.map((id) => (id === deck.id ? null : id)) as typeof prev);
+      setSeats((prev) => prev.map((seat) => ({
+        ...seat,
+        deckId: seat.deckId === deck.id ? null : seat.deckId,
+      })));
       if (deck.id === myDeckId) {
         localStorage.removeItem("savedDeckId");
       }
@@ -76,71 +152,194 @@ function GameLobby({ onStart }: { onStart: (humanDeckId: number | null, aiDeckId
     }
   };
 
-  const aiLabels = ["AI Nord", "AI Est", "AI Ovest"];
-  const aiColors = ["text-red-400", "text-emerald-400", "text-violet-400"];
+  const displayedSeats = spectateAllAi
+    ? seats.map((seat) => ({ ...seat, controller: "ai" as const }))
+    : seats;
+  const humanCount = displayedSeats.filter((seat) => seat.controller === "human").length;
+  const aiCount = displayedSeats.filter((seat) => seat.controller === "ai").length;
+  const validSeatCount = humanCount + aiCount;
+  const canStart = validSeatCount === 4;
+
+  const updateSeat = (index: number, patch: Partial<LobbySeat>) => {
+    setSeats((prev) => prev.map((seat, seatIndex) =>
+      seatIndex === index ? { ...seat, ...patch } : seat
+    ));
+  };
+
+  const deckOptionLabel = (deck: DbDeck) => {
+    const isMyDeck = deck.id === myDeckId;
+    const displayCommander = deck.commander ?? (isMyDeck ? myCommander : null);
+    const displayName = deck.name ?? (isMyDeck && myCommander ? myCommander : `Deck #${deck.id}`);
+    return `${isMyDeck ? "★ " : ""}${displayName}${displayCommander && displayCommander !== displayName ? ` - ${displayCommander}` : ""}${typeof deck.cardCount === "number" ? ` · ${deck.cardCount} carte` : ""}${isMyDeck ? " (Il tuo mazzo)" : ""}`;
+  };
+
+  const start = () => {
+    if (!canStart) return;
+    const nextSeats = spectateAllAi
+      ? seats.map((seat) => ({ ...seat, controller: "ai" as const }))
+      : seats;
+    onStart({
+      humanDeckId: myDeckId,
+      aiDeckIds: nextSeats
+        .filter((seat) => seat.controller === "ai" && seat.deckId !== null)
+        .map((seat) => seat.deckId as number),
+      seats: nextSeats,
+      debugMode,
+      spectateAllAi,
+    });
+  };
 
   return (
-    <div className="flex items-center justify-center h-screen bg-gray-900 text-white">
-      <div className="w-[min(560px,92%)] bg-gray-800 border border-gray-700 rounded-2xl p-6 shadow-2xl">
-        <h1 className="text-lg font-bold mb-1">Nuova Partita — 1 vs 3 AI</h1>
-        <p className="text-gray-500 text-sm mb-4">Il tuo mazzo viene caricato da MoxfieldUI. Scegli i mazzi per le 3 AI.</p>
-
-        {/* Human deck info */}
-        <div className="mb-4 p-3 rounded-lg bg-blue-900/30 border border-blue-500/30 text-sm">
-          <span className="text-blue-400 font-semibold">Tu: </span>
-          {myDeckId
-            ? <span className="text-white">{myCommander ?? `Deck #${myDeckId}`}</span>
-            : <span className="text-gray-500 italic">Nessun mazzo caricato (verrà usato il Default)</span>}
-        </div>
-
-        {/* AI deck selectors */}
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs text-gray-500">Mazzi AI</span>
-          <button onClick={fetchDecks} className="text-xs text-blue-400 hover:text-blue-300">
-            ↺ Ricarica mazzi
+    <div className="flex h-screen items-center justify-center bg-[#111318] px-4 text-white">
+      <div className="w-[min(980px,96vw)] border border-gray-700 bg-[#1a1d24] p-6 shadow-2xl">
+        <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-bold tracking-wide">NEW COMMANDER MATCH</h1>
+            <div className="mt-1 text-xs uppercase tracking-[0.18em] text-gray-500">
+              Lobby 7K2M <span className="mx-2 text-gray-700">|</span>
+              <span className="text-emerald-300">●</span> {humanCount}/4 players
+            </div>
+          </div>
+          <button onClick={fetchDecks} className="border border-gray-600 px-3 py-2 text-xs text-gray-300 hover:border-gray-500 hover:text-white">
+            Ricarica mazzi
           </button>
         </div>
-        {loading ? (
-          <div className="text-gray-500 text-sm py-3">Caricamento mazzi...</div>
-        ) : (
-          <div className="space-y-3 mb-5">
-            {aiLabels.map((label, i) => (
-              <div key={label} className="flex items-center gap-3">
-                <span className={`text-xs font-semibold w-20 ${aiColors[i]}`}>{label}</span>
-                <select
-                  className="flex-1 bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm text-white"
-                  value={aiSelections[i] ?? ""}
-                  onChange={(e) => setSlot(i as 0 | 1 | 2, e.target.value ? Number(e.target.value) : null)}
-                >
-                  <option value="">Default (Mazzo Base)</option>
-                  {dbDecks.map((d) => {
-                    const isMyDeck = d.id === myDeckId;
-                    const displayCommander = d.commander ?? (isMyDeck ? myCommander : null);
-                    const displayName = d.name ?? (isMyDeck && myCommander ? myCommander : `Deck #${d.id}`);
-                    return (
-                      <option key={d.id} value={d.id}>
-                        {isMyDeck ? "★ " : ""}{displayName}
-                        {displayCommander && displayCommander !== displayName ? ` — ${displayCommander}` : ""}
-                        {typeof d.cardCount === "number" ? ` · ${d.cardCount} carte` : ""}
-                        {isMyDeck ? " (Il tuo mazzo)" : ""}
-                      </option>
-                    );
-                  })}
-                </select>
+
+        <div className="grid gap-3 md:grid-cols-4">
+          {displayedSeats.map((seat, index) => {
+            const isHost = index === 0;
+            const isHuman = seat.controller === "human";
+            const isAi = seat.controller === "ai";
+            const canEdit = !spectateAllAi && !isHost;
+            return (
+              <div key={SEAT_IDS[index]} className="min-h-[220px] border border-gray-700 bg-[#11151d] p-4">
+                <div className="mb-4 flex items-center justify-between text-xs font-semibold tracking-[0.16em] text-gray-400">
+                  <span>{isHost && !spectateAllAi ? "HOST" : SEAT_LABELS[index]}</span>
+                  <span className={isHuman ? "text-emerald-300" : isAi ? "text-cyan-300" : "text-gray-600"}>
+                    {isHuman ? "HUMAN ●" : isAi ? "AI" : "EMPTY"}
+                  </span>
+                </div>
+                <div className="flex h-16 items-center justify-center text-center">
+                  {isHuman && (
+                    <div>
+                      <div className="text-sm font-semibold text-white">
+                        {isHost ? "YOU" : `Player ${index + 1}`}
+                      </div>
+                      <div className="mt-1 text-xs text-gray-500">
+                        {isHost && myDeckId ? myCommander ?? `Deck #${myDeckId}` : "Commander Deck"}
+                      </div>
+                    </div>
+                  )}
+                  {isAi && (
+                    <div>
+                      <div className="text-2xl font-bold text-cyan-200">AI</div>
+                      <div className="mt-1 text-xs text-gray-500">Commander Deck</div>
+                    </div>
+                  )}
+                  {!seat.controller && (
+                    <div>
+                      <div className="text-4xl font-light text-gray-500">+</div>
+                      <div className="mt-1 text-xs font-semibold text-gray-400">ADD AI</div>
+                      <div className="mt-1 text-xs text-gray-600">Empty Seat</div>
+                    </div>
+                  )}
+                </div>
+
+                {canEdit && (
+                  <div className="mt-4 grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => updateSeat(index, { controller: "ai" })}
+                      className={`border px-2 py-2 text-xs font-semibold ${isAi ? "border-cyan-500 bg-cyan-950/50 text-cyan-100" : "border-gray-700 text-gray-300 hover:border-gray-500"}`}
+                    >
+                      + AI Player
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateSeat(index, { controller: null, deckId: null })}
+                      className={`border px-2 py-2 text-xs font-semibold ${!seat.controller ? "border-gray-500 bg-gray-800 text-white" : "border-gray-700 text-gray-300 hover:border-gray-500"}`}
+                    >
+                      Empty
+                    </button>
+                  </div>
+                )}
+
+                {isAi && (
+                  <div className="mt-4">
+                    <label className="mb-1 block text-[11px] uppercase tracking-[0.14em] text-gray-500">
+                      Deck
+                    </label>
+                    {loading ? (
+                      <div className="border border-gray-700 bg-gray-900 px-3 py-2 text-xs text-gray-500">Caricamento...</div>
+                    ) : (
+                      <select
+                        className="w-full border border-gray-700 bg-gray-950 px-3 py-2 text-xs text-white"
+                        value={seat.deckId ?? ""}
+                        onChange={(e) => updateSeat(index, { deckId: e.target.value ? Number(e.target.value) : null })}
+                      >
+                        <option value="">Default deck</option>
+                        {dbDecks.map((deck) => (
+                          <option key={deck.id} value={deck.id}>{deckOptionLabel(deck)}</option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                )}
               </div>
-            ))}
+            );
+          })}
+        </div>
+
+        <div className="mt-5 border border-gray-700 bg-[#11151d] p-4">
+          <div className="mb-3 text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">Match Options</div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="flex cursor-pointer gap-3 border border-gray-800 bg-black/20 p-3">
+              <input
+                type="checkbox"
+                checked={debugMode}
+                onChange={(e) => setDebugMode(e.target.checked)}
+                className="mt-1"
+              />
+              <span>
+                <span className="block text-sm font-semibold text-white">Debug Mode</span>
+                <span className="text-xs text-gray-500">Reveal hands · Engine controls · Logs · AI state</span>
+              </span>
+            </label>
+            <label className="flex cursor-pointer gap-3 border border-gray-800 bg-black/20 p-3">
+              <input
+                type="checkbox"
+                checked={spectateAllAi}
+                onChange={(e) => setSpectateAllAi(e.target.checked)}
+                className="mt-1"
+              />
+              <span>
+                <span className="block text-sm font-semibold text-white">Spectate All-AI Match</span>
+                <span className="text-xs text-gray-500">Replace players with four AI. You join as spectator.</span>
+              </span>
+            </label>
+          </div>
+        </div>
+
+        {myDeckId === null && !spectateAllAi && (
+          <div className="mt-3 border border-amber-800/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
+            Nessun mazzo umano caricato: il server usera il deck default.
+          </div>
+        )}
+        {!canStart && (
+          <div className="mt-3 border border-gray-700 bg-black/20 px-3 py-2 text-xs text-gray-400">
+            Completa i 4 seat aggiungendo AI o attendendo altri player.
           </div>
         )}
 
         {!loading && dbDecks.length > 0 && (
-          <div className="mb-5 max-h-36 overflow-auto rounded-lg border border-gray-700 bg-gray-900/70 p-2">
+          <div className="mt-4 max-h-28 overflow-auto border border-gray-700 bg-gray-950/70 p-2">
             <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Gestione DB</div>
             {deleteError && <div className="mb-2 text-xs text-red-300">{deleteError}</div>}
             <div className="space-y-1">
               {dbDecks.map((deck) => {
                 const label = deck.name ?? deck.commander ?? `Deck #${deck.id}`;
                 return (
-                  <div key={deck.id} className="flex items-center justify-between gap-2 rounded bg-gray-800/70 px-2 py-1 text-xs">
+                  <div key={deck.id} className="flex items-center justify-between gap-2 bg-gray-900/80 px-2 py-1 text-xs">
                     <span className="min-w-0 truncate">
                       #{deck.id} {label}
                       {typeof deck.cardCount === "number" ? ` · ${deck.cardCount} carte` : ""}
@@ -149,7 +348,7 @@ function GameLobby({ onStart }: { onStart: (humanDeckId: number | null, aiDeckId
                       type="button"
                       onClick={() => deleteDeck(deck)}
                       disabled={deletingId === deck.id}
-                      className="shrink-0 rounded border border-red-800/70 px-2 py-0.5 text-red-300 hover:bg-red-950 disabled:opacity-50"
+                      className="shrink-0 border border-red-800/70 px-2 py-0.5 text-red-300 hover:bg-red-950 disabled:opacity-50"
                     >
                       {deletingId === deck.id ? "..." : "Elimina"}
                     </button>
@@ -160,12 +359,18 @@ function GameLobby({ onStart }: { onStart: (humanDeckId: number | null, aiDeckId
           </div>
         )}
 
-        <div className="flex justify-end">
+        <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+          <div className="text-xs uppercase tracking-[0.16em] text-gray-400">
+            {humanCount} Human <span className="mx-2 text-gray-700">|</span>
+            {aiCount} AI <span className="mx-2 text-gray-700">|</span>
+            Commander
+          </div>
           <button
-            onClick={() => onStart(myDeckId, aiSelections.filter((id): id is number => id !== null))}
-            className="px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-lg"
+            onClick={start}
+            disabled={!canStart}
+            className="bg-blue-600 px-6 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-gray-700 disabled:text-gray-500"
           >
-            Inizia Partita
+            START MATCH
           </button>
         </div>
       </div>
@@ -180,6 +385,11 @@ export default function GameTablePage() {
   const [lobbyDone, setLobbyDone] = useState(!!searchParams.get("session"));
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showConcedeConfirm, setShowConcedeConfirm] = useState(false);
+  const [concessionRequested, setConcessionRequested] = useState(false);
+  const [viewerConnection, setViewerConnection] = useState<ViewerConnection>(() =>
+    getStoredPlayerConnection(searchParams.get("session")) ?? { role: "debug" }
+  );
 
   const {
     gameState,
@@ -195,22 +405,51 @@ export default function GameTablePage() {
     submitTarget,
     submitResponse,
     concede,
-  } = useGameSession(sessionId);
+  } = useGameSession(sessionId, viewerConnection);
 
-  const startGame = (humanDeckId: number | null, aiDeckIds: number[]) => {
+  useEffect(() => {
+    void publishSharedGameSession(sessionId, "game-table").catch(() => {
+      // Shared session bridge is optional.
+    });
+  }, [sessionId]);
+
+  const startGame = (options: StartOptions) => {
     if (creating) return;
     setCreating(true);
     setLobbyDone(true);
+    const hostSeatId = SEAT_IDS[0];
     const body: Record<string, unknown> = {};
-    if (humanDeckId) body.humanDeckId = humanDeckId;
-    if (aiDeckIds.length) body.aiDeckIds = aiDeckIds;
-    fetch(`${GAME_SERVER_URL}/game/create`, {
+    if (options.humanDeckId) body.humanDeckId = options.humanDeckId;
+    if (options.aiDeckIds.length) body.aiDeckIds = options.aiDeckIds;
+    body.mode = options.debugMode ? "debug" : "game";
+    if (!options.spectateAllAi) {
+      body.seats = options.seats.map((seat) => ({
+        controller: seat.controller ?? "ai",
+        deckId: seat.deckId ?? undefined,
+      }));
+    }
+    fetch(`${GAME_SERVER_URL}${options.spectateAllAi ? "/game/create-ai-only" : "/game/create"}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     })
       .then((r) => r.json())
-      .then((data: { sessionId: string }) => {
+      .then((data: { sessionId: string; playerCredentials?: PlayerCredentialResponse[] }) => {
+        const hostCredential = data.playerCredentials?.find((credential) => credential.seatId === hostSeatId);
+        setViewerConnection(
+          options.debugMode
+            ? { role: "debug" }
+            : options.spectateAllAi
+              ? { role: "table" }
+              : hostCredential
+                ? {
+                    role: "player",
+                    seatId: hostCredential.seatId,
+                    playerId: hostCredential.playerId,
+                    playerToken: hostCredential.playerToken,
+                  }
+                : { role: "table" }
+        );
         setSessionId(data.sessionId);
         navigate(`/game?session=${data.sessionId}`, { replace: true });
       })
@@ -246,10 +485,23 @@ export default function GameTablePage() {
   }
 
   const players = gameState?.players ?? [];
-  const humanPlayer = players.find((p) => p.isHuman);
+  const ownPlayer = viewerConnection.role === "player"
+    ? players.find((p) =>
+        (viewerConnection.seatId && p.seatId === viewerConnection.seatId) ||
+        (viewerConnection.playerId && p.playerId === viewerConnection.playerId)
+      )
+    : players.find((p) => p.isHuman);
+  const humanPlayer = ownPlayer ?? players.find((p) => p.isHuman);
   const northPlayer = players.find((p) => p.index === 1);
   const eastPlayer = players.find((p) => p.index === 2);
   const westPlayer = players.find((p) => p.index === 3);
+  const ownConceded = Boolean(ownPlayer && (ownPlayer.isConceded || ownPlayer.life <= 0));
+  const actionsLocked = Boolean(gameOver || ownConceded || concessionRequested);
+  const confirmConcede = () => {
+    setConcessionRequested(true);
+    setShowConcedeConfirm(false);
+    concede();
+  };
 
   // Combat-related decision types
   const isCombatDecision =
@@ -258,12 +510,6 @@ export default function GameTablePage() {
     pendingDecision?.decisionType === "block_plan";
 
   const isMulliganDecision = pendingDecision?.decisionType === "mulligan";
-
-  useEffect(() => {
-    void publishSharedGameSession(sessionId, "game-table").catch(() => {
-      // Shared session bridge is optional.
-    });
-  }, [sessionId]);
 
   return (
     <div className="h-screen flex flex-col bg-gray-900 overflow-hidden">
@@ -293,35 +539,84 @@ export default function GameTablePage() {
           />
         )}
         <button
-          onClick={concede}
-          className="text-xs px-3 py-1 bg-red-800 hover:bg-red-700 text-red-200 rounded"
+          onClick={() => setShowConcedeConfirm(true)}
+          disabled={actionsLocked || viewerConnection.role !== "player"}
+          className="text-xs px-3 py-1 bg-red-800 hover:bg-red-700 text-red-200 rounded disabled:cursor-not-allowed disabled:bg-gray-700 disabled:text-gray-500"
         >
-          Concede
+          {concessionRequested && !ownConceded ? "Conceding..." : "Concede"}
         </button>
       </div>
+
+      {showConcedeConfirm && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+          <div className="w-[min(420px,92vw)] bg-gray-800 border border-red-500/50 rounded-xl p-7 text-center shadow-2xl">
+            <div className="text-2xl font-bold text-white mb-3">CONCEDE MATCH?</div>
+            <div className="text-sm text-gray-300 mb-6">
+              You will leave this game. The other players may continue playing.
+            </div>
+            <div className="flex justify-center gap-3">
+              <button
+                onClick={() => setShowConcedeConfirm(false)}
+                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmConcede}
+                className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded"
+              >
+                Concede
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {ownConceded && !gameOver && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+          <div className="w-[min(430px,92vw)] bg-gray-800 border border-red-500/40 rounded-xl p-8 text-center shadow-2xl">
+            <div className="text-2xl font-bold text-white mb-2">CONCESSION CONFIRMED</div>
+            <div className="text-gray-400 mb-5 text-sm">Your player has left the game. The table may still be running.</div>
+            <div className="flex gap-3 justify-center">
+              <button
+                onClick={() => navigateToTable(sessionId)}
+                className="px-4 py-2 bg-blue-700 hover:bg-blue-600 text-white rounded"
+              >
+                Return to Table
+              </button>
+              <button
+                onClick={() => navigateToTable(sessionId, "new-match")}
+                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded"
+              >
+                New Match
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Game over overlay */}
       {gameOver && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
           <div className="bg-gray-800 border border-yellow-600 rounded-xl p-8 text-center">
             <div className="text-3xl font-bold text-white mb-2">
-              {gameOver.winner === 0 ? "🏆 You Win!" : gameOver.winner === null ? "Draw" : `Player ${gameOver.winner} Wins`}
+              Match Complete
             </div>
             <div className="text-gray-400 mb-4 text-sm">
-              {gameOver.winner === 0 ? "Congratulations!" : gameOver.winner === null ? "No winner determined." : "Better luck next time!"}
+              {gameOver.winner === ownPlayer?.index ? "You win." : gameOver.winner === null ? "No winner determined." : `Player ${gameOver.winner} wins.`}
             </div>
             <div className="flex gap-3 justify-center">
               <button
-                onClick={() => { setSessionId(null); setLobbyDone(false); navigate("/game", { replace: true }); }}
+                onClick={() => navigateToTable(sessionId)}
                 className="px-4 py-2 bg-blue-700 hover:bg-blue-600 text-white rounded"
               >
-                New Game
+                Return to Table
               </button>
               <button
-                onClick={() => navigate("/")}
+                onClick={() => navigateToTable(sessionId, "new-match")}
                 className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded"
               >
-                Home
+                New Match
               </button>
             </div>
           </div>
@@ -335,12 +630,12 @@ export default function GameTablePage() {
       )}
 
       {/* Mulligan modal */}
-      {isMulliganDecision && (
+      {isMulliganDecision && !actionsLocked && (
         <MulliganPanel pendingDecision={pendingDecision} onMulligan={submitMulligan} />
       )}
 
       {/* Combat overlays */}
-      {isCombatDecision && (
+      {isCombatDecision && !actionsLocked && (
         <CombatPanel
           pendingDecision={pendingDecision}
           onAttackPlan={submitAttackPlan}
@@ -373,7 +668,7 @@ export default function GameTablePage() {
           center={
             <div className="h-full flex flex-col p-2 gap-2">
               {/* Action panel for non-combat actions */}
-              {pendingDecision && !isCombatDecision && !isMulliganDecision && (
+              {pendingDecision && !actionsLocked && !isCombatDecision && !isMulliganDecision && (
                 <ActionPanel
                   pendingDecision={pendingDecision}
                   onAction={submitAction}

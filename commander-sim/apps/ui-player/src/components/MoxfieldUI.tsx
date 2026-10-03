@@ -21,7 +21,7 @@ import DialogModal from "./DialogModal";
 import NumericPromptModal from "./NumericPromptModal";
 import { generateFilteredComboFile } from "../utils/ComboEngine";
 import { getDecision, type GameState } from "../hooks/useDecisionAI";
-import { useGameSession } from "../hooks/useGameSession";
+import { useGameSession, type FilteredPlayerState } from "../hooks/useGameSession";
 import { useSharedGameSession } from "../hooks/useSharedGameSession";
 import {
   sessionModeForEngineSession,
@@ -35,6 +35,52 @@ import importIcon from "../assets/import-icon.svg";
 
 type ZoneKey = "library" | "graveyard" | "exile" | "hand" | "commander";
 type DragSourceZone = ZoneKey | "battlefield";
+interface BattlefieldDisplayCard {
+  id: string;
+  card: string;
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface MoxfieldDisplayZones {
+  life: number;
+  hand: string[];
+  battlefield: BattlefieldDisplayCard[];
+  graveyard: string[];
+  exile: string[];
+  library: string[];
+  commandZone: string[];
+}
+
+export function buildMoxfieldDisplayZones(params: {
+  mode: SessionMode;
+  local: MoxfieldDisplayZones;
+  engineHuman?: FilteredPlayerState | null;
+}): MoxfieldDisplayZones {
+  if (params.mode !== "engine-linked" || !params.engineHuman) return params.local;
+  return {
+    life: params.engineHuman.life,
+    hand: params.engineHuman.hand ?? [],
+    battlefield: engineBattlefieldLayout(params.engineHuman),
+    graveyard: params.engineHuman.graveyard,
+    exile: params.engineHuman.exile,
+    library: Array.from({ length: params.engineHuman.libraryCount }, () => ""),
+    commandZone: params.engineHuman.commander ? [params.engineHuman.commander] : [],
+  };
+}
+
+function engineBattlefieldLayout(player: FilteredPlayerState): BattlefieldDisplayCard[] {
+  const cards = player.battlefieldPermanents?.map((permanent) => permanent.name) ?? player.battlefield;
+  return cards.map((card, index) => ({
+    id: `engine:${player.index}:${index}:${card}`,
+    card,
+    x: 20 + (index % 7) * 112,
+    y: 20 + Math.floor(index / 7) * 150,
+    z: index,
+  }));
+}
+
 const VIEWER_STATE_URL =
   (import.meta.env.VITE_VIEWER_STATE_URL as string | undefined) ??
   "http://localhost:3001";
@@ -150,6 +196,21 @@ export default function MoxfieldUI() {
   } = useGameSession(sharedSession?.sessionId ?? null);
   const aiPlayers = gameState?.players.filter((player) => !player.isHuman) ?? [];
   const engineHuman = gameState?.players.find((player) => player.isHuman);
+  const isEngineLinked = sessionMode === "engine-linked";
+  const displayZones = buildMoxfieldDisplayZones({
+    mode: sessionMode,
+    engineHuman,
+    local: {
+      life,
+      hand,
+      battlefield,
+      graveyard,
+      exile,
+      library,
+      commandZone,
+    },
+  });
+  const displayLifeInput = isEngineLinked ? String(displayZones.life) : lifeInput;
 
   // Mappa base con le zone di gioco principali (senza battlefield)
 // Ogni zona ha uno stato (array di carte) e un setter
@@ -948,6 +1009,34 @@ export default function MoxfieldUI() {
     setNotification({ message: `Turn ${nextTurn}`, type: "success" });
   };
 
+  const readonlyZoneDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setNotification({ message: "Sessione engine-linked: usa le azioni engine.", type: "error" });
+  }, []);
+  const readonlyDragStart = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+  }, []);
+  const handleDisplayedDrop = isEngineLinked ? readonlyZoneDrop : handleDrop;
+  const handleDisplayedHandDragStart = isEngineLinked ? readonlyDragStart : handleHandDragStart;
+  const handleDisplayedGraveyardDragStart = isEngineLinked ? readonlyDragStart : handleGraveyardDragStart;
+  const handleDisplayedExileDragStart = isEngineLinked ? readonlyDragStart : handleExileDragStart;
+  const handleDisplayedLibraryDragStart = isEngineLinked ? readonlyDragStart : handleLibraryDragStart;
+  const handleDisplayedCommanderDragStart = isEngineLinked ? readonlyDragStart : handleCommanderDragStart;
+  const handleDisplayedBattlefieldDragStart = isEngineLinked ? readonlyDragStart : handleBattlefieldDragStart;
+  const handleDisplayedBattlefieldMove = isEngineLinked ? () => undefined : handleBattlefieldMove;
+  const handleDisplayedZoneAction = isEngineLinked
+    ? () => setNotification({ message: "Sessione engine-linked: zone gestite dall'engine.", type: "error" })
+    : handleZoneAction;
+  const handleDisplayedDraw = isEngineLinked
+    ? () => setNotification({ message: "Sessione engine-linked: pesca gestita dall'engine.", type: "error" })
+    : handleDraw;
+  const handleDisplayedShuffle = isEngineLinked
+    ? () => setNotification({ message: "Sessione engine-linked: shuffle gestito dall'engine.", type: "error" })
+    : handleShuffle;
+  const handleDisplayedTurn = isEngineLinked
+    ? () => setNotification({ message: "Sessione engine-linked: turno gestito dall'engine.", type: "error" })
+    : handleTurn;
+
   const updateLife = (nextLife: number) => {
     const normalized = Math.max(-999, Math.min(999, nextLife));
     setLife(normalized);
@@ -1144,7 +1233,8 @@ const autoplayAI = async () => {
                   <input
                     type="text"
                     inputMode="numeric"
-                    value={lifeInput}
+                    value={displayLifeInput}
+                    disabled={isEngineLinked}
                     onChange={(e) => setLifeInput(e.target.value.replace(/[^\d-]/g, ""))}
                     onBlur={commitLifeInput}
                     onKeyDown={(e) => {
@@ -1163,7 +1253,8 @@ const autoplayAI = async () => {
                 <button
                   type="button"
                   className="life-hud__button life-hud__button--minus"
-                  onClick={() => updateLife(life - 1)}
+                  onClick={() => updateLife(displayZones.life - 1)}
+                  disabled={isEngineLinked}
                   aria-label="Diminuisci punti vita"
                 >
                   -
@@ -1171,14 +1262,17 @@ const autoplayAI = async () => {
                 <button
                   type="button"
                   className="life-hud__button life-hud__button--plus"
-                  onClick={() => updateLife(life + 1)}
+                  onClick={() => updateLife(displayZones.life + 1)}
+                  disabled={isEngineLinked}
                   aria-label="Aumenta punti vita"
                 >
                   +
                 </button>
               </div>
-              <button onClick={handleTurn} className="turn-chip">Turn {turn}</button>
-              <EngineManaTracker cards={battlefield.map((c) => c.card)} />
+              <button onClick={handleDisplayedTurn} className="turn-chip">
+                Turn {gameState?.turn ?? turn}
+              </button>
+              <EngineManaTracker cards={displayZones.battlefield.map((c) => c.card)} />
             </div>
           </div>
         </div>
@@ -1217,10 +1311,16 @@ const autoplayAI = async () => {
                 key={label}
                 onClick={() => {
                   if (label === "Restart") handleRestart();
-                  if (label === "Next Turn") handleTurn();
-                  if (label === "Draw") handleDraw();
-                  if (label === "Shuffle") handleShuffle();
-                  if (label== "AI Decision") autoplayAI();
+                  if (label === "Next Turn") handleDisplayedTurn();
+                  if (label === "Draw") handleDisplayedDraw();
+                  if (label === "Shuffle") handleDisplayedShuffle();
+                  if (label === "AI Decision") {
+                    if (isEngineLinked) {
+                      setNotification({ message: "Sessione engine-linked: decisioni gestite dall'engine.", type: "error" });
+                    } else {
+                      void autoplayAI();
+                    }
+                  }
                 }}
                 className={`command-button ${label === "Next Turn" ? "command-button--primary" : ""}`}
               >
@@ -1230,10 +1330,10 @@ const autoplayAI = async () => {
           </div>
           <div className="battlefield-shell__board">
             <Battlefield
-              cards={battlefield}
-              onDrop={handleDrop}
-              onMove={handleBattlefieldMove}
-              onDragStart={handleBattlefieldDragStart}
+              cards={displayZones.battlefield}
+              onDrop={handleDisplayedDrop}
+              onMove={handleDisplayedBattlefieldMove}
+              onDragStart={handleDisplayedBattlefieldDragStart}
               onHover={handleHover}
               onLeave={handleLeave}
             />
@@ -1242,48 +1342,48 @@ const autoplayAI = async () => {
 
         <div className="flex flex-wrap gap-2 px-3 py-1.5 bg-zinc-900 items-end border-t border-zinc-800 overflow-visible">
           <Hand
-            cards={hand}
-            onDrop={handleDrop}
-            onDragStart={handleHandDragStart}
+            cards={displayZones.hand}
+            onDrop={handleDisplayedDrop}
+            onDragStart={handleDisplayedHandDragStart}
             onHover={handleHover}
             onLeave={handleLeave}
-            onZoneAction={handleZoneAction}
+            onZoneAction={handleDisplayedZoneAction}
           />
 
           <div className="flex gap-1.5 items-end flex-wrap">
             <Graveyard
-              cards={graveyard}
-              onDrop={handleDrop}
-              onDragStart={handleGraveyardDragStart}
+              cards={displayZones.graveyard}
+              onDrop={handleDisplayedDrop}
+              onDragStart={handleDisplayedGraveyardDragStart}
               onHover={handleHover}
               onLeave={handleLeave}
-              onZoneAction={handleZoneAction}
+              onZoneAction={handleDisplayedZoneAction}
             />
             <Exile
-              cards={exile}
-              onDrop={handleDrop}
-              onDragStart={handleExileDragStart}
+              cards={displayZones.exile}
+              onDrop={handleDisplayedDrop}
+              onDragStart={handleDisplayedExileDragStart}
               onHover={handleHover}
               onLeave={handleLeave}
-              onZoneAction={handleZoneAction}
+              onZoneAction={handleDisplayedZoneAction}
             />
             <Library
-              cards={library}
+              cards={displayZones.library}
               image="src/assets/sleeve.png"
-              onDrop={handleDrop}
-              onDragStart={handleLibraryDragStart}
+              onDrop={handleDisplayedDrop}
+              onDragStart={handleDisplayedLibraryDragStart}
               onHover={handleHover}
               onLeave={handleLeave}
-              onClick={handleDraw}
-              onZoneAction={handleZoneAction}
+              onClick={handleDisplayedDraw}
+              onZoneAction={handleDisplayedZoneAction}
               revealTopCard={libraryTopRevealed}
             />
             <CommanderZone
-              cards={commandZone}
+              cards={displayZones.commandZone}
               commanderTax={commanderTax}
               onIncreaseTax={() => setCommanderTax((prev) => prev + 2)}
-              onDrop={handleDrop}
-              onDragStart={handleCommanderDragStart}
+              onDrop={handleDisplayedDrop}
+              onDragStart={handleDisplayedCommanderDragStart}
               onHover={handleHover}
               onLeave={handleLeave}
             />
@@ -1297,11 +1397,11 @@ const autoplayAI = async () => {
             ref={modalRef}
             data={hoverCardDetail.data}
             zoneState={{
-              H: hand,
-              B: battlefield.map((c) => c.card),
-              G: graveyard,
-              E: exile,
-              C: commandZone,
+              H: displayZones.hand,
+              B: displayZones.battlefield.map((c) => c.card),
+              G: displayZones.graveyard,
+              E: displayZones.exile,
+              C: displayZones.commandZone,
             }}
           />
         </div>

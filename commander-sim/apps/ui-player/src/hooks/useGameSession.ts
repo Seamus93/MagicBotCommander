@@ -1,9 +1,19 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import type { ConnectionRole, Seat, SeatId, SessionCapabilities, SessionMode, ViewType } from "../../../../packages/game-state/src/session";
 
 const GAME_SERVER_URL = import.meta.env.VITE_GAME_SERVER_URL ?? "http://localhost:5300";
 const GAME_WS_URL = GAME_SERVER_URL.replace(/^http/, "ws");
 
 export type PlayerPosition = "SOUTH" | "NORTH" | "EAST" | "WEST";
+export type GameMode = "HUMAN_VS_AI" | "ALL_AI";
+export type AgentType = "HUMAN" | "AI";
+
+export interface PlayerDescriptor {
+  playerIndex: number;
+  seat: PlayerPosition;
+  agentType: AgentType;
+  displayName: string;
+}
 
 export interface CreaturePermanent {
   id: string;
@@ -15,8 +25,15 @@ export interface CreaturePermanent {
 }
 
 export interface FilteredPlayerState {
+  playerId?: string;
+  seatId?: SeatId;
   index: number;
+  playerIndex?: number;
   position: PlayerPosition;
+  seat?: PlayerPosition;
+  controller?: "human" | "ai";
+  agentType?: AgentType;
+  displayName?: string;
   life: number;
   commander: string;
   battlefield: string[];
@@ -28,21 +45,35 @@ export interface FilteredPlayerState {
   handCount: number;
   hand?: string[];
   isHuman: boolean;
+  isConceded?: boolean;
 }
 
 export interface FilteredGameState {
   sessionId?: string;
   stateVersion?: number;
+  revision?: number;
+  mode?: SessionMode;
+  view?: ViewType;
+  role?: ConnectionRole;
+  capabilities?: SessionCapabilities;
+  seats?: Seat[];
+  privatePlayer?: {
+    playerId: string;
+    hand: string[];
+  };
+  gameMode?: GameMode;
   turn: number;
   phase: string;
   phaseStep: string;
   playerIndex: number;
   startingPlayerIndex: number;
   players: FilteredPlayerState[];
+  playerDescriptors?: PlayerDescriptor[];
 }
 
 export interface WaitingContext {
   type: string;
+  playerIndex?: number;
   availableActions?: Array<{ type: string; card?: string; player?: number }>;
   plans?: unknown[];
   opponentIndices?: number[];
@@ -70,6 +101,7 @@ export interface GameOverInfo {
 
 export interface UseGameSessionReturn {
   gameState: FilteredGameState | null;
+  capabilities: SessionCapabilities | null;
   pendingDecision: PendingDecision | null;
   gameLog: string[];
   isConnected: boolean;
@@ -105,6 +137,24 @@ export function isPendingDecisionForState(
   );
 }
 
+export interface UseGameSessionOptions {
+  role?: ConnectionRole;
+  seatId?: SeatId;
+  playerId?: string;
+  playerToken?: string;
+}
+
+export function isPendingDecisionOwnedByHuman(
+  pendingDecision: PendingDecision | null,
+  gameState: FilteredGameState | null
+) {
+  if (!pendingDecision || !gameState) return false;
+  if (gameState.gameMode === "ALL_AI") return false;
+  const activePlayer = pendingDecision.activePlayer ?? 0;
+  const player = gameState.players.find((candidate) => candidate.index === activePlayer);
+  return player?.agentType === "HUMAN" || player?.isHuman === true;
+}
+
 export function validateActionAgainstDisplayedHand(params: {
   action: unknown;
   gameState: FilteredGameState | null;
@@ -134,8 +184,12 @@ export function validateActionAgainstDisplayedHand(params: {
       };
 }
 
-export function useGameSession(sessionId: string | null): UseGameSessionReturn {
+export function useGameSession(
+  sessionId: string | null,
+  options: UseGameSessionOptions = {}
+): UseGameSessionReturn {
   const [gameState, setGameState] = useState<FilteredGameState | null>(null);
+  const [capabilities, setCapabilities] = useState<SessionCapabilities | null>(null);
   const [pendingDecision, setPendingDecision] = useState<PendingDecision | null>(null);
   const [gameLog, setGameLog] = useState<string[]>([]);
   const [isConnected, setIsConnected] = useState(false);
@@ -155,6 +209,7 @@ export function useGameSession(sessionId: string | null): UseGameSessionReturn {
 
   useEffect(() => {
     setGameState(null);
+    setCapabilities(null);
     setPendingDecision(null);
     setGameLog([]);
     setIsConnected(false);
@@ -163,7 +218,12 @@ export function useGameSession(sessionId: string | null): UseGameSessionReturn {
 
     if (!sessionId) return;
 
-    const ws = new WebSocket(`${GAME_WS_URL}/game/${sessionId}`);
+    const params = new URLSearchParams();
+    params.set("role", options.role ?? "debug");
+    if (options.seatId) params.set("seatId", options.seatId);
+    if (options.playerId) params.set("playerId", options.playerId);
+    if (options.playerToken) params.set("playerToken", options.playerToken);
+    const ws = new WebSocket(`${GAME_WS_URL}/game/${sessionId}?${params.toString()}`);
     wsRef.current = ws;
 
     ws.onopen = () => setIsConnected(true);
@@ -178,8 +238,46 @@ export function useGameSession(sessionId: string | null): UseGameSessionReturn {
       }
 
       switch (msg.type) {
+        case "SESSION_JOINED":
+          setCapabilities(msg.capabilities as SessionCapabilities);
+          break;
+        case "GAME_SNAPSHOT": {
+          const incoming = msg.state as FilteredGameState;
+          const currentRevision = gameStateRef.current?.revision ?? gameStateRef.current?.stateVersion ?? 0;
+          const incomingRevision = incoming.revision ?? incoming.stateVersion ?? currentRevision;
+          if (incomingRevision < currentRevision) return;
+          if (incomingRevision > currentRevision + 1 && currentRevision > 0) {
+            ws.send(JSON.stringify({ type: "REQUEST_SNAPSHOT", knownRevision: currentRevision }));
+          }
+          setCapabilities(incoming.capabilities ?? null);
+          setGameState(incoming);
+          setStateOutOfSyncMessage(null);
+          break;
+        }
+        case "PRIVATE_PLAYER_STATE":
+          setGameState((prev) => {
+            if (!prev) return prev;
+            const privatePlayer = msg.player as { playerId: string; hand: string[] };
+            return {
+              ...prev,
+              privatePlayer,
+              players: prev.players.map((player) =>
+                player.playerId === privatePlayer.playerId
+                  ? { ...player, hand: privatePlayer.hand, handCount: privatePlayer.hand.length }
+                  : player
+              ),
+            };
+          });
+          break;
         case "state_update":
-          setGameState(msg.state as FilteredGameState);
+          setGameState((prev) => {
+            const incoming = msg.state as FilteredGameState;
+            const currentRevision = prev?.revision ?? prev?.stateVersion ?? 0;
+            const incomingRevision = incoming.revision ?? incoming.stateVersion ?? currentRevision;
+            if (incomingRevision < currentRevision) return prev;
+            return incoming;
+          });
+          setCapabilities(((msg.state as FilteredGameState).capabilities) ?? null);
           setStateOutOfSyncMessage(null);
           break;
         case "waiting_for_human":
@@ -207,7 +305,7 @@ export function useGameSession(sessionId: string | null): UseGameSessionReturn {
       ws.close();
       wsRef.current = null;
     };
-  }, [sessionId]);
+  }, [sessionId, options.role, options.seatId, options.playerId, options.playerToken]);
 
   const send = useCallback((data: Record<string, unknown>) => {
     const ws = wsRef.current;
@@ -265,12 +363,39 @@ export function useGameSession(sessionId: string | null): UseGameSessionReturn {
     send({ type: "concede" });
   }, [send]);
 
-  const synchronizedPendingDecision = isPendingDecisionForState(pendingDecision, gameState)
+  const synchronizedPendingDecision = isPendingDecisionForState(pendingDecision, gameState) &&
+    isPendingDecisionOwnedByHuman(pendingDecision, gameState)
     ? pendingDecision
     : null;
 
+  useEffect(() => {
+    if (!pendingDecision || !gameState) return;
+    if (!isPendingDecisionForState(pendingDecision, gameState)) return;
+    if (isPendingDecisionOwnedByHuman(pendingDecision, gameState)) return;
+    const activePlayer = pendingDecision.activePlayer ?? 0;
+    const player = gameState.players.find((candidate) => candidate.index === activePlayer);
+    console.error("[player-mapping-invariant]", {
+      invariant: "PENDING_DECISION_PLAYER_MUST_BE_HUMAN",
+      gameMode: gameState.gameMode,
+      sessionId: gameState.sessionId,
+      stateVersion: gameState.stateVersion,
+      pendingDecision,
+      playerDescriptor: player
+        ? {
+            playerIndex: player.index,
+            seat: player.seat ?? player.position,
+            agentType: player.agentType,
+            displayName: player.displayName,
+            isHuman: player.isHuman,
+          }
+        : null,
+    });
+    setStateOutOfSyncMessage("state out of sync");
+  }, [pendingDecision, gameState]);
+
   return {
     gameState,
+    capabilities,
     pendingDecision: synchronizedPendingDecision,
     gameLog,
     isConnected,

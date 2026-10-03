@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   isPendingDecisionForState,
+  isPendingDecisionOwnedByHuman,
   validateActionAgainstDisplayedHand,
   type FilteredGameState,
   type PendingDecision,
 } from "../hooks/useGameSession";
 import { buildSpellTablePlayers } from "../pages/SpellTablePage";
+import { buildMoxfieldDisplayZones } from "../components/MoxfieldUI";
 import {
   sessionModeForEngineSession,
   shouldPublishViewerRulesState,
@@ -20,10 +22,15 @@ const engineState: FilteredGameState = {
   phaseStep: "Prima Fase Principale",
   playerIndex: 0,
   startingPlayerIndex: 0,
+  gameMode: "HUMAN_VS_AI",
   players: [
     {
       index: 0,
+      playerIndex: 0,
       position: "NORTH",
+      seat: "NORTH",
+      agentType: "HUMAN",
+      displayName: "YOU",
       life: 37,
       commander: "Captain",
       battlefield: ["Island"],
@@ -37,7 +44,11 @@ const engineState: FilteredGameState = {
     },
     {
       index: 1,
+      playerIndex: 1,
       position: "EAST",
+      seat: "EAST",
+      agentType: "AI",
+      displayName: "AI EAST",
       life: 40,
       commander: "AI",
       battlefield: [],
@@ -49,6 +60,10 @@ const engineState: FilteredGameState = {
       hand: [],
       isHuman: false,
     },
+  ],
+  playerDescriptors: [
+    { playerIndex: 0, seat: "NORTH", agentType: "HUMAN", displayName: "YOU" },
+    { playerIndex: 1, seat: "EAST", agentType: "AI", displayName: "AI EAST" },
   ],
 };
 
@@ -93,8 +108,61 @@ describe("engine-linked session sync", () => {
     });
 
     expect(players.get(0)?.hand).toEqual(["Graven Cairns", "Dimir Aqueduct"]);
+    expect(players.get(0)?.label).toBe("YOU");
     expect(players.get(0)?.battlefield).toEqual(["Island"]);
     expect(players.get(0)?.life).toBe(37);
+  });
+
+  it("uses the engine hand for the main Moxfield hand zone while engine-linked", () => {
+    const zones = buildMoxfieldDisplayZones({
+      mode: "engine-linked",
+      engineHuman: engineState.players[0],
+      local: {
+        life: 1,
+        hand: ["Ray of the Dark Realms", "Gray Merchant of Asphodel", "Kitsail Larcenist"],
+        battlefield: [],
+        graveyard: [],
+        exile: [],
+        library: ["Local Library"],
+        commandZone: ["Viewer Commander"],
+      },
+    });
+
+    expect(zones.hand).toEqual(["Graven Cairns", "Dimir Aqueduct"]);
+    expect(zones.hand).not.toContain("Ray of the Dark Realms");
+    expect(zones.life).toBe(37);
+  });
+
+  it("does not show AI NORTH for P0 in human engine-linked mode", () => {
+    const players = buildSpellTablePlayers({
+      mode: "engine-linked",
+      viewerState,
+      enginePlayers: engineState.players,
+    });
+
+    expect(players.get(0)?.label).toBe("YOU");
+    expect(players.get(0)?.label).not.toBe("AI NORTH");
+  });
+
+  it("keeps seat NORTH independent from agent type", () => {
+    const allAiState: FilteredGameState = {
+      ...engineState,
+      gameMode: "ALL_AI",
+      players: engineState.players.map((player) => ({
+        ...player,
+        agentType: "AI",
+        displayName: player.index === 0 ? "AI NORTH" : player.displayName,
+        isHuman: false,
+      })),
+    };
+
+    expect(engineState.players[0].seat).toBe("NORTH");
+    expect(engineState.players[0].agentType).toBe("HUMAN");
+    expect(buildSpellTablePlayers({
+      mode: "engine-linked",
+      viewerState,
+      enginePlayers: allAiState.players,
+    }).get(0)?.label).toBe("AI NORTH");
   });
 
   it("does not let viewerState overwrite engine zones", () => {
@@ -125,6 +193,22 @@ describe("engine-linked session sync", () => {
   it("requires pending decisions to match the displayed state version", () => {
     expect(isPendingDecisionForState(matchingPending, engineState)).toBe(true);
     expect(isPendingDecisionForState({ ...matchingPending, stateVersion: 6 }, engineState)).toBe(false);
+  });
+
+  it("shows a P0 mulligan decision to YOU in human mode", () => {
+    const mulliganPending: PendingDecision = {
+      ...matchingPending,
+      decisionType: "mulligan",
+      activePlayer: 0,
+      context: { type: "mulligan", hand: ["Graven Cairns"], mulliganCount: 0 },
+    };
+
+    expect(isPendingDecisionOwnedByHuman(mulliganPending, engineState)).toBe(true);
+  });
+
+  it("hides human pending decisions for AI players and ALL_AI sessions", () => {
+    expect(isPendingDecisionOwnedByHuman({ ...matchingPending, activePlayer: 1 }, engineState)).toBe(false);
+    expect(isPendingDecisionOwnedByHuman(matchingPending, { ...engineState, gameMode: "ALL_AI" })).toBe(false);
   });
 
   it("requires available action cards to exist in the displayed hand", () => {

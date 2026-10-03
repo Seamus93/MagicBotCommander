@@ -29,10 +29,16 @@ function buildBattlefieldCards(player: FilteredPlayerState) {
 export default function OpponentBoard({ player, compact = false }: OpponentBoardProps) {
   const battlefieldCards = buildBattlefieldCards(player);
   const hand = player.hand ?? [];
+  const isConceded = player.isConceded || player.life <= 0;
 
   if (compact) {
     return (
-      <div className="rounded border border-gray-600 bg-gray-800 p-2 text-xs text-white">
+      <div className={`relative rounded border border-gray-600 bg-gray-800 p-2 text-xs text-white ${isConceded ? "opacity-70" : ""}`}>
+        {isConceded && (
+          <div className="absolute right-2 top-2 rounded border border-red-400/40 bg-red-950/70 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.14em] text-red-100">
+            Conceded
+          </div>
+        )}
         <div className="mb-2 flex items-center justify-between">
           <div className="font-bold text-yellow-400">
             P{player.index} {player.position}
@@ -65,7 +71,12 @@ export default function OpponentBoard({ player, compact = false }: OpponentBoard
   }
 
   return (
-    <div className="w-full rounded border border-gray-600 bg-gray-800 p-2 text-xs text-white">
+    <div className={`relative w-full rounded border border-gray-600 bg-gray-800 p-2 text-xs text-white ${isConceded ? "opacity-70" : ""}`}>
+      {isConceded && (
+        <div className="absolute right-2 top-2 rounded border border-red-400/40 bg-red-950/70 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-red-100">
+          Conceded
+        </div>
+      )}
       <div className="mb-2 flex items-center justify-between">
         <span className="font-bold text-yellow-400">Player {player.index}</span>
         <span className="text-red-400">Life: {player.life}</span>
