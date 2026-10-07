@@ -40,6 +40,25 @@ export function authenticateSeatRecipient(params: {
   }
 
   const seat = seats.find((candidate) => candidate.id === recipient.seatId);
+  const credentialSeatEntry = Array.from(credentials.entries()).find(([, credential]) =>
+    credential.playerId === recipient.playerId && credential.token === recipient.playerToken
+  );
+  if (credentialSeatEntry && (!seat || seat.id !== credentialSeatEntry[0])) {
+    const [seatId, credential] = credentialSeatEntry;
+    const credentialSeat = seats.find((candidate) => candidate.id === seatId);
+    if (!credentialSeat || credentialSeat.controller !== "human") {
+      return { ok: false, code: "SEAT_NOT_HUMAN", message: "Requested seat is not occupied by a human player." };
+    }
+    if (credential.activeConnectionId && credential.activeConnectionId !== connectionId) {
+      return { ok: false, code: "SEAT_ALREADY_CONNECTED", message: "This human seat is already controlled by another connection." };
+    }
+    credential.activeConnectionId = connectionId;
+    return {
+      ok: true,
+      recipient: { role: "player", seatId: credentialSeat.id, playerId: credential.playerId },
+    };
+  }
+
   if (!seat || seat.controller !== "human") {
     return { ok: false, code: "SEAT_NOT_HUMAN", message: "Requested seat is not occupied by a human player." };
   }

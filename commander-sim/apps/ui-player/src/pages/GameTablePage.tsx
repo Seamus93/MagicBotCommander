@@ -395,6 +395,7 @@ export default function GameTablePage() {
     gameState,
     pendingDecision,
     gameLog,
+    aiDecisionTraces,
     isConnected,
     gameOver,
     stateOutOfSyncMessage,
@@ -681,7 +682,7 @@ export default function GameTablePage() {
               )}
               {/* Game log */}
               <div className="flex-1 min-h-0">
-                <GameLog messages={gameLog} />
+                <GameLog messages={gameLog} aiDecisionTraces={aiDecisionTraces} />
               </div>
             </div>
           }

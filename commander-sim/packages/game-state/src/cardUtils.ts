@@ -1,10 +1,12 @@
 import type {
   CardName,
+  CardFaceMetadata,
   DeckCardMetadata,
   ManaCost,
   ManaPaymentPlan,
   ManaPaymentSource,
   ManaPool,
+  ManaSourceTrace,
   PermanentState,
   SimAction,
   SimGameState,
@@ -98,20 +100,68 @@ export function getCardMetadata(
   return undefined;
 }
 
+function cardFacesFromMetadata(metadata?: DeckCardMetadata): CardFaceMetadata[] {
+  if (!metadata) return [];
+  const explicitFaces = metadata.faces?.length
+    ? metadata.faces
+    : [metadata.spellFace, metadata.landFace].filter(Boolean) as CardFaceMetadata[];
+  if (explicitFaces.length) return explicitFaces;
+
+  const names = metadata.name.split(/\s*\/\/\s*|\s*\/\s*/).map((name) => name.trim()).filter(Boolean);
+  const typeLines = (metadata.typeLine ?? "").split(/\s*\/\/\s*/).map((typeLine) => typeLine.trim());
+  if (names.length < 2 || names.length !== typeLines.length) return [];
+
+  return names.map((name, index) => {
+    const typeLine = typeLines[index];
+    const normalizedTypeLine = typeLine.toLowerCase();
+    const isLand = normalizedTypeLine.includes("land");
+    return {
+      name,
+      typeLine,
+      isLand,
+      isCreature: normalizedTypeLine.includes("creature"),
+      isArtifact: normalizedTypeLine.includes("artifact"),
+      isInstant: normalizedTypeLine.includes("instant"),
+      isSorcery: normalizedTypeLine.includes("sorcery"),
+      isEnchantment: normalizedTypeLine.includes("enchantment"),
+      isPlaneswalker: normalizedTypeLine.includes("planeswalker"),
+      isPermanent: PERMANENT_CARD_TYPES.some((type) => normalizedTypeLine.includes(type)),
+      manaCost: isLand ? undefined : metadata.manaCost,
+      manaValue: isLand ? 0 : metadata.manaValue,
+      power: isLand ? undefined : metadata.power,
+      toughness: isLand ? undefined : metadata.toughness,
+      oracleText: metadata.oracleText,
+    };
+  });
+}
+
 export function getLandFaceMetadata(metadata?: DeckCardMetadata) {
-  return metadata?.landFace;
+  return cardFacesFromMetadata(metadata).find((face) =>
+    face.isLand === true || face.typeLine?.toLowerCase().includes("land")
+  ) ?? metadata?.landFace;
 }
 
 export function getSpellFaceMetadata(metadata?: DeckCardMetadata) {
-  return metadata?.spellFace;
+  return cardFacesFromMetadata(metadata).find((face) =>
+    face.isLand !== true && !face.typeLine?.toLowerCase().includes("land")
+  ) ?? metadata?.spellFace;
+}
+
+export function getCardFaceImageSide(metadata: DeckCardMetadata | undefined, selectedFaceId?: string) {
+  if (!selectedFaceId) return undefined;
+  const normalized = normalizeCardName(selectedFaceId);
+  const faceIndex = cardFacesFromMetadata(metadata).findIndex((face) => normalizeCardName(face.name) === normalized);
+  if (faceIndex === 0) return "front" as const;
+  if (faceIndex === 1) return "back" as const;
+  return undefined;
 }
 
 export function getLandPermanentName(card: CardName, metadata?: DeckCardMetadata) {
-  return metadata?.landFace?.name ?? metadata?.name ?? card;
+  return getLandFaceMetadata(metadata)?.name ?? metadata?.name ?? card;
 }
 
 export function getSpellPermanentName(card: CardName, metadata?: DeckCardMetadata) {
-  return metadata?.spellFace?.name ?? metadata?.name ?? card;
+  return getSpellFaceMetadata(metadata)?.name ?? metadata?.name ?? card;
 }
 
 export function activeFaceMetadata(
@@ -120,12 +170,51 @@ export function activeFaceMetadata(
 ) {
   if (!metadata || !face) return metadata;
   const normalized = normalizeCardName(face);
-  return metadata.faces?.find((candidate) => normalizeCardName(candidate.name) === normalized) ??
-    (metadata.landFace && normalizeCardName(metadata.landFace.name) === normalized
-      ? metadata.landFace
-      : metadata.spellFace && normalizeCardName(metadata.spellFace.name) === normalized
-        ? metadata.spellFace
-        : metadata);
+  return cardFacesFromMetadata(metadata).find((candidate) => normalizeCardName(candidate.name) === normalized) ?? metadata;
+}
+
+export function resolveSelectedFace(
+  metadata: DeckCardMetadata | undefined,
+  selectedFaceId?: string
+) {
+  if (!metadata || !selectedFaceId) return undefined;
+  const normalized = normalizeCardName(selectedFaceId);
+  return cardFacesFromMetadata(metadata).find((candidate) => normalizeCardName(candidate.name) === normalized);
+}
+
+export function selectedFaceIdForAction(action: Pick<SimAction, "type"> & { face?: string; selectedFaceId?: string }) {
+  return action.selectedFaceId ?? action.face;
+}
+
+export function metadataForSelectedFace(
+  metadata: DeckCardMetadata | undefined,
+  selectedFaceId?: string
+): DeckCardMetadata | undefined {
+  const face = resolveSelectedFace(metadata, selectedFaceId);
+  if (!metadata) return undefined;
+  if (!face) return selectedFaceId && cardFacesFromMetadata(metadata).length ? undefined : metadata;
+  return {
+    ...metadata,
+    name: face.name,
+    typeLine: face.typeLine,
+    manaCost: face.manaCost,
+    oracleText: face.oracleText,
+    manaValue: face.manaValue,
+    power: face.power,
+    toughness: face.toughness,
+    isLand: face.isLand,
+    isCreature: face.isCreature,
+    isArtifact: face.isArtifact,
+    isInstant: face.isInstant,
+    isSorcery: face.isSorcery,
+    isPermanent: face.isPermanent,
+    producesMana: face.producesMana,
+    manaProduction: face.manaProduction,
+    entersTapped: face.entersTapped,
+    keywords: face.keywords,
+    colors: face.colors,
+    colorIdentity: face.colorIdentity,
+  };
 }
 
 export function isLandCard(
@@ -134,7 +223,13 @@ export function isLandCard(
   card: CardName
 ) {
   const metadata = getCardMetadata(state, player, card);
-  if (metadata?.landFace) return true;
+  const activeFace = resolveSelectedFace(metadata, card);
+  if (activeFace) {
+    if (activeFace.typeLine?.toLowerCase().includes("land")) return true;
+    if (activeFace.isLand !== undefined) return activeFace.isLand;
+    if (activeFace.typeLine) return false;
+  }
+  if (getLandFaceMetadata(metadata)) return true;
   if (metadata?.isLand !== undefined) return metadata.isLand;
   if (metadata?.typeLine?.toLowerCase().includes("land")) return true;
   const normalized = normalizeCardName(card);
@@ -159,7 +254,7 @@ export function isCastableSpellCard(
   card: CardName
 ) {
   const metadata = getCardMetadata(state, player, card);
-  if (metadata?.spellFace) return true;
+  if (getSpellFaceMetadata(metadata)) return true;
   return !isLandCard(state, player, card);
 }
 
@@ -177,8 +272,8 @@ export function isSorceryLike(metadata?: DeckCardMetadata, face?: string) {
 
 export function hasFlash(metadata?: DeckCardMetadata, face?: string) {
   const active = activeFaceMetadata(metadata, face);
-  const text = `${active?.oracleText ?? ""}\n${metadata?.oracleText ?? ""}`;
-  const keywords = new Set([...(active?.keywords ?? []), ...(metadata?.faces?.flatMap((item) => item.keywords ?? []) ?? [])]);
+  const text = active?.oracleText ?? "";
+  const keywords = new Set(active?.keywords ?? []);
   return keywords.has("Flash") || /\bflash\b/i.test(text);
 }
 
@@ -242,10 +337,19 @@ export interface LandEntryTappedEvaluation {
   enteredTapped: boolean;
   entryReason: string;
   otherLandCount?: number;
+  optionalCost?: {
+    type: "PAY_LIFE";
+    amount: number;
+    paid: boolean;
+  };
   conditionRecognized?: boolean;
   conditionEvaluable?: boolean;
   unsupported?: boolean;
 }
+
+export type LandEntryChoice =
+  | { type: "PAY_LIFE"; amount: number }
+  | { type: "DECLINE" };
 
 function countControlledPermanentsByType(
   state: SimGameState,
@@ -305,18 +409,74 @@ function controlsLandWithSubtype(
   );
 }
 
+function parseOptionalLifeEntryCost(text?: string) {
+  if (!text) return null;
+  const sentences = text
+    .split(/\n/)
+    .flatMap((line) => line.split(/(?<=\.)\s+/))
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const combined = sentences.join(" ");
+  const match = combined.match(
+    /\bas\s+.+?\s+enters(?: the battlefield)?,?\s+you may pay (one|two|three|four|five|six|seven|eight|nine|ten|\d+) life\.?\s+if you don'?t,?\s+it enters(?: the battlefield)? tapped\b/i
+  );
+  if (!match) return null;
+  const amount = parseNumberWord(match[1]);
+  if (amount === undefined) return null;
+  return { amount };
+}
+
+export function landEntryChoices(
+  metadata?: DeckCardMetadata,
+  lifeTotal = Number.POSITIVE_INFINITY,
+  selectedFaceId?: string
+): LandEntryChoice[] {
+  const face = selectedFaceId
+    ? resolveSelectedFace(metadata, selectedFaceId)
+    : getLandFaceMetadata(metadata);
+  const optionalCost = parseOptionalLifeEntryCost(face?.oracleText ?? metadata?.oracleText);
+  if (!optionalCost) return [];
+  const choices: LandEntryChoice[] = [{ type: "DECLINE" }];
+  if (lifeTotal > optionalCost.amount) {
+    choices.unshift({ type: "PAY_LIFE", amount: optionalCost.amount });
+  }
+  return choices;
+}
+
 export function evaluateLandEntryTapped(
   state: SimGameState,
   player: number,
   _card: CardName,
-  metadata?: DeckCardMetadata
+  metadata?: DeckCardMetadata,
+  choice?: LandEntryChoice,
+  selectedFaceId?: string
 ): LandEntryTappedEvaluation {
-  const texts = [
-    metadata?.landFace?.oracleText,
-    metadata?.oracleText,
-  ].filter((text): text is string => Boolean(text));
+  const face = selectedFaceId
+    ? resolveSelectedFace(metadata, selectedFaceId)
+    : getLandFaceMetadata(metadata);
+  const text = face?.oracleText ?? metadata?.oracleText;
+  const texts = text ? [text] : [];
 
   for (const text of texts) {
+    const optionalCost = parseOptionalLifeEntryCost(text);
+    if (optionalCost) {
+      const canPay = (state.lifeTotals[player] ?? 0) > optionalCost.amount;
+      const paid = canPay && choice?.type === "PAY_LIFE" && choice.amount === optionalCost.amount;
+      return {
+        enteredTapped: !paid,
+        entryReason: paid
+          ? `paid ${optionalCost.amount} life`
+          : `declined to pay ${optionalCost.amount} life`,
+        optionalCost: {
+          type: "PAY_LIFE",
+          amount: optionalCost.amount,
+          paid,
+        },
+        conditionRecognized: true,
+        conditionEvaluable: true,
+      };
+    }
+
     const subtypeCondition = parseLandSubtypeEntryCondition(text);
     if (subtypeCondition) {
       const satisfied = controlsLandWithSubtype(state, player, subtypeCondition.subtypes);
@@ -375,9 +535,7 @@ export function evaluateLandEntryTapped(
 
 export function landEntersTapped(metadata?: DeckCardMetadata) {
   return (
-    metadata?.landFace?.entersTapped ??
     metadata?.entersTapped ??
-    detectUnconditionalEntersTapped(metadata?.landFace?.oracleText) ??
     detectUnconditionalEntersTapped(metadata?.oracleText) ??
     false
   );
@@ -520,7 +678,7 @@ export function parseManaCost(raw?: string): ManaCost {
 }
 
 export function manaCostFromMetadata(metadata?: DeckCardMetadata, fallbackManaValue = 0): ManaCost {
-  const raw = metadata?.spellFace?.manaCost ?? metadata?.manaCost;
+  const raw = getSpellFaceMetadata(metadata)?.manaCost ?? metadata?.manaCost;
   const parsed = parseManaCost(raw);
   if (raw) return parsed;
   return { ...EMPTY_MANA_COST, generic: Math.max(0, fallbackManaValue) };
@@ -552,9 +710,10 @@ function producedPoolForPermanent(
   const card = permanent.face ?? permanent.cardName;
   const metadata = getCardMetadata(state, playerIndex, permanent.cardName) ??
     getCardMetadata(state, playerIndex, card);
+  const active = metadataForSelectedFace(metadata, card);
   const name = normalizeCardName(card);
-  const oracle = `${metadata?.landFace?.oracleText ?? ""}\n${metadata?.oracleText ?? ""}`;
-  const typeLine = metadata?.landFace?.typeLine ?? metadata?.typeLine ?? "";
+  const oracle = active?.oracleText ?? "";
+  const typeLine = active?.typeLine ?? "";
 
   if (name === "plains" || /\bbasic land\b/i.test(typeLine) && /\bplains\b/i.test(typeLine)) return { ...EMPTY_MANA_POOL, W: 1 };
   if (name === "island" || /\bbasic land\b/i.test(typeLine) && /\bisland\b/i.test(typeLine)) return { ...EMPTY_MANA_POOL, U: 1 };
@@ -566,10 +725,87 @@ function producedPoolForPermanent(
 
   const addMatch = oracle.match(/\{T\}[^:]*:\s*Add ((?:\{[^}]+\})+|one mana|two mana|three mana)/i);
   if (addMatch) return parseProducedMana(addMatch[1]);
-  if (metadata?.producesMana && metadata.manaProduction) {
-    return { ...EMPTY_MANA_POOL, C: metadata.manaProduction };
+  if (active?.producesMana && active.manaProduction) {
+    return { ...EMPTY_MANA_POOL, C: active.manaProduction };
   }
   return null;
+}
+
+function manaPoolSymbols(pool: ManaPool | null): string[] {
+  if (!pool) return [];
+  const symbols: string[] = [];
+  for (const color of ["W", "U", "B", "R", "G", "C"] as Array<keyof ManaPool>) {
+    for (let i = 0; i < pool[color]; i++) symbols.push(color);
+  }
+  return symbols;
+}
+
+export function traceManaSourcesForPlayer(
+  state: SimGameState,
+  playerIndex: number
+): ManaSourceTrace[] {
+  const permanents = state.permanents?.[playerIndex] ?? [];
+  if (permanents.length) {
+    return permanents.map((permanent) => {
+      const activeFace = permanent.face ?? permanent.cardName;
+      const metadata = getCardMetadata(state, playerIndex, permanent.cardName) ??
+        getCardMetadata(state, playerIndex, activeFace);
+      const selectedMetadata = metadataForSelectedFace(metadata, activeFace);
+      const producedMana = producedPoolForPermanent(state, playerIndex, permanent);
+      const recognizedManaAbility = Boolean(producedMana);
+      const usable = !permanent.tapped && recognizedManaAbility;
+      const unusableReason = usable
+        ? undefined
+        : permanent.tapped
+          ? "TAPPED"
+          : !selectedMetadata && metadata?.faces?.length
+            ? "ACTIVE_FACE_NOT_RECOGNIZED"
+            : "NO_RECOGNIZED_MANA_ABILITY";
+      return {
+        physicalCard: permanent.cardName,
+        activeFace,
+        selectedFace: permanent.face,
+        zone: "battlefield",
+        tapped: permanent.tapped,
+        recognizedManaAbility,
+        manaAbilityRecognized: recognizedManaAbility,
+        produces: manaPoolSymbols(producedMana),
+        usable,
+        unusableReason,
+      };
+    });
+  }
+
+  const tapped = { ...(state.tappedPermanents?.[playerIndex] ?? {}) };
+  return (state.battlefields[playerIndex] ?? []).map((card) => {
+    const key = normalizeCardName(card);
+    const tappedCount = tapped[key] ?? 0;
+    const isTapped = tappedCount > 0;
+    if (isTapped) tapped[key] = tappedCount - 1;
+    const permanent: PermanentState = {
+      id: `legacy:${playerIndex}:${key}`,
+      cardName: card,
+      owner: playerIndex,
+      controller: playerIndex,
+      face: card,
+      tapped: isTapped,
+    };
+    const producedMana = producedPoolForPermanent(state, playerIndex, permanent);
+    const recognizedManaAbility = Boolean(producedMana);
+    const usable = !isTapped && recognizedManaAbility;
+    return {
+      physicalCard: card,
+      activeFace: card,
+      selectedFace: card,
+      zone: "battlefield",
+      tapped: isTapped,
+      recognizedManaAbility,
+      manaAbilityRecognized: recognizedManaAbility,
+      produces: manaPoolSymbols(producedMana),
+      usable,
+      unusableReason: usable ? undefined : isTapped ? "TAPPED" : "NO_RECOGNIZED_MANA_ABILITY",
+    };
+  });
 }
 
 function parseProducedMana(raw: string): ManaPool {
@@ -822,7 +1058,7 @@ export function getAvailableInstants(
     .filter((card) => {
       const metadata = getCardMetadata(state, playerIndex, card);
       if (!isInstantCard(state, playerIndex, card, metadata) && !hasFlash(metadata)) return false;
-      const fallback = metadata?.spellFace?.manaValue ?? metadata?.manaValue ?? 0;
+      const fallback = getSpellFaceMetadata(metadata)?.manaValue ?? metadata?.manaValue ?? 0;
       const cost = manaCostFromMetadata(metadata, fallback);
       if (!findManaPaymentPlan(state, playerIndex, cost).legal) return false;
       if (!triggeringEntry) return true;

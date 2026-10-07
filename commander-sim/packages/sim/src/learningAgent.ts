@@ -1,6 +1,7 @@
 import type { CreaturePermanent } from "@rules/combat/types";
 import type {
   AgentDecision,
+  AiActionEvaluationTrace,
   AttackDecision,
   BlockAssignment,
   BlockDecision,
@@ -128,6 +129,7 @@ export type ScoredAction = {
   pattern: string;
   key: string;
   score: number;
+  heuristicScore: number;
   expectedReward: number;
   confidence: number;
   visits: number;
@@ -140,6 +142,7 @@ export class LearningAgent implements SimAgent {
   protected readonly store: PatternStore;
   protected readonly epsilon: number;
   protected readonly history: DecisionTrace[] = [];
+  private lastDecisionScoredActions: ScoredAction[] | undefined;
   protected readonly confidenceK: number;
   // Phase 4 — archetype-aware policy
   protected archetype: string | undefined;
@@ -169,6 +172,7 @@ export class LearningAgent implements SimAgent {
     state: SimGameState,
     availableActions: SimAction[]
   ): AgentDecision | Promise<AgentDecision> {
+    this.lastDecisionScoredActions = undefined;
     if (availableActions.length === 0) {
       return {
         action: { type: "PASS_TURN" },
@@ -198,11 +202,21 @@ export class LearningAgent implements SimAgent {
           expectedReward: 1,
           confidence: 1,
           visits: 0,
+          selection: {
+            selectedBy: "immediate_lethal_rule",
+            selectionReason: immediateLethals[0].gameWinning
+              ? "selected by immediate game-winning lethal rule"
+              : "selected by immediate opponent-elimination rule",
+            selectionValueName: "lethal_priority",
+            selectionCandidates: immediateLethals.map((candidate) => candidate.action),
+            confidenceMeaning: "rule-based certainty that the selected lethal is decisive",
+          },
         },
       };
     }
 
     const scored = this.scoreActions(state, availableActions);
+    this.lastDecisionScoredActions = scored;
     const { choice, explored } = this.pickChoice(scored);
     this.history.push({ pattern: choice.pattern, actionKey: choice.key });
     return {
@@ -214,8 +228,36 @@ export class LearningAgent implements SimAgent {
         expectedReward: choice.expectedReward,
         confidence: explored ? 0 : choice.confidence,
         visits: choice.visits,
+        selection: {
+          selectedBy: explored ? "epsilon_random" : "maximum_composite_score",
+          selectionReason: explored
+            ? "uniform random selection from the scored legal-action candidate set"
+            : `highest composite policy/heuristic score among ${scored.length} scored legal actions`,
+          selectionValueName: explored ? "random_sampling" : "composite_score",
+          selectionValue: explored ? undefined : choice.score,
+          selectionCandidates: scored.map((candidate) => candidate.action),
+          confidenceMeaning: "confidence in the stored action-pattern reward estimate, adjusted for visits and observed variance; not the probability this action is optimal",
+        },
       },
     };
+  }
+
+  traceActionScores(
+    state: SimGameState,
+    availableActions: SimAction[]
+  ): AiActionEvaluationTrace[] {
+    const scored = this.lastDecisionScoredActions ?? this.scoreActions(state, availableActions);
+    this.lastDecisionScoredActions = undefined;
+    return scored.map((entry) => ({
+      action: entry.action,
+      physicalCard: "physicalCard" in entry.action ? entry.action.physicalCard : undefined,
+      selectedFaceId: "selectedFaceId" in entry.action ? entry.action.selectedFaceId : undefined,
+      selectedFaceName: "selectedFaceName" in entry.action ? entry.action.selectedFaceName : undefined,
+      selectedFaceTypeLine: "selectedFaceTypeLine" in entry.action ? entry.action.selectedFaceTypeLine : undefined,
+      dbScore: entry.expectedReward,
+      heuristicScore: entry.heuristicScore,
+      finalScore: entry.score,
+    }));
   }
 
   finalizeEpisode(reward: number) {
@@ -519,6 +561,7 @@ export class LearningAgent implements SimAgent {
         pattern,
         key,
         score,
+        heuristicScore: heuristic,
         expectedReward: policy.expectedReward,
         confidence: policy.confidence,
         visits: policy.visits,

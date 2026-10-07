@@ -10,6 +10,7 @@ import { useViewerControl } from "../hooks/useViewerControl";
 import { useGameSession, type FilteredPlayerState, type PendingDecision } from "../hooks/useGameSession";
 import { publishSharedGameSession } from "../hooks/useSharedGameSession";
 import { sessionModeForEngineSession, type SessionMode } from "../sessionMode";
+import { cardPreviewFace } from "./cardPreviewFace";
 import type { SeatId } from "../../../../packages/game-state/src/session";
 import sleeve from "../assets/sleeve.png";
 import lobbyBgNeutral from "../assets/new-game/backgrounds/bg-neutral.png";
@@ -52,8 +53,10 @@ const MANA_ICONS = {
 } as const;
 type ManaIconKey = keyof typeof MANA_ICONS;
 
-function cardImageUrl(name: string, version: "small" | "normal" | "art_crop" = "normal") {
-  return `https://api.scryfall.com/cards/named?exact=${encodeURIComponent(name)}&format=image&version=${version}`;
+function cardImageUrl(name: string, version: "small" | "normal" | "art_crop" = "normal", face?: "front" | "back") {
+  const params = new URLSearchParams({ exact: name, format: "image", version });
+  if (face) params.set("face", face);
+  return `https://api.scryfall.com/cards/named?${params.toString()}`;
 }
 
 function broadcastViewerRestart() {
@@ -189,6 +192,7 @@ function enginePlayerToQuadrant(p: FilteredPlayerState): QuadrantPlayerData {
     label: p.displayName ?? (p.isHuman ? "YOU" : `AI ${p.seat ?? p.position}`),
     life: p.life,
     commander: p.commander,
+    commandZone: p.commandZone,
     battlefield: p.battlefield,
     battlefieldPermanents: p.battlefieldPermanents,
     creatures: p.creatures,
@@ -1141,6 +1145,9 @@ export default function SpellTablePage() {
   const [showLog, setShowLog] = useState(false);
   const [showSidebar, setShowSidebar] = useState(false);
   const [selectedCardName, setSelectedCardName] = useState<string | null>(null);
+  const [selectedCardImageName, setSelectedCardImageName] = useState<string | null>(null);
+  const [selectedCardImageFace, setSelectedCardImageFace] = useState<"front" | "back" | null>(null);
+  const [showOtherCardFace, setShowOtherCardFace] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(
     () => typeof document !== "undefined" && document.fullscreenElement !== null
   );
@@ -1187,6 +1194,7 @@ export default function SpellTablePage() {
     capabilities,
     pendingDecision,
     gameLog,
+    aiDecisionTraces,
     isConnected,
     gameOver,
     stateOutOfSyncMessage,
@@ -1256,7 +1264,15 @@ export default function SpellTablePage() {
   const currentPhaseGroup = toDisplayPhaseGroup(currentStep);
   const phaseIndex = TURN_STEP_SEQUENCE.indexOf(currentStep);
   const nextLabel = nextStepLabel(currentStep);
-  const seatOrder = [0, 1, 2, 3];
+  const seatOrder = useMemo(() => {
+    const positions = ["NORTH", "EAST", "SOUTH", "WEST"] as const;
+    return positions.map((position, fallbackIndex) => {
+      const player = gameState?.players.find((candidate) =>
+        (candidate.seat ?? candidate.position) === position
+      );
+      return player?.index ?? fallbackIndex;
+    });
+  }, [gameState?.players]);
   const activeSeatLabel =
     gameState?.players.find((player) => player.index === activePlayerIndex)?.displayName ??
     `P${activePlayerIndex}`;
@@ -1542,13 +1558,21 @@ export default function SpellTablePage() {
     });
   };
 
-  const handleCardDoubleClick = (cardName: string) => {
+  const handleCardDoubleClick = (cardName: string, imageName?: string, imageFace?: "front" | "back") => {
+    const previewFace = cardPreviewFace(cardName, imageName, imageFace);
     setSelectedCardName(cardName);
+    setSelectedCardImageName(previewFace.imageName ?? null);
+    setSelectedCardImageFace(previewFace.imageFace ?? null);
+    setShowOtherCardFace(false);
     setShowSidebar(true);
   };
 
-  const handleCardInspect = (cardName: string | null) => {
+  const handleCardInspect = (cardName: string | null, imageName?: string, imageFace?: "front" | "back") => {
+    const previewFace = cardPreviewFace(cardName, imageName, imageFace);
     setSelectedCardName(cardName);
+    setSelectedCardImageName(previewFace.imageName ?? null);
+    setSelectedCardImageFace(previewFace.imageFace ?? null);
+    setShowOtherCardFace(false);
     if (cardName) setShowSidebar(true);
   };
 
@@ -1807,7 +1831,7 @@ export default function SpellTablePage() {
             </button>
           </div>
           <div className="min-h-0 flex-1">
-            <GameLog messages={gameLog} />
+            <GameLog messages={gameLog} aiDecisionTraces={aiDecisionTraces} />
           </div>
         </div>
       )}
@@ -1832,13 +1856,35 @@ export default function SpellTablePage() {
             </div>
             {selectedCardName ? (
               <div className="min-h-0 flex-1 overflow-auto">
-                <div className="mx-auto w-full max-w-[236px]">
+                <div className="relative mx-auto w-full max-w-[236px]">
                   <img
-                    src={cardImageUrl(selectedCardName)}
+                    src={cardImageUrl(
+                      selectedCardImageName ?? selectedCardName,
+                      "normal",
+                      selectedCardImageFace
+                        ? showOtherCardFace
+                          ? selectedCardImageFace === "front" ? "back" : "front"
+                          : selectedCardImageFace
+                        : undefined
+                    )}
                     alt={selectedCardName}
                     className="w-full rounded-[10px] shadow-2xl"
                     loading="lazy"
                   />
+                  {selectedCardImageName && selectedCardImageFace && (
+                    <button
+                      type="button"
+                      aria-label={showOtherCardFace ? "Show played card face" : "Show other card face"}
+                      title={showOtherCardFace ? "Show played face" : "Show other face"}
+                      onClick={() => setShowOtherCardFace((current) => !current)}
+                      className="absolute right-2 top-2 grid size-9 place-items-center rounded-full border border-white/25 bg-black/70 text-white shadow-lg transition hover:bg-black/90 focus:outline-none focus:ring-2 focus:ring-cyan-300"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true" className="size-5 fill-none stroke-current" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M20 7v5h-5M4 17v-5h5" />
+                        <path d="M5.7 9A7 7 0 0 1 18 6.5L20 12M4 12l2 5.5A7 7 0 0 0 18.3 15" />
+                      </svg>
+                    </button>
+                  )}
                 </div>
               </div>
             ) : (

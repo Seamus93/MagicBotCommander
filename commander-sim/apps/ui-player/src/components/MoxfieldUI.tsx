@@ -66,7 +66,7 @@ export function buildMoxfieldDisplayZones(params: {
     graveyard: params.engineHuman.graveyard,
     exile: params.engineHuman.exile,
     library: Array.from({ length: params.engineHuman.libraryCount }, () => ""),
-    commandZone: params.engineHuman.commander ? [params.engineHuman.commander] : [],
+    commandZone: params.engineHuman.commandZone ?? (params.engineHuman.commander ? [params.engineHuman.commander] : []),
   };
 }
 

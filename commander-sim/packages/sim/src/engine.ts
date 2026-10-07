@@ -1,9 +1,15 @@
 import type {
   AttackDecision,
+  AgentDecision,
+  AiActionEvaluationTrace,
+  AiConsideredActionTrace,
+  AiDecisionRejectionReason,
+  AiDecisionTrace,
   BlockAssignment,
   BlockDecision,
   CardName,
   CostDescriptor,
+  DeckInitAudit,
   DeckCardMetadata,
   DecisionMetadata,
   GameEvent,
@@ -21,6 +27,7 @@ import type {
   ManaPaymentPlan,
   SimulationDiagnostics,
   TargetRef,
+  TargetRequirementTrace,
 } from "@game-state/types";
 import { shouldMulligan, chooseBottomCards } from "./mulliganEvaluator.js";
 import type { CreaturePermanent } from "@rules/combat/types";
@@ -53,10 +60,17 @@ import {
   isArtifactCard,
   isPermanentCard,
   isCastableSpellCard,
+  getLandFaceMetadata,
+  getSpellFaceMetadata,
   getLandPermanentName,
   getSpellPermanentName,
   evaluateLandEntryTapped,
+  landEntryChoices,
   activeFaceMetadata,
+  metadataForSelectedFace,
+  resolveSelectedFace,
+  selectedFaceIdForAction,
+  normalizeCardName,
   hasFlash,
   isInstantLike,
   isSorceryLike,
@@ -66,6 +80,7 @@ import {
   reduceGenericManaCost,
   findManaPaymentPlan as findManaPaymentPlanRaw,
   applyManaPaymentPlan,
+  traceManaSourcesForPlayer,
 } from "../../game-state/src/cardUtils.js";
 import {
   handleLandEntered,
@@ -215,6 +230,8 @@ interface DiagnosticContext {
   actionWindowCount: number;
   activateActionWindowTotal: number;
   activateActionWindowCount: number;
+  currentTurn: number;
+  currentTurnActions: number;
   fingerprintCounts: Map<string, number>;
   stackTrace: string[];
   stackStormRecorded: boolean;
@@ -255,6 +272,7 @@ function createDiagnosticContext(): DiagnosticContext {
       responsesGenerated: 0,
       maxStackDepth: 0,
       maxPriorityIterationsPerWindow: 0,
+      maxActionsPerTurn: 0,
       avgActivateActions: 0,
       activateActionWindows: 0,
       maxActivateActions: 0,
@@ -268,6 +286,9 @@ function createDiagnosticContext(): DiagnosticContext {
       timingsMs: {},
       decisionCounters: {},
       decisionSamples: {},
+      recentStateTransitions: [],
+      aiDecisionLogs: [],
+      aiDecisionTraces: [],
       stackStorms: [],
       stackEntryMissingIdentity: 0,
     },
@@ -275,6 +296,8 @@ function createDiagnosticContext(): DiagnosticContext {
     actionWindowCount: 0,
     activateActionWindowTotal: 0,
     activateActionWindowCount: 0,
+    currentTurn: 0,
+    currentTurnActions: 0,
     fingerprintCounts: new Map(),
     stackTrace: [],
     stackStormRecorded: false,
@@ -340,6 +363,15 @@ const cloneState = (state: SimGameState): SimGameState =>
 
 function actionSummary(action?: SimAction | null) {
   if (!action) return "none";
+  if (action.type === "PLAY_LAND") {
+    const face = selectedFaceIdForAction(action);
+    const choice = action.entryChoice
+      ? action.entryChoice.type === "PAY_LIFE"
+        ? ` payLife=${action.entryChoice.amount}`
+        : " declineEntryCost"
+      : "";
+    return `PLAY_LAND ${action.card}${face ? ` face=${face}` : ""}${choice}`;
+  }
   if (action.type === "CAST_SPELL") {
     const targets = action.targets?.map((target) => `${target.type}:${target.id}`).join(",") ??
       action.targetId ?? action.targetPlayer ?? action.targetGraveyardCard ?? action.targetStackId ?? "";
@@ -354,6 +386,28 @@ function actionSummary(action?: SimAction | null) {
   }
   if ("card" in action) return `${action.type} ${action.card}`;
   return action.type;
+}
+
+function faceTraceFields(
+  state: SimGameState,
+  player: number,
+  card: CardName,
+  selectedFaceId?: string
+) {
+  const metadata = getCardMetadata(state, player, card);
+  const selectedFace = resolveSelectedFace(metadata, selectedFaceId);
+  return {
+    physicalCard: metadata?.name ?? card,
+    selectedFaceId,
+    selectedFaceName: selectedFace?.name ?? selectedFaceId,
+    selectedFaceTypeLine: selectedFace?.typeLine,
+  };
+}
+
+function legalActionSummary(actions: SimAction[], limit = 12) {
+  const summary = actions.slice(0, limit).map(actionSummary);
+  if (actions.length > limit) summary.push(`...+${actions.length - limit} more`);
+  return summary;
 }
 
 function compactFingerprint(
@@ -374,12 +428,98 @@ function compactFingerprint(
   ].join("|");
 }
 
+function canonicalStateFingerprint(state: SimGameState, priorityPlayer?: number) {
+  return compactFingerprint(state, { priorityPlayer });
+}
+
 function recordRecentAction(state: SimGameState, action: SimAction, prefix = "") {
   const diagnostics = activeDiagnostics;
   if (!diagnostics) return;
   const line = `${prefix}T${state.turn} ${state.phaseStep || state.phase} P${state.playerIndex} ${actionSummary(action)} stack=${state.stack.length}`;
   diagnostics.data.recentActions.push(line);
   if (diagnostics.data.recentActions.length > 30) diagnostics.data.recentActions.shift();
+}
+
+function recordStateTransition(before: string, after: string, action: SimAction) {
+  const diagnostics = activeDiagnostics;
+  if (!diagnostics) return;
+  diagnostics.data.recentStateTransitions ??= [];
+  diagnostics.data.recentStateTransitions.push(`${actionSummary(action)} :: ${before} -> ${after}`);
+  if (diagnostics.data.recentStateTransitions.length > 10) {
+    diagnostics.data.recentStateTransitions.shift();
+  }
+}
+
+function telemetryDelta(
+  before: ReturnType<typeof decisionTelemetrySnapshot>,
+  after: ReturnType<typeof decisionTelemetrySnapshot>
+) {
+  const timingDelta = (predicate: (key: string) => boolean) =>
+    Object.entries(after.timingsMs)
+      .filter(([key]) => predicate(key))
+      .reduce((sum, [key, value]) => sum + value - (before.timingsMs[key] ?? 0), 0);
+  const sampleDelta = (name: string) =>
+    Math.max(0, (after.samples[name]?.length ?? 0) - (before.samples[name]?.length ?? 0));
+  const sampleValueDelta = (name: string) => {
+    const previousLength = before.samples[name]?.length ?? 0;
+    return (after.samples[name] ?? [])
+      .slice(previousLength)
+      .reduce((sum, value) => sum + value, 0);
+  };
+  return {
+    dbLookupMs: Math.max(0, timingDelta((key) => key.includes("lookup"))),
+    candidatesScanned: sampleValueDelta("fuzzyCandidates"),
+    candidatesReturned: sampleValueDelta("fuzzyCappedCandidates"),
+    fuzzyLookups: sampleDelta("fuzzyCandidates"),
+  };
+}
+
+function recordDecisionLog(options: {
+  state: SimGameState;
+  player: number;
+  availableActions: number;
+  action: SimAction;
+  beforeDecisionTelemetry: ReturnType<typeof decisionTelemetrySnapshot>;
+  decisionElapsedMs: number;
+  rulesEngineMs: number;
+  beforeCanonicalState: string;
+}) {
+  const diagnostics = activeDiagnostics;
+  if (!diagnostics) return;
+  const afterDecisionTelemetry = decisionTelemetrySnapshot();
+  const delta = telemetryDelta(options.beforeDecisionTelemetry, afterDecisionTelemetry);
+  const afterCanonicalState = canonicalStateFingerprint(options.state);
+  const stateChanged = options.beforeCanonicalState !== afterCanonicalState;
+  recordStateTransition(options.beforeCanonicalState, afterCanonicalState, options.action);
+  diagnostics.data.aiDecisionLogs ??= [];
+  diagnostics.data.aiDecisionLogs.push({
+    player: options.player,
+    turn: options.state.turn,
+    phase: options.state.phaseStep || options.state.phase,
+    legalActions: options.availableActions,
+    dbRetrievalMs: delta.dbLookupMs,
+    policyInferenceMs: Math.max(0, options.decisionElapsedMs - delta.dbLookupMs),
+    rulesEngineMs: options.rulesEngineMs,
+    totalDecisionMs: options.decisionElapsedMs + options.rulesEngineMs,
+    dbCandidatesScanned: delta.candidatesScanned,
+    dbCandidatesReturned: delta.candidatesReturned,
+    stateChanged,
+    action: actionSummary(options.action),
+  });
+  if (diagnostics.data.aiDecisionLogs.length > 500) {
+    diagnostics.data.aiDecisionLogs.shift();
+  }
+  const threshold = envNumber("AI_PERF_LOG_THRESHOLD_MS", 50);
+  if (diagnostics.debugEpisode || options.decisionElapsedMs + options.rulesEngineMs >= threshold) {
+    const latest = diagnostics.data.aiDecisionLogs[diagnostics.data.aiDecisionLogs.length - 1];
+    console.log(
+      `[AI DECISION] player=P${latest.player} turn=${latest.turn} phase=${latest.phase} legal_actions=${latest.legalActions} ` +
+      `db_retrieval_ms=${latest.dbRetrievalMs.toFixed(1)} policy_inference_ms=${latest.policyInferenceMs.toFixed(1)} ` +
+      `rules_engine_ms=${latest.rulesEngineMs.toFixed(1)} total_ms=${latest.totalDecisionMs.toFixed(1)} ` +
+      `db_candidates_scanned=${latest.dbCandidatesScanned} db_candidates_returned=${latest.dbCandidatesReturned} ` +
+      `state_changed=${latest.stateChanged} action=${latest.action}`
+    );
+  }
 }
 
 function diagnosticDump(state: SimGameState, reason: string) {
@@ -391,15 +531,57 @@ function diagnosticDump(state: SimGameState, reason: string) {
     .map(([key, value]) => `${key}=${value.toFixed(1)}ms`)
     .join(" ");
   const currentOperation = currentDecisionOperation();
+  const lastWindow = data?.lastActionWindow;
+  const episodePerf = data?.episodePerf;
+  const decisions = data?.aiDecisionLogs ?? [];
+  const totalDecisionMs = decisions.reduce((sum, decision) => sum + decision.totalDecisionMs, 0);
+  const totalRulesMs = decisions.reduce((sum, decision) => sum + decision.rulesEngineMs, 0);
+  const totalDbMs = decisions.reduce((sum, decision) => sum + decision.dbRetrievalMs, 0);
   return [
-    `[watchdog] ${reason}`,
+    reason === "STALL_LOOP" ? `[STALL] ${reason}` : `[watchdog] ${reason}`,
     `state ${compactFingerprint(state)}`,
+    `turn=${state.turn} phase=${state.phaseStep || state.phase} active=P${state.playerIndex} sameStateRepeats=${data?.sameStateRepetitionCount ?? data?.lastFingerprintRepeats ?? 0}`,
+    lastWindow
+      ? `lastLegalActions player=P${lastWindow.player} total=${lastWindow.total} stack=${lastWindow.stackDepth} actions=${JSON.stringify(lastWindow.legalActions)}`
+      : "lastLegalActions none",
     `currentOperation=${currentOperation?.name ?? "none"} elapsedOperationMs=${currentOperation?.elapsedMs.toFixed(1) ?? "0.0"}`,
     `actions=${data?.actionsApplied ?? 0} stackPushes=${data?.stackPushes ?? 0} stackResolutions=${data?.stackResolutions ?? 0} priorityPasses=${data?.priorityPasses ?? 0}`,
-    `maxActions=${data?.maxAvailableActions ?? 0} maxStack=${data?.maxStackDepth ?? 0} maxPriorityIterations=${data?.maxPriorityIterationsPerWindow ?? 0}`,
+    `maxActions=${data?.maxAvailableActions ?? 0} maxActionsPerTurn=${data?.maxActionsPerTurn ?? 0} maxStack=${data?.maxStackDepth ?? 0} maxPriorityIterations=${data?.maxPriorityIterationsPerWindow ?? 0}`,
+    episodePerf
+      ? `[EPISODE PERF] game_ms=${episodePerf.gameMs.toFixed(1)} ai_ms=${episodePerf.aiMs.toFixed(1)} db_ms=${episodePerf.dbMs.toFixed(1)} engine_ms=${episodePerf.engineMs.toFixed(1)} actions=${episodePerf.actions} turns=${episodePerf.turns}`
+      : "[EPISODE PERF] unavailable",
+    `[EPISODE TOTALS] total_ai_decision_ms=${totalDecisionMs.toFixed(1)} total_db_retrieval_ms=${totalDbMs.toFixed(1)} total_engine_ms=${totalRulesMs.toFixed(1)} decisions=${decisions.length} actions=${data?.actionsApplied ?? 0} priority_passes=${data?.priorityPasses ?? 0} same_state_repetitions=${data?.sameStateRepetitionCount ?? 0}`,
     `timings ${topTimings || "none"}`,
+    `lastDecisions:\n${decisions.slice(-10).map((decision) =>
+      `T${decision.turn} ${decision.phase} P${decision.player} legal=${decision.legalActions} db=${decision.dbRetrievalMs.toFixed(1)}ms policy=${decision.policyInferenceMs.toFixed(1)}ms rules=${decision.rulesEngineMs.toFixed(1)}ms total=${decision.totalDecisionMs.toFixed(1)}ms scanned=${decision.dbCandidatesScanned} returned=${decision.dbCandidatesReturned} changed=${decision.stateChanged} action=${decision.action}`
+    ).join("\n")}`,
+    `lastStateTransitions:\n${(data?.recentStateTransitions ?? []).slice(-10).join("\n")}`,
     `recent:\n${(data?.recentActions ?? []).slice(-30).join("\n")}`,
   ].join("\n");
+}
+
+function updateEpisodePerf(state: SimGameState) {
+  const diagnostics = activeDiagnostics;
+  if (!diagnostics) return;
+  const timings = diagnostics.data.timingsMs;
+  const decisionTelemetry = decisionTelemetrySnapshot();
+  const decisionTimings = decisionTelemetry.timingsMs;
+  const aiMs =
+    (timings["AI chooseAction"] ?? 0) +
+    (timings["AI chooseAttackers"] ?? 0) +
+    (timings["AI chooseBlockers"] ?? 0);
+  const dbMs = Object.entries(decisionTimings)
+    .filter(([key]) => key.includes("lookup"))
+    .reduce((sum, [, value]) => sum + value, 0);
+  const gameMs = performance.now() - diagnostics.startedAt - Math.max(diagnostics.externalPauseMs, decisionTelemetry.externalPauseMs);
+  diagnostics.data.episodePerf = {
+    gameMs,
+    aiMs,
+    dbMs,
+    engineMs: Math.max(0, gameMs - aiMs),
+    actions: diagnostics.data.actionsApplied,
+    turns: state.turn,
+  };
 }
 
 function attachDecisionTelemetry(diagnostics: SimulationDiagnostics) {
@@ -421,20 +603,21 @@ function attachDecisionTelemetry(diagnostics: SimulationDiagnostics) {
 function abortEpisode(state: SimGameState, reason: string): never {
   const diagnostics = activeDiagnostics;
   if (diagnostics) {
+    updateEpisodePerf(state);
     diagnostics.data.aborted = true;
     diagnostics.data.abortReason = reason;
     diagnostics.data.abortDump = diagnosticDump(state, reason);
     if (reason === "MAX_EPISODE_MS") diagnostics.data.timeLimitAborts++;
     if (reason === "MAX_ACTIONS_PER_EPISODE") diagnostics.data.actionLimitAborts++;
     if (reason === "MAX_STACK_RESOLUTIONS") diagnostics.data.stackResolutionAborts++;
-    if (reason === "LOOP_DETECTED") diagnostics.data.repeatedStateAborts++;
+    if (reason === "STALL_LOOP") diagnostics.data.repeatedStateAborts++;
     if (reason === "MAX_PRIORITY_ITERATIONS") diagnostics.data.priorityIterationAborts++;
     attachDecisionTelemetry(diagnostics.data);
   }
   throw new EpisodeAbort(reason, diagnostics?.data);
 }
 
-function checkEpisodeWatchdog(state: SimGameState, action?: SimAction | null, priorityPlayer?: number) {
+function checkEpisodeWatchdog(state: SimGameState, _action?: SimAction | null, priorityPlayer?: number) {
   const diagnostics = activeDiagnostics;
   if (!diagnostics) return;
   const now = performance.now();
@@ -456,11 +639,13 @@ function checkEpisodeWatchdog(state: SimGameState, action?: SimAction | null, pr
   if (diagnostics.data.actionsApplied > diagnostics.limits.maxActionsPerEpisode) {
     abortEpisode(state, "MAX_ACTIONS_PER_EPISODE");
   }
-  const fingerprint = compactFingerprint(state, { priorityPlayer, action });
+  const fingerprint = canonicalStateFingerprint(state, priorityPlayer);
   const count = (diagnostics.fingerprintCounts.get(fingerprint) ?? 0) + 1;
   diagnostics.fingerprintCounts.set(fingerprint, count);
+  diagnostics.data.lastFingerprintRepeats = count;
+  diagnostics.data.sameStateRepetitionCount = count;
   if (count > diagnostics.limits.maxIdenticalStateRepeats) {
-    abortEpisode(state, "LOOP_DETECTED");
+    abortEpisode(state, "STALL_LOOP");
   }
 }
 
@@ -477,6 +662,14 @@ function recordActionWindow(state: SimGameState, player: number, actions: SimAct
   diagnostics.data.avgAvailableActions = diagnostics.actionWindowTotal / Math.max(1, diagnostics.actionWindowCount);
   diagnostics.data.actionWindows = diagnostics.actionWindowCount;
   diagnostics.data.maxAvailableActions = Math.max(diagnostics.data.maxAvailableActions, actions.length);
+  diagnostics.data.lastActionWindow = {
+    turn: state.turn,
+    phase: state.phaseStep || state.phase,
+    player,
+    legalActions: legalActionSummary(actions),
+    total: actions.length,
+    stackDepth: state.stack.length,
+  };
   diagnostics.activateActionWindowTotal += activate;
   diagnostics.activateActionWindowCount += 1;
   diagnostics.data.avgActivateActions = diagnostics.activateActionWindowTotal / Math.max(1, diagnostics.activateActionWindowCount);
@@ -715,7 +908,8 @@ function queueAllPermanentTriggersForEvent(
     for (const permanent of state.permanents![controller] ?? []) {
       const metadata = getCardMetadata(state, controller, permanent.cardName) ??
         getCardMetadata(state, controller, permanent.face ?? permanent.cardName);
-      if (!metadata) continue;
+      const permanentMetadata = metadataForSelectedFace(metadata, permanent.face);
+      if (!permanentMetadata) continue;
       queueOracleTriggersForEvent(
         state,
         {
@@ -723,7 +917,7 @@ function queueAllPermanentTriggersForEvent(
           controller,
         },
         log,
-        metadata,
+        permanentMetadata,
         permanent.face ?? permanent.cardName,
         permanent,
         queuedForEvent
@@ -885,6 +1079,7 @@ export async function simulateGame(
     options.startingPlayerIndex ?? 0
   );
   const diagnostics = createDiagnosticContext();
+  diagnostics.data.deckInitAudits = state.deckInitAudits ?? [];
   activeDiagnostics = diagnostics;
   const history: SimulationResult["history"] = [];
   resetDecisionTimings();
@@ -902,9 +1097,17 @@ export async function simulateGame(
   const actionDelayMs = options.actionDelayMs ?? 0;
   const waitMs = (ms: number) =>
     ms > 0 ? new Promise<void>((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
-  const yieldToIO = () => waitMs(turnDelayMs);
-  const pauseForPhase = () => waitMs(phaseDelayMs);
-  const pauseForAction = () => waitMs(actionDelayMs);
+  const trackedWaitMs = async (name: string, ms: number) => {
+    if (ms <= 0) return;
+    const startedAt = performance.now();
+    await waitMs(ms);
+    const elapsed = performance.now() - startedAt;
+    diagnostics.externalPauseMs += elapsed;
+    diagnostics.data.timingsMs[name] = (diagnostics.data.timingsMs[name] ?? 0) + elapsed;
+  };
+  const yieldToIO = () => trackedWaitMs("viewer turn delay", turnDelayMs);
+  const pauseForPhase = () => trackedWaitMs("viewer phase delay", phaseDelayMs);
+  const pauseForAction = () => trackedWaitMs("viewer action delay", actionDelayMs);
   const applyPendingConcessions = () => {
     const concededPlayers = options.concededPlayers;
     if (!concededPlayers?.size) return null;
@@ -922,6 +1125,12 @@ export async function simulateGame(
   // Emit game_start synchronously (before any await) so getFilteredState() returns
   // non-null immediately when the first WebSocket client connects.
   options.onStateChange?.(cloneState(state), { type: "game_start" });
+
+  if (process.env.DECK_INIT_AUDIT === "true" || process.env.DEBUG_EPISODE === "true") {
+    for (const audit of diagnostics.data.deckInitAudits ?? []) {
+      log(`[DECK_INIT_AUDIT] ${JSON.stringify(audit)}`);
+    }
+  }
 
   if (ENABLE_MULLIGAN) {
     for (let p = 0; p < agents.length; p++) {
@@ -989,6 +1198,8 @@ export async function simulateGame(
 
   for (let turn = 1; turn <= maxTurns && winnerIndex === null; turn++) {
     state.turn = turn;
+    diagnostics.currentTurn = turn;
+    diagnostics.currentTurnActions = 0;
     checkEpisodeWatchdog(state);
     for (let seatOffset = 0; seatOffset < agents.length && winnerIndex === null; seatOffset++) {
       const p = (startingPlayerIndex + seatOffset) % agents.length;
@@ -998,6 +1209,7 @@ export async function simulateGame(
       winnerIndex = applyPendingConcessions();
       if (winnerIndex !== null) break;
       if (state.lifeTotals[p] <= 0) continue;
+      log(`[Turn] T${turn} P${p}`);
       emitRulesEvent(state, { type: "TURN_STARTED", player: p, controller: p });
       options.onStateChange?.(cloneState(state), { type: "turn_start", turn, player: p });
       const turnContext: TurnContext = {
@@ -1073,6 +1285,7 @@ export async function simulateGame(
           rules,
           snapshotEntries,
           options.onStateChange,
+          options.onAiDecisionTrace,
           enableStack,
           pauseForAction
         );
@@ -1145,6 +1358,7 @@ export async function simulateGame(
   }
 
   attachDecisionTelemetry(diagnostics.data);
+  updateEpisodePerf(state);
 
   return {
     winnerIndex,
@@ -1202,6 +1416,7 @@ async function executeCombatPhase(
     player: attackerIndex,
     attackers: attackerIds,
   };
+  log(`[Action] DECLARE_ATTACKERS ${attackerIds.length ? attackerIds.join(", ") : "none"}`);
   history.push({
     playerIndex: attackerIndex,
     agentId: agents[attackerIndex].id,
@@ -1281,6 +1496,7 @@ async function executeCombatPhase(
       player: defenderIndex,
       assignments: normalizedAssignments,
     };
+    log(`[Action] DECLARE_BLOCKERS ${normalizedAssignments.length ? `${normalizedAssignments.length} assignment(s)` : "none"}`);
     history.push({
       playerIndex: defenderIndex,
       agentId: agents[defenderIndex].id,
@@ -1396,6 +1612,14 @@ async function passPriority(
     );
     if (activeDiagnostics) {
       activeDiagnostics.data.responsesGenerated += instants.length;
+      activeDiagnostics.data.lastActionWindow = {
+        turn: state.turn,
+        phase: state.phaseStep || state.phase,
+        player: opponentIndex,
+        legalActions: instants.length ? legalActionSummary(instants) : ["PASS_PRIORITY"],
+        total: instants.length || 1,
+        stackDepth: state.stack.length,
+      };
     }
     if (instants.length === 0) {
       consecutivePasses++;
@@ -1408,14 +1632,37 @@ async function passPriority(
       ...state,
       playerIndex: opponentIndex,
     };
+    const beforeResponseTelemetry = decisionTelemetrySnapshot();
+    const responseStartedAt = performance.now();
     const response = await timeAsync("AI decideResponse", () =>
       Promise.resolve(agent.decideResponse!(responseState, currentTop, instants))
     );
+    const responseElapsedMs = performance.now() - responseStartedAt;
+    const afterResponseTelemetry = decisionTelemetrySnapshot();
+    const dbLookupMs = Object.entries(afterResponseTelemetry.timingsMs)
+      .filter(([key]) => key.includes("lookup"))
+      .reduce((sum, [key, value]) => sum + value - (beforeResponseTelemetry.timingsMs[key] ?? 0), 0);
+    const threshold = envNumber("AI_PERF_LOG_THRESHOLD_MS", 50);
+    if (activeDiagnostics?.debugEpisode || responseElapsedMs >= threshold) {
+      log(
+        `[AI PERF] player=P${opponentIndex} phase=${state.phaseStep || state.phase} legal_actions=${instants.length} ` +
+        `db_lookup_ms=${Math.max(0, dbLookupMs).toFixed(1)} inference_ms=${Math.max(0, responseElapsedMs - dbLookupMs).toFixed(1)} ` +
+        `rules_ms=0.0 total_ms=${responseElapsedMs.toFixed(1)} action=${response ? actionSummary(response) : "PASS_PRIORITY"}`
+      );
+    }
     if (response === null) {
       consecutivePasses++;
       if (activeDiagnostics) activeDiagnostics.data.priorityPasses++;
       priorityPlayer = (priorityPlayer + 1) % numPlayers;
       continue;
+    }
+    if (activeDiagnostics) {
+      activeDiagnostics.data.actionsApplied++;
+      activeDiagnostics.currentTurnActions++;
+      activeDiagnostics.data.maxActionsPerTurn = Math.max(
+        activeDiagnostics.data.maxActionsPerTurn ?? 0,
+        activeDiagnostics.currentTurnActions
+      );
     }
     recordRecentAction(state, response, "response ");
     checkEpisodeWatchdog(state, response, opponentIndex);
@@ -2125,34 +2372,47 @@ function searchLibraryToZone(
   source?: CardName
 ) {
   const library = state.libraries[player] ?? [];
+  const alternatives = effect.subtypeAlternatives?.length
+    ? effect.subtypeAlternatives
+    : effect.subtype
+      ? [effect.subtype]
+      : [];
   const index = library.findIndex((card) => {
     const metadata = getCardMetadata(state, player, card);
-    if (effect.subtype && !(metadata?.typeLine ?? card).toLowerCase().includes(effect.subtype.toLowerCase())) {
-      return false;
+    if (alternatives.length) {
+      const typeLine = (metadata?.typeLine ?? card).toLowerCase();
+      return alternatives.some((alternative) => typeLine.includes(alternative.toLowerCase()));
     }
-    return effect.subtype ? true : isLandCard(state, player, card);
+    return isLandCard(state, player, card);
   });
-  if (index < 0) return;
-  const [card] = library.splice(index, 1);
   const toZone = effect.toZone ?? "hand";
-  if (toZone === "battlefield") {
-    state.battlefields[player].push(card);
-    addPermanentState(state, {
-      cardName: card,
-      owner: player,
-      controller: player,
-      face: card,
-      tapped: effect.tapped ?? false,
-    });
-  } else if (toZone === "graveyard") {
-    state.graveyards[player].push(card);
-  } else if (toZone === "exile") {
-    const exileZones = ensureExileZones(state);
-    exileZones[player].push(card);
+  if (index >= 0) {
+    const [card] = library.splice(index, 1);
+    if (toZone === "battlefield") {
+      state.battlefields[player].push(card);
+      addPermanentState(state, {
+        cardName: card,
+        owner: player,
+        controller: player,
+        face: card,
+        tapped: effect.tapped ?? false,
+      });
+    } else if (toZone === "graveyard") {
+      state.graveyards[player].push(card);
+    } else if (toZone === "exile") {
+      const exileZones = ensureExileZones(state);
+      exileZones[player].push(card);
+    } else {
+      state.hands[player].push(card);
+    }
+    log(`${source ?? "Effect"} searches ${card} to ${toZone}`);
   } else {
-    state.hands[player].push(card);
+    log(`${source ?? "Effect"} finds no matching card in the library`);
   }
-  log(`${source ?? "Effect"} searches ${card} to ${toZone}`);
+  if (effect.shuffleAfterSearch) {
+    state.libraries[player] = shuffle(library);
+    log(`Player ${player} shuffles their library`);
+  }
 }
 
 function findGraveyardTarget(
@@ -2632,14 +2892,28 @@ export function castSpellToStack(
   log: (msg: string) => void
 ) {
   const card = action.card;
-  const idx = state.hands[player].indexOf(card);
-  if (idx >= 0) {
-    state.hands[player].splice(idx, 1);
-  }
   const metadata = getCardMetadata(state, player, card);
-  const paymentPlan = requireManaPaymentPlan(state, player, card, metadata, log);
+  const selectedFaceId = selectedFaceIdForAction(action) ?? getSpellFaceMetadata(metadata)?.name;
+  const selectedFace = resolveSelectedFace(metadata, selectedFaceId);
+  const spellMetadata = metadataForSelectedFace(metadata, selectedFaceId);
+  logMdfcDiagnostic(log, {
+    card: metadata?.name ?? card,
+    selectedFace: selectedFace?.name,
+    action: "CAST_SPELL",
+    typeLine: selectedFace?.typeLine,
+    oracleText: selectedFace?.oracleText,
+    result: "CAST",
+  });
+  const sourceZone = action.sourceZone ?? "HAND";
+  const paymentPlan = requireManaPaymentPlan(state, player, card, spellMetadata, log, sourceZone);
   applyManaPaymentPlan(state, player, paymentPlan);
-  payAdditionalCosts(state, player, metadata, log);
+  payAdditionalCosts(state, player, spellMetadata, log);
+  if (sourceZone === "COMMAND") {
+    removeCardFromZone(state.commandZone?.[player], card);
+    recordCommanderCastFromCommand(state, player, card);
+  } else {
+    removeCardFromZone(state.hands[player], card);
+  }
   emitRulesEvent(state, {
     type: "SPELL_CAST",
     player,
@@ -2676,7 +2950,8 @@ function createStackEntryForAction(
     };
   }
   const metadata = getCardMetadata(state, player, action.card);
-  const abilities = parseCardRules(metadata ?? { name: action.card }).abilities.filter((ability) => ability.kind === "SPELL_EFFECT");
+  const spellMetadata = metadataForSelectedFace(metadata, selectedFaceIdForAction(action) ?? getSpellFaceMetadata(metadata)?.name);
+  const abilities = parseCardRules(spellMetadata ?? { name: action.card }).abilities.filter((ability) => ability.kind === "SPELL_EFFECT");
   return {
     id: `stack_${Date.now()}_${player}_${state.stack.length}`,
     action,
@@ -2924,6 +3199,7 @@ async function processActionWindow(
   rules: ActionWindowRules,
   snapshotEntries: StepSnapshotEntry[],
   onStateChange?: (state: SimGameState, event: GameEvent) => void,
+  onAiDecisionTrace?: (trace: AiDecisionTrace) => void,
   enableStack = false,
   pauseForAction: () => Promise<void> = () => Promise.resolve()
 ): Promise<number | null> {
@@ -2931,14 +3207,15 @@ async function processActionWindow(
 
   for (let count = 0; count < MAX_ACTIONS_PER_WINDOW; count++) {
     checkEpisodeWatchdog(state);
+    const generationContext = {
+      landDropsUsedThisTurn: context.landDropsUsedThisTurn,
+      maxLandDrops: context.maxLandDrops,
+      allowInstant: rules.allowInstant,
+      allowSorcery: rules.allowSorcery,
+      allowLand: rules.allowLand,
+    };
     const available = timeBlock("generateActions", () =>
-      generateActions(state, player, {
-        landDropsUsedThisTurn: context.landDropsUsedThisTurn,
-        maxLandDrops: context.maxLandDrops,
-        allowInstant: rules.allowInstant,
-        allowSorcery: rules.allowSorcery,
-        allowLand: rules.allowLand,
-      })
+      generateActions(state, player, generationContext)
     );
     if (isSecondMainPhase(state)) {
       turnContextRecordSecondMainLandDrop(context, available);
@@ -2954,24 +3231,91 @@ async function processActionWindow(
       context,
       availableSnapshot
     );
-    const decision = forcedLandDrop
+    const beforeDecisionTelemetry = decisionTelemetrySnapshot();
+    const decisionStartedAt = performance.now();
+    const beforeCanonicalState = canonicalStateFingerprint(state);
+    let decision = forcedLandDrop
       ? {
           action: forcedLandDrop,
           metadata: {
             source: "heuristic" as const,
             reasoning: "strategic_land_drop_invariant",
+            selection: {
+              selectedBy: "engine_land_drop_invariant",
+              selectionReason: "selected first legal land because second-main land drop is invariant-enforced",
+              selectionValueName: "land_drop_rule",
+              selectionCandidates: availableSnapshot.filter((candidate) => candidate.type === "PLAY_LAND"),
+            },
           },
         }
       : await timeAsync("AI chooseAction", () =>
           Promise.resolve(agents[player].decideAction(snapshot, availableSnapshot))
         );
+    const landDropOverPass = forcedLandDrop
+      ? null
+      : selectLandDropOverPass(state, context, availableSnapshot, decision.action);
+    if (landDropOverPass) {
+      decision = {
+        action: landDropOverPass,
+        metadata: {
+          source: "heuristic" as const,
+          reasoning: isSecondMainPhase(state)
+            ? "strategic_land_drop_invariant"
+            : "strategic_main1_land_drop_over_pass",
+          selection: {
+            selectedBy: "engine_land_drop_invariant",
+            selectionReason: "replaced PASS_TURN with the first legal land while land-drop capacity remained",
+            selectionValueName: "land_drop_rule",
+            selectionCandidates: availableSnapshot.filter((candidate) =>
+              candidate.type === "PLAY_LAND" || candidate.type === "PASS_TURN"
+            ),
+          },
+        },
+      };
+    }
+    decision = {
+      ...decision,
+      action: hydrateChosenAction(decision.action, availableSnapshot),
+    };
+    const decisionElapsedMs = performance.now() - decisionStartedAt;
+    if (!forcedLandDrop) {
+      const afterDecisionTelemetry = decisionTelemetrySnapshot();
+      const decisionDelta = telemetryDelta(beforeDecisionTelemetry, afterDecisionTelemetry);
+      const dbLookupMs = decisionDelta.dbLookupMs;
+      const threshold = envNumber("AI_PERF_LOG_THRESHOLD_MS", 50);
+      if (activeDiagnostics?.debugEpisode || decisionElapsedMs >= threshold) {
+        log(
+          `[AI PERF] player=P${player} phase=${state.phaseStep || state.phase} legal_actions=${availableSnapshot.length} ` +
+          `db_lookup_ms=${Math.max(0, dbLookupMs).toFixed(1)} inference_ms=${Math.max(0, decisionElapsedMs - dbLookupMs).toFixed(1)} ` +
+          `rules_ms=pending total_ms=${decisionElapsedMs.toFixed(1)} candidates_scanned=${decisionDelta.candidatesScanned} ` +
+          `candidates_returned=${decisionDelta.candidatesReturned} fuzzy_lookups=${decisionDelta.fuzzyLookups} action=${actionSummary(decision.action)}`
+        );
+      }
+    }
     const action = decision.action;
+    log(`[Action] ${actionSummary(action)}`);
     activeDiagnostics!.data.actionsApplied++;
+    activeDiagnostics!.currentTurnActions++;
+    activeDiagnostics!.data.maxActionsPerTurn = Math.max(
+      activeDiagnostics!.data.maxActionsPerTurn ?? 0,
+      activeDiagnostics!.currentTurnActions
+    );
     recordRecentAction(state, action);
     checkEpisodeWatchdog(state, action);
     if (activeDiagnostics?.debugEpisode) {
       console.log(`[debug] choose=${actionSummary(action)}`);
     }
+    const evaluation = agents[player].traceActionScores?.(snapshot, availableSnapshot) ?? [];
+    const trace = buildAiDecisionTrace({
+      state: snapshot,
+      player,
+      context: generationContext,
+      legalActions: availableSnapshot,
+      evaluation,
+      decision,
+      decisionStartedAt,
+      beforeDecisionTelemetry,
+    });
     history.push({
       playerIndex: player,
       agentId: agents[player].id,
@@ -2987,42 +3331,104 @@ async function processActionWindow(
 
     // Phase 2: cattura prev/next snapshot attorno ad applyAction
     const prevSnap = captureSnapshot(state);
-    if (enableStack && (action.type === "CAST_SPELL" || action.type === "ACTIVATE_ABILITY")) {
-      let stackEntry: StackEntry | null = null;
-      if (action.type === "CAST_SPELL") {
-        castSpellToStack(state, player, action, log);
-        stackEntry = createStackEntryForAction(state, player, action);
-      } else {
-        stackEntry = activateAbilityToStack(state, player, action, log);
-        if (!stackEntry) {
-          onStateChange?.(cloneState(state), { type: "action_applied", player, action });
-          await pauseForAction();
-          continue;
-        }
+    const beforeExecutionState = cloneState(state);
+    let rulesEngineMs = 0;
+    const measureRules = <T>(fn: () => T): T => {
+      const startedAt = performance.now();
+      try {
+        return fn();
+      } finally {
+        rulesEngineMs += performance.now() - startedAt;
       }
-      onStateChange?.(cloneState(state), { type: "action_applied", player, action });
-      await pauseForAction();
+    };
+    let executionSuccess = true;
+    let executionFailureReason: string | undefined;
+    let fallbackAction: SimAction | undefined;
+    try {
+      if (enableStack && (action.type === "CAST_SPELL" || action.type === "ACTIVATE_ABILITY")) {
+        let stackEntry: StackEntry | null = null;
+        if (action.type === "CAST_SPELL") {
+          measureRules(() => {
+            castSpellToStack(state, player, action, log);
+            stackEntry = createStackEntryForAction(state, player, action);
+          });
+        } else {
+          stackEntry = measureRules(() => activateAbilityToStack(state, player, action, log));
+          if (!stackEntry) {
+            updateTraceAfterExecution(trace, beforeExecutionState, state, {
+              attemptedAction: action,
+              success: true,
+              rulesMs: rulesEngineMs,
+            });
+            recordAiDecisionTrace(trace, onAiDecisionTrace);
+            recordDecisionLog({
+              state,
+              player,
+              availableActions: availableSnapshot.length,
+              action,
+              beforeDecisionTelemetry,
+              decisionElapsedMs,
+              rulesEngineMs,
+              beforeCanonicalState,
+            });
+            onStateChange?.(cloneState(state), { type: "action_applied", player, action });
+            await pauseForAction();
+            continue;
+          }
+        }
+        onStateChange?.(cloneState(state), { type: "action_applied", player, action });
+        await pauseForAction();
 
-      state.stack.push(stackEntry);
-      activeDiagnostics!.data.stackPushes++;
-      activeDiagnostics!.data.maxStackDepth = Math.max(activeDiagnostics!.data.maxStackDepth, state.stack.length);
-      recordStackTrace(state, "push", stackEntry);
-      await timeAsync("resolveStack", () =>
-        resolveStackWithPriority(state, player, agents, log, onStateChange, pauseForAction)
-      );
-      onStateChange?.(cloneState(state), { type: "action_applied", player, action });
-      await pauseForAction();
-    } else {
-      applyAction(state, action, player, log);
-      onStateChange?.(cloneState(state), { type: "action_applied", player, action });
-      await pauseForAction();
+        measureRules(() => {
+          state.stack.push(stackEntry!);
+          activeDiagnostics!.data.stackPushes++;
+          activeDiagnostics!.data.maxStackDepth = Math.max(activeDiagnostics!.data.maxStackDepth, state.stack.length);
+          recordStackTrace(state, "push", stackEntry!);
+        });
+        await timeAsync("resolveStack", () =>
+          resolveStackWithPriority(state, player, agents, log, onStateChange, pauseForAction)
+        );
+        onStateChange?.(cloneState(state), { type: "action_applied", player, action });
+        await pauseForAction();
+      } else {
+        measureRules(() => timeBlock("applyAction", () => applyAction(state, action, player, log)));
+        onStateChange?.(cloneState(state), { type: "action_applied", player, action });
+        await pauseForAction();
+      }
+    } catch (err) {
+      executionSuccess = false;
+      executionFailureReason = err instanceof Error ? err.message : String(err);
+      fallbackAction = { type: "PASS_TURN" };
+      if (action.type === "PLAY_LAND") {
+        context.landDropsUsedThisTurn = Math.max(0, context.landDropsUsedThisTurn - 1);
+      }
+      log(`[AI Execution] ${actionSummary(action)} failed: ${executionFailureReason}; fallback=PASS_TURN`);
     }
+    updateTraceAfterExecution(trace, beforeExecutionState, state, {
+      attemptedAction: action,
+      success: executionSuccess,
+      failureReason: executionFailureReason,
+      fallbackAction,
+      rulesMs: rulesEngineMs,
+    });
+    recordAiDecisionTrace(trace, onAiDecisionTrace);
+    recordDecisionLog({
+      state,
+      player,
+      availableActions: availableSnapshot.length,
+      action,
+      beforeDecisionTelemetry,
+      decisionElapsedMs,
+      rulesEngineMs,
+      beforeCanonicalState,
+    });
 
     const nextSnap = captureSnapshot(state);
     snapshotEntries.push({ playerIndex: player, prevSnapshot: prevSnap, nextSnapshot: nextSnap, action });
 
     const winner = checkForWinner(state);
     if (winner !== null) return winner;
+    if (fallbackAction?.type === "PASS_TURN") break;
     if (action.type === "PASS_TURN") break;
   }
 
@@ -3389,15 +3795,95 @@ export function createInitialState(
     .map(() => []);
   const artifactMana = Array(players).fill(0);
   const manaSpent = Array(players).fill(0);
-  const libraries = Array(players)
-    .fill(null)
-    .map((_, idx) => {
-      const deckList = playerDecks?.[idx];
-      const source =
-        deckList && deckList.length > 0 ? deckList : DEFAULT_DECK;
-      return shuffle([...source]);
-    });
-  const hands = libraries.map((library) => library.splice(0, 7));
+  const commandZone: CardName[][] = [];
+  const deckInitAudits: DeckInitAudit[] = [];
+  const libraries: CardName[][] = [];
+  const hands: CardName[][] = [];
+  for (let player = 0; player < players; player++) {
+    const inputDeck = playerDecks?.[player] ?? [];
+    const source = inputDeck.length ? [...inputDeck] : [...DEFAULT_DECK];
+    const configuredCommander = playerCommanders?.[player];
+    const commander = commanders[player] ?? "Commander";
+    const shouldInitializeCommandZone = configuredCommander != null || source.length >= 99;
+    const deckInstances = source.map((cardName, index) => ({
+      instanceId: `card_${player}_${index}`,
+      cardName,
+    }));
+    let commanderInstance: { instanceId: string; cardName: CardName } | undefined;
+    if (shouldInitializeCommandZone) {
+      const commanderIndex = deckInstances.findIndex((instance) =>
+        normalizeCardName(instance.cardName) === normalizeCardName(commander)
+      );
+      commanderInstance = commanderIndex >= 0
+        ? deckInstances.splice(commanderIndex, 1)[0]
+        : { instanceId: `commander_${player}_0`, cardName: commander };
+      commandZone[player] = [commanderInstance.cardName];
+    } else {
+      commandZone[player] = [];
+    }
+
+    const shuffledInstances = shuffle(deckInstances);
+    const libraryCountBeforeOpeningHand = shuffledInstances.length;
+    const openingHandInstances = shuffledInstances.splice(0, 7);
+    const zones = {
+      commandZone: commanderInstance ? [commanderInstance] : [],
+      library: shuffledInstances,
+      hand: openingHandInstances,
+      battlefield: [] as Array<{ instanceId: string; cardName: CardName }>,
+      graveyard: [] as Array<{ instanceId: string; cardName: CardName }>,
+      exile: [] as Array<{ instanceId: string; cardName: CardName }>,
+    };
+    const allInstances = Object.values(zones).flat();
+    const instanceCounts = new Map<string, number>();
+    const cardNameCounts = new Map<string, number>();
+    for (const instance of allInstances) {
+      instanceCounts.set(instance.instanceId, (instanceCounts.get(instance.instanceId) ?? 0) + 1);
+      cardNameCounts.set(instance.cardName, (cardNameCounts.get(instance.cardName) ?? 0) + 1);
+    }
+    const duplicateInstanceIds = [...instanceCounts]
+      .filter(([, count]) => count > 1)
+      .map(([instanceId]) => instanceId);
+    const duplicateCardNames = [...cardNameCounts]
+      .filter(([, count]) => count > 1)
+      .map(([cardName]) => cardName);
+    const zoneCards = Object.values(zones).flat();
+    const audit: DeckInitAudit = {
+      playerId: player,
+      inputDecklistCount: inputDeck.length,
+      expectedDeckSize: 100,
+      commander: {
+        cardId: normalizeCardName(commander),
+        cardName: commander,
+        instanceId: commanderInstance?.instanceId ?? `commander_${player}_not_initialized`,
+      },
+      commandZoneCount: zones.commandZone.length,
+      libraryCountBeforeOpeningHand,
+      handCountAfterOpeningDraw: zones.hand.length,
+      libraryCountAfterOpeningDraw: zones.library.length,
+      totalCardsAcrossZones: zoneCards.length,
+      totalUniqueInstanceIds: instanceCounts.size,
+      commanderOccurrencesAcrossZones: zoneCards.filter((instance) =>
+        normalizeCardName(instance.cardName) === normalizeCardName(commander)
+      ).length,
+      duplicateInstanceIds,
+      duplicateCardNames,
+      instanceIdsByZone: Object.fromEntries(
+        Object.entries(zones).map(([zone, instances]) => [zone, instances.map((instance) => instance.instanceId)])
+      ) as DeckInitAudit["instanceIdsByZone"],
+      invariantViolations: [],
+    };
+    if (audit.commandZoneCount !== 1) audit.invariantViolations.push("commandZoneCount must be 1");
+    if (audit.libraryCountBeforeOpeningHand !== 99) audit.invariantViolations.push("libraryCountBeforeOpeningHand must be 99");
+    if (audit.handCountAfterOpeningDraw !== 7) audit.invariantViolations.push("handCountAfterOpeningDraw must be 7");
+    if (audit.libraryCountAfterOpeningDraw !== 92) audit.invariantViolations.push("libraryCountAfterOpeningDraw must be 92");
+    if (audit.totalCardsAcrossZones !== 100) audit.invariantViolations.push("totalCardsAcrossZones must be 100");
+    if (audit.totalUniqueInstanceIds !== 100) audit.invariantViolations.push("totalUniqueInstanceIds must be 100");
+    if (audit.commanderOccurrencesAcrossZones !== 1) audit.invariantViolations.push("commanderOccurrencesAcrossZones must be 1");
+    if (audit.duplicateInstanceIds.length) audit.invariantViolations.push("duplicateInstanceIds must be empty");
+    deckInitAudits.push(audit);
+    libraries.push(shuffledInstances.map((instance) => instance.cardName));
+    hands.push(openingHandInstances.map((instance) => instance.cardName));
+  }
   const metadataMaps = Array(players)
     .fill(null)
     .map((_, idx) => {
@@ -3410,12 +3896,10 @@ export function createInitialState(
         entry.aliases?.forEach((alias) => {
           map[alias.toLowerCase()] = entry;
         });
-        if (entry.landFace?.name) {
-          map[entry.landFace.name.toLowerCase()] = entry;
-        }
-        if (entry.spellFace?.name) {
-          map[entry.spellFace.name.toLowerCase()] = entry;
-        }
+        const landFace = getLandFaceMetadata(entry);
+        const spellFace = getSpellFaceMetadata(entry);
+        if (landFace?.name) map[landFace.name.toLowerCase()] = entry;
+        if (spellFace?.name) map[spellFace.name.toLowerCase()] = entry;
       });
       return map;
     });
@@ -3437,6 +3921,8 @@ export function createInitialState(
     permanents,
     graveyards,
     commanders,
+    commandZone,
+    deckInitAudits,
     libraries,
     hands,
     creatures,
@@ -3444,6 +3930,9 @@ export function createInitialState(
     artifactMana,
     manaSpent,
     tappedPermanents: Object.fromEntries(
+      Array.from({ length: players }, (_, idx) => [idx, {}])
+    ),
+    commanderCastCounts: Object.fromEntries(
       Array.from({ length: players }, (_, idx) => [idx, {}])
     ),
     cardMetadata: metadataMaps,
@@ -3466,6 +3955,34 @@ export function createInitialState(
 
 function cloneActions(actions: SimAction[]): SimAction[] {
   return actions.map((action) => ({ ...action }));
+}
+
+function hydrateChosenAction(action: SimAction, legalActions: SimAction[]): SimAction {
+  const exact = legalActions.find((candidate) => actionTraceLabel(candidate) === actionTraceLabel(action));
+  if (exact) return { ...exact };
+  if (action.type !== "PLAY_LAND" && action.type !== "CAST_SPELL") return action;
+  const matches = legalActions.filter((candidate) => {
+    if (candidate.type !== action.type) return false;
+    if (!("card" in candidate) || candidate.card !== action.card) return false;
+    if (action.selectedFaceId && selectedFaceIdForAction(candidate) !== action.selectedFaceId) return false;
+    if (action.type === "PLAY_LAND") {
+      if (candidate.type !== "PLAY_LAND") return false;
+      if (action.entryChoice) {
+        return JSON.stringify(candidate.entryChoice ?? null) === JSON.stringify(action.entryChoice);
+      }
+      return true;
+    }
+    if (action.type === "CAST_SPELL") {
+      if (candidate.type !== "CAST_SPELL") return false;
+      if (action.targetId && candidate.targetId !== action.targetId) return false;
+      if (action.targetPlayer !== undefined && candidate.targetPlayer !== action.targetPlayer) return false;
+      if (action.targetGraveyardCard && candidate.targetGraveyardCard !== action.targetGraveyardCard) return false;
+      if (action.targetStackId && candidate.targetStackId !== action.targetStackId) return false;
+    }
+    return true;
+  });
+  const uniqueMatches = new Map(matches.map((candidate) => [actionTraceLabel(candidate), candidate]));
+  return uniqueMatches.size === 1 ? { ...[...uniqueMatches.values()][0] } : action;
 }
 
 function drawCard(state: SimGameState, player: number) {
@@ -3542,6 +4059,14 @@ function isSecondMainPhase(state: SimGameState): boolean {
   );
 }
 
+function isMainPhase(state: SimGameState): boolean {
+  return (
+    state.phase === "Prima Fase Principale" ||
+    state.phaseStep === "Prima Fase Principale" ||
+    isSecondMainPhase(state)
+  );
+}
+
 function selectForcedSecondMainLandDrop(
   state: SimGameState,
   context: TurnContext,
@@ -3551,6 +4076,17 @@ function selectForcedSecondMainLandDrop(
   return (
     availableActions.find((action) => action.type === "PLAY_LAND") ?? null
   );
+}
+
+function selectLandDropOverPass(
+  state: SimGameState,
+  context: TurnContext,
+  availableActions: SimAction[],
+  chosenAction: SimAction
+): SimAction | null {
+  if (chosenAction.type !== "PASS_TURN") return null;
+  if (!isMainPhase(state) || !hasLandDropCapacity(context)) return null;
+  return availableActions.find((action) => action.type === "PLAY_LAND") ?? null;
 }
 
 function turnContextRecordSecondMainLandDrop(
@@ -3611,9 +4147,27 @@ function isOwnMainPhaseWithEmptyStack(state: SimGameState, player: number) {
   );
 }
 
-function parsedCosts(metadata?: DeckCardMetadata): CostDescriptor[] {
+function spellAdditionalCosts(metadata?: DeckCardMetadata): CostDescriptor[] {
   if (!metadata) return [];
-  return parseCardRules(metadata).abilities.flatMap((ability) => ability.costs ?? []);
+  return parseCardRules(metadata).abilities
+    .filter((ability) => ability.kind === "SPELL_EFFECT")
+    .flatMap((ability) => ability.costs ?? []);
+}
+
+function unpayableAdditionalCostReason(
+  state: SimGameState,
+  player: number,
+  metadata?: DeckCardMetadata
+) : string | undefined {
+  for (const cost of spellAdditionalCosts(metadata)) {
+    if (cost.type !== "SACRIFICE") continue;
+    const available = getControlledPermanentsByType(state, player, cost.cardType ?? "permanent");
+    const required = cost.amount ?? 1;
+    if (available.length < required) {
+      return `requires sacrificing ${required} ${cost.cardType ?? "permanent"}(s); ${available.length} available`;
+    }
+  }
+  return undefined;
 }
 
 function canPayAdditionalCosts(
@@ -3621,12 +4175,7 @@ function canPayAdditionalCosts(
   player: number,
   metadata?: DeckCardMetadata
 ) {
-  for (const cost of parsedCosts(metadata)) {
-    if (cost.type !== "SACRIFICE") continue;
-    const available = getControlledPermanentsByType(state, player, cost.cardType ?? "permanent");
-    if (available.length < (cost.amount ?? 1)) return false;
-  }
-  return true;
+  return unpayableAdditionalCostReason(state, player, metadata) === undefined;
 }
 
 function payAdditionalCosts(
@@ -3635,7 +4184,7 @@ function payAdditionalCosts(
   metadata: DeckCardMetadata | undefined,
   log: (msg: string) => void
 ) {
-  for (const cost of parsedCosts(metadata)) {
+  for (const cost of spellAdditionalCosts(metadata)) {
     if (cost.type !== "SACRIFICE") continue;
     for (let i = 0; i < (cost.amount ?? 1); i++) {
       const target = selectControlledPermanentByType(state, player, cost.cardType ?? "permanent");
@@ -3738,7 +4287,21 @@ export function isLegalTarget(
   if (requirement.type === "SPELL" || requirement.zone === "stack") {
     if (requirement.controller === "self" && target.controller !== player) return false;
     if (requirement.controller === "opponent" && target.controller === player) return false;
-    return typeof target.id === "string" && state.stack.some((entry) => entry.id === target.id && !entry.resolved);
+    if (typeof target.id !== "string") return false;
+    const entry = state.stack.find((candidate) => candidate.id === target.id && !candidate.resolved);
+    if (!entry) return false;
+    if (requirement.type === "SPELL" && entry.action.type !== "CAST_SPELL") return false;
+    if (requirement.spellTypes?.length) {
+      if (entry.action.type !== "CAST_SPELL") return false;
+      const metadata = getCardMetadata(state, entry.casterIndex, entry.action.card);
+      const face = selectedFaceIdForAction(entry.action);
+      const instant = isInstantLike(metadata, face);
+      const sorcery = isSorceryLike(metadata, face);
+      if (!((requirement.spellTypes.includes("instant") && instant) || (requirement.spellTypes.includes("sorcery") && sorcery))) {
+        return false;
+      }
+    }
+    return true;
   }
   if (requirement.controller === "self" && target.controller !== player) return false;
   if (requirement.controller === "opponent" && target.controller === player) return false;
@@ -3784,13 +4347,19 @@ export function canCastSpell(
   state: SimGameState,
   player: number,
   card: CardName,
-  context: ActionGenerationContext
+  context: ActionGenerationContext,
+  sourceZone: "HAND" | "COMMAND" = "HAND"
 ) {
   if (!context.allowInstant && !context.allowSorcery) return false;
+  if (sourceZone === "COMMAND") {
+    const commanderName = state.commanders[player];
+    if (!commanderName || normalizeCardName(commanderName) !== normalizeCardName(card)) return false;
+    if (!(state.commandZone?.[player] ?? []).some((commandCard) => normalizeCardName(commandCard) === normalizeCardName(card))) return false;
+  }
   const metadata = getCardMetadata(state, player, card);
   if (!isCastableSpellCard(state, player, card)) return false;
 
-  const face = metadata?.spellFace?.name;
+  const face = getSpellFaceMetadata(metadata)?.name;
   const instantTiming =
     isInstantLike(metadata, face) || hasFlash(metadata, face);
   const sorceryTiming =
@@ -3807,20 +4376,409 @@ export function canCastSpell(
     recordIllegalCastPrevented(state);
     return false;
   }
-  const graveyardTarget = findDefaultGraveyardTargetForCard(state, player, metadata);
-  const requiresMissingGraveyardTarget = parseCardRules(metadata ?? { name: card }).abilities.some((ability) =>
+  const spellMetadata = metadataForSelectedFace(metadata, face);
+  const graveyardTarget = findDefaultGraveyardTargetForCard(state, player, spellMetadata);
+  const requiresMissingGraveyardTarget = parseCardRules(spellMetadata ?? { name: card }).abilities.some((ability) =>
+    ability.kind === "SPELL_EFFECT" &&
     ability.targets?.some((target) => target.zone === "graveyard" && target.required !== false) &&
     !graveyardTarget
   );
   if (requiresMissingGraveyardTarget) return false;
-  if (!hasRequiredTargets(state, player, metadata)) return false;
+  if (!hasRequiredTargets(state, player, spellMetadata)) return false;
 
-  const plan = findManaPaymentPlan(state, player, getSpellManaCost(card, state, player));
+  const plan = findManaPaymentPlan(state, player, getSpellManaCost(card, state, player, spellMetadata, sourceZone));
   if (!plan.legal) {
     recordManaPaymentFailure(state);
     return false;
   }
   return true;
+}
+
+function actionTraceLabel(action: SimAction) {
+  if (action.type === "PLAY_LAND") {
+    return `${action.type}:${action.card}:${selectedFaceIdForAction(action) ?? ""}:${JSON.stringify(action.entryChoice ?? null)}`;
+  }
+  if (action.type === "CAST_SPELL") {
+    return `${action.type}:${action.card}:${action.sourceZone ?? "HAND"}:${selectedFaceIdForAction(action) ?? ""}:${JSON.stringify(action.targets ?? [])}`;
+  }
+  if (action.type === "ACTIVATE_ABILITY") {
+    return `${action.type}:${action.sourcePermanentId}:${action.abilityId}:${JSON.stringify(action.targets ?? [])}`;
+  }
+  if (action.type === "ATTACK_CHOICE" || action.type === "BLOCK_CHOICE") {
+    return `${action.type}:${action.card}:${"mode" in action ? action.mode : ""}:${"targetId" in action ? action.targetId ?? "" : ""}`;
+  }
+  return JSON.stringify(action);
+}
+
+function missingManaReason(plan: ManaPaymentPlan): AiDecisionRejectionReason {
+  const missing = plan.missing ?? {};
+  if ((missing.W ?? 0) > 0 || (missing.U ?? 0) > 0 || (missing.B ?? 0) > 0 || (missing.R ?? 0) > 0 || (missing.G ?? 0) > 0) {
+    return "MISSING_COLORED_MANA";
+  }
+  return "INSUFFICIENT_TOTAL_MANA";
+}
+
+function unsupportedCard(metadata?: DeckCardMetadata) {
+  return metadata?.unsupportedEffect === true || metadata?.rulesCoverage === "UNSUPPORTED";
+}
+
+function explainCastSpellLegality(
+  state: SimGameState,
+  player: number,
+  card: CardName,
+  context: ActionGenerationContext,
+  legalActions: SimAction[],
+  sourceZone: "HAND" | "COMMAND" = "HAND"
+): AiConsideredActionTrace {
+  const metadata = getCardMetadata(state, player, card);
+  const face = getSpellFaceMetadata(metadata)?.name;
+  const spellMetadata = metadataForSelectedFace(metadata, face);
+  const selectedFace = resolveSelectedFace(metadata, face);
+  const parsedAbilities = spellMetadata ? parseCardRules(spellMetadata).abilities : [];
+  const spellCosts = parsedAbilities
+    .filter((ability) => ability.kind === "SPELL_EFFECT")
+    .flatMap((ability) => ability.costs ?? []);
+  const activatedCosts = parsedAbilities
+    .filter((ability) => ability.kind === "ACTIVATED")
+    .flatMap((ability) => ability.costs ?? []);
+  const targetRequirements = describeTargetRequirements(state, player, spellMetadata);
+  const spellTargetRequirements = targetRequirements.filter((requirement) =>
+    requirement.source === "SPELL_EFFECT" && requirement.requiredDuringCast
+  );
+  const validTargets = spellTargetRequirements.flatMap((requirement) => requirement.validTargets ?? []);
+  const validStackTargets = spellTargetRequirements
+    .flatMap((requirement) => requirement.validTargets ?? [])
+    .filter((target) => target.type === "stack")
+    .flatMap((target) => {
+      const entry = state.stack.find((candidate) => candidate.id === target.id && !candidate.resolved);
+      if (!entry) return [];
+      return [{
+        id: entry.id,
+        cardName: entry.action.type === "CAST_SPELL" ? entry.action.card : entry.sourceCard ?? entry.action.type,
+        casterIndex: entry.casterIndex,
+      }];
+    });
+  const additionalCostFailure = unpayableAdditionalCostReason(state, player, spellMetadata);
+  const commanderCastCount = commanderCastCountFor(state, player, card);
+  const commanderTax = sourceZone === "COMMAND" ? commanderTaxFor(state, player, card) : 0;
+  const baseCost = getSpellManaCost(card, state, player, spellMetadata);
+  const effectiveCost = getSpellManaCost(card, state, player, spellMetadata, sourceZone);
+  const base = {
+    type: "CAST_SPELL" as const,
+    cardId: card,
+    cardName: face ?? card,
+    ...faceTraceFields(state, player, card, face),
+    sourceZone,
+    commanderCastCount,
+    commanderTax,
+    baseCost,
+    effectiveCost,
+    recognized: face ? Boolean(selectedFace && spellMetadata) : Boolean(metadata),
+    timingLegal: true,
+    manaPayable: true,
+    targetsValid: true,
+    additionalCostsPayable: additionalCostFailure === undefined,
+    spellAdditionalCosts: spellCosts,
+    activatedAbilityCosts: activatedCosts,
+    additionalCostsRequiredDuringCast: spellCosts.length > 0,
+    unpayableAdditionalCostReason: additionalCostFailure,
+    spellRequiresTargetsDuringCast: spellTargetRequirements.length > 0,
+    targetRequirements,
+    validTargets,
+    stackSize: state.stack.filter((entry) => !entry.resolved).length,
+    stackObjects: state.stack.filter((entry) => !entry.resolved).map((entry) => ({
+      id: entry.id,
+      cardName: entry.action.type === "CAST_SPELL" ? entry.action.card : entry.sourceCard ?? entry.action.type,
+      casterIndex: entry.casterIndex,
+      kind: entry.kind,
+    })),
+    validStackTargets,
+    legal: false,
+  };
+  if (!context.allowInstant && !context.allowSorcery) {
+    return { ...base, timingLegal: false, rejectionReason: "WRONG_TIMING" };
+  }
+  if (!isCastableSpellCard(state, player, card)) {
+    return { ...base, rejectionReason: "CARD_NOT_CASTABLE" };
+  }
+
+  const instantTiming = isInstantLike(metadata, face) || hasFlash(metadata, face);
+  const sorceryTiming =
+    isSorceryLike(metadata, face) ||
+    activeFaceMetadata(metadata, face)?.isCreature ||
+    activeFaceMetadata(metadata, face)?.isPermanent ||
+    isPermanentCard(card, spellMetadata);
+  const timingLegal = instantTiming && context.allowInstant
+    ? true
+    : sorceryTiming && context.allowSorcery && isOwnMainPhaseWithEmptyStack(state, player);
+  if (!timingLegal) {
+    return { ...base, timingLegal: false, rejectionReason: "WRONG_TIMING" };
+  }
+  if (additionalCostFailure) {
+    return { ...base, additionalCostsPayable: false, rejectionReason: "ADDITIONAL_COST_UNPAYABLE" };
+  }
+  const graveyardTarget = findDefaultGraveyardTargetForCard(state, player, spellMetadata);
+  const requiresMissingGraveyardTarget = parseCardRules(spellMetadata ?? { name: card }).abilities.some((ability) =>
+    ability.kind === "SPELL_EFFECT" &&
+    ability.targets?.some((target) => target.zone === "graveyard" && target.required !== false) &&
+    !graveyardTarget
+  );
+  if (requiresMissingGraveyardTarget || !hasRequiredTargets(state, player, spellMetadata)) {
+    return { ...base, targetRequirements, targetsValid: false, rejectionReason: "NO_VALID_TARGET" };
+  }
+  if (unsupportedCard(spellMetadata)) {
+    return { ...base, rejectionReason: "UNSUPPORTED_CARD_RULE" };
+  }
+  const paymentPlan = findManaPaymentPlan(state, player, effectiveCost);
+  if (!paymentPlan.legal) {
+    return {
+      ...base,
+      manaPayable: false,
+      paymentPlan,
+      rejectionReason: missingManaReason(paymentPlan),
+    };
+  }
+  const generated = legalActions.some((action) =>
+    action.type === "CAST_SPELL" &&
+    action.card === card &&
+    (action.sourceZone ?? "HAND") === sourceZone &&
+    (!face || selectedFaceIdForAction(action) === face)
+  );
+  return {
+    ...base,
+    paymentPlan,
+    targetRequirements,
+    legal: generated,
+    rejectionReason: generated ? undefined : "ACTION_GENERATION_FAILED",
+  };
+}
+
+function explainPlayLandLegality(
+  state: SimGameState,
+  player: number,
+  card: CardName,
+  context: ActionGenerationContext,
+  legalActions: SimAction[]
+): AiConsideredActionTrace | null {
+  if (!isLandCard(state, player, card)) return null;
+  const metadata = getCardMetadata(state, player, card);
+  const selectedFaceId = getLandFaceMetadata(metadata)?.name;
+  const landMetadata = metadataForSelectedFace(metadata, selectedFaceId);
+  const selectedFace = resolveSelectedFace(metadata, selectedFaceId);
+  const base = {
+    type: "PLAY_LAND" as const,
+    cardId: card,
+    cardName: selectedFaceId ?? card,
+    ...faceTraceFields(state, player, card, selectedFaceId),
+    recognized: selectedFaceId ? Boolean(selectedFace && landMetadata) : Boolean(metadata),
+    timingLegal: true,
+    manaPayable: true,
+    targetsValid: true,
+    additionalCostsPayable: true,
+    legal: false,
+  };
+  if (!context.allowLand || !isOwnMainPhaseWithEmptyStack(state, player) || context.landDropsUsedThisTurn >= context.maxLandDrops) {
+    return { ...base, timingLegal: false, rejectionReason: "WRONG_TIMING" };
+  }
+  const generated = legalActions.some((action) =>
+    action.type === "PLAY_LAND" &&
+    action.card === card &&
+    (!selectedFaceId || selectedFaceIdForAction(action) === selectedFaceId)
+  );
+  return {
+    ...base,
+    legal: generated,
+    rejectionReason: generated ? undefined : "ACTION_GENERATION_FAILED",
+  };
+}
+
+function consideredActionKey(action: Pick<SimAction, "type"> & { card?: CardName; selectedFaceId?: string; face?: string; sourceZone?: "HAND" | "COMMAND" }) {
+  return "card" in action && action.card
+    ? `${action.type}:${action.card}:${action.type === "CAST_SPELL" ? action.sourceZone ?? "HAND" : ""}:${selectedFaceIdForAction(action) ?? ""}`
+    : JSON.stringify(action);
+}
+
+function buildConsideredActions(
+  state: SimGameState,
+  player: number,
+  context: ActionGenerationContext,
+  legalActions: SimAction[]
+): AiConsideredActionTrace[] {
+  const considered: AiConsideredActionTrace[] = [];
+  const seen = new Set<string>();
+  for (const card of state.hands[player] ?? []) {
+    const land = explainPlayLandLegality(state, player, card, context, legalActions);
+    if (land) {
+      considered.push(land);
+      seen.add(consideredActionKey({ type: "PLAY_LAND", card, selectedFaceId: land.selectedFaceId }));
+    }
+    const cast = explainCastSpellLegality(state, player, card, context, legalActions, "HAND");
+    considered.push(cast);
+    seen.add(consideredActionKey({ type: "CAST_SPELL", card, selectedFaceId: cast.selectedFaceId, sourceZone: "HAND" }));
+  }
+  for (const card of state.commandZone?.[player] ?? []) {
+    const cast = explainCastSpellLegality(state, player, card, context, legalActions, "COMMAND");
+    considered.push(cast);
+    seen.add(consideredActionKey({ type: "CAST_SPELL", card, selectedFaceId: cast.selectedFaceId, sourceZone: "COMMAND" }));
+  }
+  for (const action of legalActions) {
+    const card = "card" in action ? action.card : undefined;
+    const key = consideredActionKey(action);
+    if (seen.has(key)) continue;
+    const faceFields = card && (action.type === "PLAY_LAND" || action.type === "CAST_SPELL")
+      ? faceTraceFields(state, player, card, selectedFaceIdForAction(action))
+      : {};
+    considered.push({
+      type: action.type,
+      cardId: card,
+      cardName: action.type === "PLAY_LAND" || action.type === "CAST_SPELL"
+        ? selectedFaceIdForAction(action) ?? card
+        : card,
+      ...faceFields,
+      recognized: true,
+      timingLegal: true,
+      manaPayable: true,
+      targetsValid: true,
+      additionalCostsPayable: true,
+      legal: true,
+    });
+  }
+  return considered;
+}
+
+function buildAiDecisionTrace(params: {
+  state: SimGameState;
+  player: number;
+  context: ActionGenerationContext;
+  legalActions: SimAction[];
+  evaluation: AiActionEvaluationTrace[];
+  decision: AgentDecision;
+  decisionStartedAt: number;
+  beforeDecisionTelemetry: ReturnType<typeof decisionTelemetrySnapshot>;
+}): AiDecisionTrace {
+  const player = params.player;
+  const chosenAction = params.decision.action;
+  const rankedEvaluation = [...params.evaluation]
+    .sort((a, b) => b.finalScore - a.finalScore)
+    .map((entry, index) => ({ ...entry, scoreRank: index + 1 }));
+  const chosenEvaluation = rankedEvaluation.find((entry) => actionTraceLabel(entry.action) === actionTraceLabel(chosenAction));
+  const argmaxEvaluation = rankedEvaluation[0];
+  const isFinalScoreArgmax = Boolean(
+    argmaxEvaluation && actionTraceLabel(argmaxEvaluation.action) === actionTraceLabel(chosenAction)
+  );
+  const selection = params.decision.metadata?.selection;
+  const decisionSource = params.decision.metadata?.source ?? "fallback";
+  const consideredActions = buildConsideredActions(params.state, player, params.context, params.legalActions);
+  const unsupportedCards = consideredActions
+    .filter((entry) => entry.rejectionReason === "UNSUPPORTED_CARD_RULE" && entry.cardName)
+    .map((entry) => entry.cardName!);
+  const legalNonPass = params.legalActions.filter((action) => action.type !== "PASS_TURN");
+  const decisionDelta = telemetryDelta(params.beforeDecisionTelemetry, decisionTelemetrySnapshot());
+  const decisionElapsedMs = performance.now() - params.decisionStartedAt;
+  const manaSources = traceManaSourcesForPlayer(params.state, player);
+  return {
+    decisionId: `decision_${params.state.turn}_${player}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    timestamp: new Date().toISOString(),
+    playerId: player,
+    turn: params.state.turn,
+    phase: params.state.phase,
+    step: params.state.phaseStep || params.state.phase,
+    state: {
+      life: params.state.lifeTotals[player] ?? 0,
+      handSize: params.state.hands[player]?.length ?? 0,
+      battlefieldSummary: params.state.battlefields.map((cards, index) => `P${index}:${cards.length}`),
+      availableMana: manaSources
+        .filter((source) => source.usable)
+        .reduce((sum, source) => sum + source.produces.length, 0),
+      untappedManaSources: manaSources
+        .filter((source) => source.usable)
+        .map((source) => source.activeFace ?? source.physicalCard),
+      manaSources,
+    },
+    consideredActions,
+    legalActions: cloneActions(params.legalActions),
+    evaluation: rankedEvaluation,
+    decision: {
+      chosenAction,
+      source: decisionSource,
+      score: chosenEvaluation?.finalScore ?? params.decision.metadata?.expectedReward,
+      confidence: params.decision.metadata?.confidence,
+      argmaxAction: argmaxEvaluation?.action,
+      argmaxFinalScore: argmaxEvaluation?.finalScore,
+      chosenActionFinalScore: chosenEvaluation?.finalScore,
+      isFinalScoreArgmax,
+      decisionScoreMismatch: Boolean(argmaxEvaluation && !isFinalScoreArgmax),
+      selectedBy: selection?.selectedBy ?? "agent_decision",
+      selectionReason: selection?.selectionReason ?? params.decision.metadata?.reasoning ?? "selection mechanism not reported by agent",
+      selectionValueName: selection?.selectionValueName ?? "not_reported",
+      selectionValue: selection?.selectionValue,
+      selectionCandidates: selection?.selectionCandidates ?? cloneActions(params.legalActions),
+      confidenceMeaning: selection?.confidenceMeaning,
+    },
+    execution: {
+      attemptedAction: chosenAction,
+      success: false,
+    },
+    result: {
+      stateChanged: false,
+      lifeDelta: 0,
+      handDelta: 0,
+      battlefieldDelta: 0,
+      graveyardDelta: 0,
+      nextPhase: params.state.phaseStep || params.state.phase,
+    },
+    performance: {
+      rulesMs: 0,
+      dbMs: decisionDelta.dbLookupMs,
+      inferenceMs: Math.max(0, decisionElapsedMs - decisionDelta.dbLookupMs),
+      totalMs: decisionElapsedMs,
+    },
+    questionable: chosenAction.type === "PASS_TURN" && legalNonPass.length > 0,
+    unsupportedCards,
+  };
+}
+
+function updateTraceAfterExecution(
+  trace: AiDecisionTrace,
+  beforeState: SimGameState,
+  afterState: SimGameState,
+  options: {
+    attemptedAction: SimAction;
+    success: boolean;
+    failureReason?: string;
+    fallbackAction?: SimAction;
+    rulesMs: number;
+  }
+) {
+  const player = trace.playerId;
+  trace.execution = {
+    attemptedAction: options.attemptedAction,
+    success: options.success,
+    failureReason: options.failureReason,
+    fallbackAction: options.fallbackAction,
+  };
+  trace.result = {
+    stateChanged: canonicalStateFingerprint(beforeState) !== canonicalStateFingerprint(afterState),
+    lifeDelta: (afterState.lifeTotals[player] ?? 0) - (beforeState.lifeTotals[player] ?? 0),
+    handDelta: (afterState.hands[player]?.length ?? 0) - (beforeState.hands[player]?.length ?? 0),
+    battlefieldDelta: (afterState.battlefields[player]?.length ?? 0) - (beforeState.battlefields[player]?.length ?? 0),
+    graveyardDelta: (afterState.graveyards[player]?.length ?? 0) - (beforeState.graveyards[player]?.length ?? 0),
+    nextPhase: afterState.phaseStep || afterState.phase,
+  };
+  trace.performance.rulesMs = options.rulesMs;
+  trace.performance.totalMs = trace.performance.inferenceMs + trace.performance.dbMs + options.rulesMs;
+}
+
+function recordAiDecisionTrace(trace: AiDecisionTrace, emit?: (trace: AiDecisionTrace) => void) {
+  const diagnostics = activeDiagnostics;
+  if (diagnostics) {
+    diagnostics.data.aiDecisionTraces ??= [];
+    diagnostics.data.aiDecisionTraces.push(trace);
+    if (diagnostics.data.aiDecisionTraces.length > 500) {
+      diagnostics.data.aiDecisionTraces.shift();
+    }
+  }
+  emit?.(trace);
 }
 
 export function generateActions(
@@ -3836,7 +4794,16 @@ export function generateActions(
       .filter((card) => canPlayLand(state, player, card, context))
       .forEach((card) => {
         const metadata = getCardMetadata(state, player, card);
-        actions.push({ type: "PLAY_LAND", card, face: metadata?.landFace?.name });
+        const selectedFaceId = getLandFaceMetadata(metadata)?.name;
+        const faceTrace = faceTraceFields(state, player, card, selectedFaceId);
+        const entryChoices = landEntryChoices(metadata, state.lifeTotals[player] ?? 0, selectedFaceId);
+        if (entryChoices.length) {
+          for (const entryChoice of entryChoices) {
+            actions.push({ type: "PLAY_LAND", card, face: selectedFaceId, ...faceTrace, entryChoice });
+          }
+        } else {
+          actions.push({ type: "PLAY_LAND", card, face: selectedFaceId, ...faceTrace });
+        }
       });
   }
 
@@ -3852,6 +4819,14 @@ export function generateActions(
       actions.push(...buildCastSpellActions(state, player, card, metadata));
     });
 
+  (state.commandZone?.[player] ?? [])
+    .filter((card) => canCastSpell(state, player, card, context, "COMMAND"))
+    .forEach((card) => {
+      const metadata = getCardMetadata(state, player, card);
+      if (isCounterspell(card, metadata)) return;
+      actions.push(...buildCastSpellActions(state, player, card, metadata, "COMMAND"));
+    });
+
   actions.push(...buildActivatedAbilityActions(state, player, context));
 
   return actions;
@@ -3861,14 +4836,19 @@ function buildCastSpellActions(
   state: SimGameState,
   player: number,
   card: CardName,
-  metadata?: DeckCardMetadata
+  metadata?: DeckCardMetadata,
+  sourceZone: "HAND" | "COMMAND" = "HAND"
 ): Extract<SimAction, { type: "CAST_SPELL" }>[] {
-  const parsed = metadata ? parseCardRules(metadata) : undefined;
+  const selectedFaceId = getSpellFaceMetadata(metadata)?.name;
+  const spellMetadata = metadataForSelectedFace(metadata, selectedFaceId);
+  const parsed = spellMetadata ? parseCardRules(spellMetadata) : undefined;
   const spellAbilities = parsed?.abilities.filter((ability) => ability.kind === "SPELL_EFFECT") ?? [];
   const base = {
     type: "CAST_SPELL" as const,
     card,
-    face: metadata?.spellFace?.name,
+    face: getSpellFaceMetadata(metadata)?.name,
+    ...faceTraceFields(state, player, card, getSpellFaceMetadata(metadata)?.name),
+    ...(sourceZone === "COMMAND" ? { sourceZone } : {}),
   };
   if (!spellAbilities.length) return [base];
   return expandActionsForAbilities(state, player, base, spellAbilities);
@@ -4106,14 +5086,103 @@ function hasRequiredTargets(
   metadata?: DeckCardMetadata
 ) {
   if (!metadata) return true;
-  const requirements = parseCardRules(metadata).abilities.flatMap((ability) => ability.targets ?? []);
-  for (const requirement of requirements) {
-    if (requirement.required === false || requirement.optional) continue;
-    if (getLegalTargets(state, player, requirement).length === 0) {
-      return false;
+  for (const ability of parseCardRules(metadata).abilities) {
+    if (ability.kind !== "SPELL_EFFECT") continue;
+    for (const requirement of ability.targets ?? []) {
+      if (requirement.required === false || requirement.optional) continue;
+      if (getLegalTargets(state, player, requirement).length === 0) {
+        return false;
+      }
     }
   }
   return true;
+}
+
+function targetRequirementSource(ability: ParsedAbility): TargetRequirementTrace["source"] | null {
+  if (ability.kind === "SPELL_EFFECT") return "SPELL_EFFECT";
+  if (ability.kind === "ACTIVATED") return "ACTIVATED_ABILITY";
+  if (ability.kind === "TRIGGERED") {
+    return ability.trigger?.eventType === "PERMANENT_ENTERED"
+      ? "ETB_TRIGGER"
+      : "TRIGGERED_ABILITY";
+  }
+  return null;
+}
+
+function describeTargetRequirements(
+  state: SimGameState,
+  player: number,
+  metadata?: DeckCardMetadata
+): TargetRequirementTrace[] {
+  if (!metadata) return [];
+  const result: TargetRequirementTrace[] = [];
+  for (const ability of parseCardRules(metadata).abilities) {
+    const source = targetRequirementSource(ability);
+    if (!source) continue;
+    const text = ability.sourceFragment ?? ability.modeLabel ?? metadata.oracleText ?? metadata.name;
+    for (const requirement of ability.targets ?? []) {
+      const requiredDuringCast =
+        source === "SPELL_EFFECT" &&
+        requirement.required !== false &&
+        requirement.optional !== true;
+      const validTargets = getLegalTargets(state, player, requirement).map((target) => ({
+        type: target.type,
+        id: target.id,
+      }));
+      result.push({
+        source,
+        text,
+        requiredDuringCast,
+        validTargetCount: validTargets.length,
+        validTargets,
+      });
+    }
+  }
+  return result;
+}
+
+function describeLandEntryEffect(entry: ReturnType<typeof evaluateLandEntryTapped>) {
+  if (entry.optionalCost) {
+    return entry.optionalCost.paid
+      ? `PAY_${entry.optionalCost.amount}_LIFE`
+      : `DECLINE_PAY_${entry.optionalCost.amount}_LIFE`;
+  }
+  if (entry.enteredTapped && entry.entryReason === "enters tapped") {
+    return "ENTERS_TAPPED";
+  }
+  if (entry.conditionRecognized) {
+    return entry.enteredTapped ? "CONDITIONAL_ENTERS_TAPPED" : "CONDITIONAL_ENTERS_UNTAPPED";
+  }
+  return "NONE";
+}
+
+function logMdfcDiagnostic(
+  log: (message: string) => void,
+  options: {
+    card: string;
+    selectedFace?: string;
+    action: "PLAY_LAND" | "CAST_SPELL";
+    typeLine?: string;
+    oracleText?: string;
+    entryEffect?: string;
+    result: string;
+  }
+) {
+  if (!options.selectedFace || normalizeCardName(options.card) === normalizeCardName(options.selectedFace)) {
+    return;
+  }
+  log(
+    [
+      "[MDFC]",
+      `card=${options.card}`,
+      `selected_face=${options.selectedFace}`,
+      `action=${options.action}`,
+      `type_line=${options.typeLine ?? ""}`,
+      `oracle=${options.oracleText ?? ""}`,
+      options.entryEffect ? `entry_effect=${options.entryEffect}` : undefined,
+      `result=${options.result}`,
+    ].filter(Boolean).join("\n")
+  );
 }
 
 export function applyAction(
@@ -4134,10 +5203,17 @@ export function applyAction(
       const idx = state.hands[player].indexOf(action.card);
       if (idx >= 0) state.hands[player].splice(idx, 1);
       const metadata = getCardMetadata(state, player, action.card);
-      const landName = action.face ?? getLandPermanentName(action.card, metadata);
-      const entry = evaluateLandEntryTapped(state, player, action.card, metadata);
+      const selectedFaceId = selectedFaceIdForAction(action) ?? getLandFaceMetadata(metadata)?.name;
+      const selectedFace = resolveSelectedFace(metadata, selectedFaceId);
+      const landMetadata = metadataForSelectedFace(metadata, selectedFaceId);
+      const landName = selectedFace?.name ?? getLandPermanentName(action.card, metadata);
+      const entry = evaluateLandEntryTapped(state, player, action.card, metadata, action.entryChoice, selectedFaceId);
       if (entry.unsupported) {
         ensureRulesMetrics(state).unsupportedEffects++;
+      }
+      if (entry.optionalCost?.paid) {
+        state.lifeTotals[player] -= entry.optionalCost.amount;
+        log(`Player ${player} pays ${entry.optionalCost.amount} life for ${landName}`);
       }
       state.battlefields[player].push(landName);
       const permanent = addPermanentState(state, {
@@ -4153,6 +5229,15 @@ export function applyAction(
         state.tappedPermanents[player][landName.toLowerCase()] =
           (state.tappedPermanents[player][landName.toLowerCase()] ?? 0) + 1;
       }
+      logMdfcDiagnostic(log, {
+        card: metadata?.name ?? action.card,
+        selectedFace: selectedFace?.name,
+        action: "PLAY_LAND",
+        typeLine: selectedFace?.typeLine,
+        oracleText: selectedFace?.oracleText,
+        entryEffect: describeLandEntryEffect(entry),
+        result: entry.enteredTapped ? "TAPPED" : "UNTAPPED",
+      });
       log(`Player ${player} plays ${landName} ${entry.enteredTapped ? "tapped" : "untapped"}`);
       log(`Reason: ${entry.entryReason}`);
       emitRulesEvent(state, {
@@ -4170,6 +5255,7 @@ export function applyAction(
           enteredTapped: entry.enteredTapped,
           entryReason: entry.entryReason,
           otherLandCount: entry.otherLandCount,
+          optionalCost: entry.optionalCost,
         },
       });
       dispatchRulesEvent(state, {
@@ -4187,20 +5273,37 @@ export function applyAction(
           enteredTapped: entry.enteredTapped,
           entryReason: entry.entryReason,
           otherLandCount: entry.otherLandCount,
+          optionalCost: entry.optionalCost,
         },
-      }, log, metadata);
+      }, log, landMetadata);
       handleLandEntered(state, player, landName, log, "play");
-      handlePermanentEntersBattlefield(state, player, landName, metadata, log);
+      handlePermanentEntersBattlefield(state, player, landName, landMetadata, log);
       break;
     }
     case "CAST_SPELL": {
       const metadata = getCardMetadata(state, player, action.card);
-      const paymentPlan = requireManaPaymentPlan(state, player, action.card, metadata, log);
-      const idx = state.hands[player].indexOf(action.card);
-      if (idx >= 0) state.hands[player].splice(idx, 1);
+      const selectedFaceId = selectedFaceIdForAction(action) ?? getSpellFaceMetadata(metadata)?.name;
+      const selectedFace = resolveSelectedFace(metadata, selectedFaceId);
+      const spellMetadata = metadataForSelectedFace(metadata, selectedFaceId);
+      logMdfcDiagnostic(log, {
+        card: metadata?.name ?? action.card,
+        selectedFace: selectedFace?.name,
+        action: "CAST_SPELL",
+        typeLine: selectedFace?.typeLine,
+        oracleText: selectedFace?.oracleText,
+        result: "CAST",
+      });
+      const sourceZone = action.sourceZone ?? "HAND";
+      const paymentPlan = requireManaPaymentPlan(state, player, action.card, spellMetadata, log, sourceZone);
       applyManaPaymentPlan(state, player, paymentPlan);
-      payAdditionalCosts(state, player, metadata, log);
-      resolveSpell(state, player, action.card, log, action.face, action.targetId, action.targetGraveyardCard, action);
+      payAdditionalCosts(state, player, spellMetadata, log);
+      if (sourceZone === "COMMAND") {
+        removeCardFromZone(state.commandZone?.[player], action.card);
+        recordCommanderCastFromCommand(state, player, action.card);
+      } else {
+        removeCardFromZone(state.hands[player], action.card);
+      }
+      resolveSpell(state, player, action.card, log, selectedFaceId, action.targetId, action.targetGraveyardCard, action);
       break;
     }
     case "ACTIVATE_ABILITY": {
@@ -4231,7 +5334,9 @@ function resolveSpell(
   action?: Extract<SimAction, { type: "CAST_SPELL" }>
 ) {
   const metadata = getCardMetadata(state, player, card);
-  const spellName = face ?? getSpellPermanentName(card, metadata);
+  const selectedFaceId = face ?? action?.selectedFaceId ?? getSpellFaceMetadata(metadata)?.name;
+  const spellFaceMetadata = metadataForSelectedFace(metadata, selectedFaceId);
+  const spellName = selectedFaceId ?? getSpellPermanentName(card, metadata);
   emitRulesEvent(state, {
     type: "SPELL_RESOLVED",
     player,
@@ -4239,18 +5344,8 @@ function resolveSpell(
     card,
     face: spellName,
   });
-  if (isCreatureCard(card, metadata)) {
-    summonCreature(state, player, spellName, log, metadata?.spellFace ? {
-      ...metadata,
-      name: spellName,
-      typeLine: metadata.spellFace.typeLine ?? metadata.typeLine,
-      oracleText: metadata.spellFace.oracleText ?? metadata.oracleText,
-      manaValue: metadata.spellFace.manaValue ?? metadata.manaValue,
-      power: metadata.spellFace.power ?? metadata.power,
-      toughness: metadata.spellFace.toughness ?? metadata.toughness,
-      isLand: false,
-      isCreature: metadata.spellFace.isCreature ?? metadata.isCreature,
-    } : metadata);
+  if (isCreatureCard(card, spellFaceMetadata)) {
+    summonCreature(state, player, spellName, log, spellFaceMetadata);
     addPermanentState(state, {
       cardName: card,
       owner: player,
@@ -4265,32 +5360,32 @@ function resolveSpell(
       controller: player,
       card,
       face: spellName,
-    }, log, metadata);
+    }, log, spellFaceMetadata);
     return;
   }
 
-  if (isPermanentCard(card, metadata)) {
-    placePermanent(state, player, spellName, metadata, log);
+  if (isPermanentCard(card, spellFaceMetadata)) {
+    placePermanent(state, player, spellName, spellFaceMetadata, log);
     return;
   }
 
-  if (resolveSpellEffectsFromRegistry(state, player, card, metadata, log, targetId, targetGraveyardCard, action)) {
+  if (resolveSpellEffectsFromRegistry(state, player, card, spellFaceMetadata, log, targetId, targetGraveyardCard, action)) {
     return;
   }
 
-  if (handleTokenCreationSpell(state, player, card, metadata, log)) {
+  if (handleTokenCreationSpell(state, player, card, spellFaceMetadata, log)) {
     return;
   }
 
-  if (handleRemovalSpell(state, player, card, metadata, log, targetId)) {
+  if (handleRemovalSpell(state, player, card, spellFaceMetadata, log, targetId)) {
     return;
   }
 
-  if (handleDirectDamageSpell(state, player, card, metadata, log)) {
+  if (handleDirectDamageSpell(state, player, card, spellFaceMetadata, log)) {
     return;
   }
 
-  markUnsupportedEffect(state, card, metadata?.oracleText, log);
+  markUnsupportedEffect(state, card, spellFaceMetadata?.oracleText, log);
   state.graveyards[player].push(card);
 }
 
@@ -4791,11 +5886,46 @@ function getSpellCost(card: string, state: SimGameState, player: number) {
   return applyCostReductions(state, player, card, metadata, 3);
 }
 
-function getSpellManaCost(card: string, state: SimGameState, player: number): ManaCost {
-  const metadata = getCardMetadata(state, player, card);
+function commanderCastCountFor(state: SimGameState, player: number, card: CardName) {
+  const commanderName = state.commanders[player];
+  if (!commanderName || normalizeCardName(commanderName) !== normalizeCardName(card)) return 0;
+  const key = normalizeCardName(commanderName);
+  return state.commanderCastCounts?.[player]?.[key] ?? 0;
+}
+
+function commanderTaxFor(state: SimGameState, player: number, card: CardName) {
+  return commanderCastCountFor(state, player, card) * 2;
+}
+
+function recordCommanderCastFromCommand(state: SimGameState, player: number, card: CardName) {
+  const commanderName = state.commanders[player];
+  if (!commanderName || normalizeCardName(commanderName) !== normalizeCardName(card)) return;
+  const key = normalizeCardName(commanderName);
+  state.commanderCastCounts ??= {};
+  state.commanderCastCounts[player] ??= {};
+  state.commanderCastCounts[player][key] = (state.commanderCastCounts[player][key] ?? 0) + 1;
+}
+
+function removeCardFromZone(zone: CardName[] | undefined, card: CardName) {
+  if (!zone) return false;
+  const index = zone.findIndex((candidate) => normalizeCardName(candidate) === normalizeCardName(card));
+  if (index < 0) return false;
+  zone.splice(index, 1);
+  return true;
+}
+
+function getSpellManaCost(
+  card: string,
+  state: SimGameState,
+  player: number,
+  metadata = getCardMetadata(state, player, card),
+  sourceZone: "HAND" | "COMMAND" = "HAND"
+): ManaCost {
   const fallbackCost = getSpellCost(card, state, player);
   const parsed = manaCostFromMetadata(metadata, fallbackCost);
-  return reduceGenericManaCost(parsed, totalGenericCostReduction(state, player, card, metadata));
+  const reduced = reduceGenericManaCost(parsed, totalGenericCostReduction(state, player, card, metadata));
+  const commanderTax = sourceZone === "COMMAND" ? commanderTaxFor(state, player, card) : 0;
+  return { ...reduced, generic: reduced.generic + commanderTax };
 }
 
 function requireManaPaymentPlan(
@@ -4803,9 +5933,10 @@ function requireManaPaymentPlan(
   player: number,
   card: string,
   metadata: DeckCardMetadata | undefined,
-  log: (msg: string) => void
+  log: (msg: string) => void,
+  sourceZone: "HAND" | "COMMAND" = "HAND"
 ): ManaPaymentPlan {
-  const cost = getSpellManaCost(card, state, player);
+  const cost = getSpellManaCost(card, state, player, metadata, sourceZone);
   log(`[Mana] Player ${player} casting ${card} cost=${formatManaCost(cost)}`);
   const plan = findManaPaymentPlan(state, player, cost);
   if (!plan.legal) {

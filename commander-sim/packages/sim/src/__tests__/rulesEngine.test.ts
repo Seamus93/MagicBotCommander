@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type {
   AgentDecision,
   DeckCardMetadata,
@@ -7,7 +7,7 @@ import type {
   SimGameState,
   StackEntry,
 } from "@game-state/types";
-import { applyManaPaymentPlan, findManaPaymentPlan, getAvailableMana } from "../../../game-state/src/cardUtils.js";
+import { applyManaPaymentPlan, findManaPaymentPlan, getAvailableMana, traceManaSourcesForPlayer } from "../../../game-state/src/cardUtils.js";
 import {
   applyAction,
   activateAbilityToStack,
@@ -169,6 +169,46 @@ class CounterAgent extends PassAgent {
 }
 
 describe("rules engine legal actions and stack", () => {
+  it("stores the selected MDFC face when played as a land or cast as a spell", () => {
+    const glasspool = meta({
+      name: "Pinnacle Monk // Mystic Peak",
+      typeLine: "Creature - Human Monk // Land",
+      manaCost: "{4}{R}",
+      manaValue: 5,
+      isLand: true,
+      isPermanent: true,
+    });
+    const cards = [glasspool, basicLand("Island")];
+    const landState = makeState(cards, [glasspool.name]);
+    setManaBoard(landState, 0, Array.from({ length: 5 }, () => basicLand("Mountain")));
+
+    const landAction = generateActions(landState, 0, mainContext).find((action) =>
+      action.type === "PLAY_LAND" && action.card === glasspool.name
+    );
+    expect(landAction).toMatchObject({
+      type: "PLAY_LAND",
+      face: "Mystic Peak",
+      selectedFaceId: "Mystic Peak",
+    });
+    applyAction(landState, { type: "PLAY_LAND", card: glasspool.name }, 0, () => {});
+    expect(landState.battlefields[0]).toContain("Mystic Peak");
+    expect(landState.permanents![0].some((permanent) => permanent.face === "Mystic Peak")).toBe(true);
+
+    const spellState = makeState(cards, [glasspool.name]);
+    setManaBoard(spellState, 0, Array.from({ length: 5 }, () => basicLand("Mountain")));
+    const castAction = generateActions(spellState, 0, mainContext).find((action) =>
+      action.type === "CAST_SPELL" && action.card === glasspool.name
+    );
+    expect(castAction).toMatchObject({
+      type: "CAST_SPELL",
+      face: "Pinnacle Monk",
+      selectedFaceId: "Pinnacle Monk",
+    });
+    applyAction(spellState, { type: "CAST_SPELL", card: glasspool.name }, 0, () => {});
+    expect(spellState.creatures[0].some((creature) => creature.name === "Pinnacle Monk")).toBe(true);
+    expect(spellState.permanents![0].some((permanent) => permanent.face === "Pinnacle Monk")).toBe(true);
+  });
+
   it("does not expose sorcery actions during upkeep", () => {
     const state = makeState([
       meta({ name: "Divination", typeLine: "Sorcery", manaValue: 3, oracleText: "Draw two cards." }),
@@ -204,6 +244,54 @@ describe("rules engine legal actions and stack", () => {
     });
 
     expect(actions.some((action) => action.type === "CAST_SPELL" && action.card === "Divination")).toBe(false);
+  });
+
+  it("casts a permanent whose ETB trigger has no valid target", () => {
+    const card = meta({
+      name: "Targeting Recruit",
+      typeLine: "Creature - Pirate",
+      manaCost: "{1}",
+      manaValue: 1,
+      oracleText: "When Targeting Recruit enters the battlefield, destroy target creature.",
+      isCreature: true,
+      isPermanent: true,
+    });
+    const state = makeState([card], ["Targeting Recruit"]);
+    state.creatures = [[], [], [], []];
+
+    const parsed = parseCardRules(card);
+    expect(parsed.abilities.some((ability) =>
+      ability.kind === "TRIGGERED" &&
+      ability.trigger?.eventType === "PERMANENT_ENTERED" &&
+      Boolean(ability.targets?.length)
+    )).toBe(true);
+
+    const actions = generateActions(state, 0, mainContext);
+    expect(actions.some((action) => action.type === "CAST_SPELL" && action.card === "Targeting Recruit")).toBe(true);
+  });
+
+  it("casts a permanent whose non-ETB triggered ability has no valid target", () => {
+    const card = meta({
+      name: "Targeting Raider",
+      typeLine: "Creature - Pirate",
+      manaCost: "{1}",
+      manaValue: 1,
+      oracleText: "Whenever Targeting Raider attacks, destroy target creature.",
+      isCreature: true,
+      isPermanent: true,
+    });
+    const state = makeState([card], ["Targeting Raider"]);
+    state.creatures = [[], [], [], []];
+
+    const parsed = parseCardRules(card);
+    expect(parsed.abilities.some((ability) =>
+      ability.kind === "TRIGGERED" &&
+      ability.trigger?.eventType === "ATTACKER_DECLARED" &&
+      Boolean(ability.targets?.length)
+    )).toBe(true);
+
+    const actions = generateActions(state, 0, mainContext);
+    expect(actions.some((action) => action.type === "CAST_SPELL" && action.card === "Targeting Raider")).toBe(true);
   });
 
   it("exposes instants and flash creatures when the player has priority", () => {
@@ -516,6 +604,22 @@ describe("rules engine legal actions and stack", () => {
     expect(state.graveyards[0]).toContain("Fodder");
   });
 
+  it("does not require a permanent's activated ability cost to cast it", () => {
+    const knave = meta({
+      name: "Ruthless Knave Test",
+      typeLine: "Creature - Human Pirate",
+      isCreature: true,
+      isPermanent: true,
+      manaValue: 3,
+      oracleText: "{1}, Sacrifice a creature: Draw a card.",
+    });
+    const state = makeState([knave], ["Ruthless Knave Test"]);
+
+    expect(generateActions(state, 0, mainContext).some((action) =>
+      action.type === "CAST_SPELL" && action.card === "Ruthless Knave Test"
+    )).toBe(true);
+  });
+
   it("does not offer response instants with unpaid additional sacrifice costs", async () => {
     const bargain = meta({
       name: "Reckoner's Bargain",
@@ -578,6 +682,82 @@ describe("rules engine legal actions and stack", () => {
     expect(state.permanents![0].find((permanent) => permanent.face === "Mountain")?.tapped).toBe(true);
     expect(state.permanents![0].find((permanent) => permanent.face === "Sol Ring")?.tapped).toBe(true);
     expect(state.artifactMana[0]).toBe(0);
+  });
+
+  it("explains an untapped MDFC without a selected active face as unusable mana", () => {
+    const pinnacleMonk: DeckCardMetadata = {
+      name: "Pinnacle Monk / Mystic Peak",
+      typeLine: "Creature - Monk // Land",
+      manaCost: "{4}{R}",
+      manaValue: 5,
+      oracleText: "Prowess\nMystic Peak enters tapped.\n{T}: Add {R}.",
+      faces: [
+        {
+          name: "Pinnacle Monk",
+          typeLine: "Creature - Monk",
+          manaCost: "{4}{R}",
+          manaValue: 5,
+          oracleText: "Prowess",
+          isCreature: true,
+          isPermanent: true,
+        },
+        {
+          name: "Mystic Peak",
+          typeLine: "Land",
+          oracleText: "Mystic Peak enters tapped.\n{T}: Add {R}.",
+          isLand: true,
+          isPermanent: true,
+          producesMana: true,
+          manaProduction: 1,
+        },
+      ],
+      landFace: {
+        name: "Mystic Peak",
+        typeLine: "Land",
+        oracleText: "Mystic Peak enters tapped.\n{T}: Add {R}.",
+        isLand: true,
+        isPermanent: true,
+        producesMana: true,
+        manaProduction: 1,
+      },
+      spellFace: {
+        name: "Pinnacle Monk",
+        typeLine: "Creature - Monk",
+        manaCost: "{4}{R}",
+        manaValue: 5,
+        oracleText: "Prowess",
+        isCreature: true,
+        isPermanent: true,
+      },
+    };
+    const state = makeState([pinnacleMonk], []);
+    state.battlefields[0] = ["Pinnacle Monk / Mystic Peak"];
+    state.permanents![0] = [{
+      id: "perm_pinnacle_monk",
+      cardName: "Pinnacle Monk / Mystic Peak",
+      owner: 0,
+      controller: 0,
+      tapped: false,
+    }];
+
+    const sources = traceManaSourcesForPlayer(state, 0);
+    expect(sources).toEqual([
+      expect.objectContaining({
+        physicalCard: "Pinnacle Monk / Mystic Peak",
+        activeFace: "Pinnacle Monk / Mystic Peak",
+        tapped: false,
+        recognizedManaAbility: false,
+        produces: [],
+        usable: false,
+        unusableReason: "ACTIVE_FACE_NOT_RECOGNIZED",
+      }),
+    ]);
+    expect(getAvailableMana(state, 0)).toBe(0);
+    expect(findManaPaymentPlan(state, 0, { generic: 1, white: 0, blue: 0, black: 0, red: 0, green: 0, colorless: 0 })).toMatchObject({
+      legal: false,
+      sources: [],
+      missing: { generic: 1 },
+    });
   });
 
   it("allows matching colored costs and rejects colorless costs paid by colored mana", () => {
@@ -1191,6 +1371,88 @@ describe("explicit target, modal, optional, and activated action generation", ()
     expect(generateActions(state, 0, mainContext).some((action) => action.type === "CAST_SPELL" && action.card === "Murder")).toBe(false);
   });
 
+  it("requires a valid instant or sorcery spell target for Narset's Reversal", () => {
+    const reversal = meta({
+      name: "Narset's Reversal",
+      typeLine: "Instant",
+      isInstant: true,
+      manaValue: 2,
+      oracleText: "Copy target instant or sorcery spell, then you may choose new targets for the copy.",
+    });
+    const targetSorcery = meta({
+      name: "Target Sorcery",
+      typeLine: "Sorcery",
+      isSorcery: true,
+      manaValue: 1,
+      oracleText: "Draw a card.",
+    });
+    const parsed = parseCardRules(reversal);
+    expect(parsed.abilities.some((ability) =>
+      ability.kind === "SPELL_EFFECT" && ability.targets?.some((target) =>
+        target.type === "SPELL" && target.zone === "stack" && target.spellTypes?.includes("instant")
+      )
+    )).toBe(true);
+
+    const state = makeState([reversal, targetSorcery], ["Narset's Reversal"]);
+    expect(generateActions(state, 0, mainContext).some((action) =>
+      action.type === "CAST_SPELL" && action.card === "Narset's Reversal"
+    )).toBe(false);
+
+    state.stack.push({
+      id: "target_sorcery_stack",
+      action: { type: "CAST_SPELL", card: "Target Sorcery" },
+      casterIndex: 0,
+      resolved: false,
+      responses: [],
+      kind: "spell",
+      sourceCard: "Target Sorcery",
+    });
+    const withTarget = generateActions(state, 0, mainContext).filter((action) =>
+      action.type === "CAST_SPELL" && action.card === "Narset's Reversal"
+    );
+    expect(withTarget).toHaveLength(1);
+    expect(withTarget[0]).toMatchObject({ targetStackId: "target_sorcery_stack" });
+
+    state.stack[0].action = { type: "CAST_SPELL", card: "Ruthless Knave Test" };
+    expect(generateActions(state, 0, mainContext).some((action) =>
+      action.type === "CAST_SPELL" && action.card === "Narset's Reversal"
+    )).toBe(false);
+  });
+
+  it("requires an appropriate target spell for Flare of Duplication", () => {
+    const flare = meta({
+      name: "Flare of Duplication",
+      typeLine: "Instant",
+      isInstant: true,
+      manaValue: 4,
+      oracleText: "Copy target instant or sorcery spell you control. You may choose new targets for the copy.",
+    });
+    const targetInstant = meta({
+      name: "Target Instant",
+      typeLine: "Instant",
+      isInstant: true,
+      manaValue: 1,
+      oracleText: "Draw a card.",
+    });
+    const state = makeState([flare, targetInstant], ["Flare of Duplication"]);
+    expect(generateActions(state, 0, mainContext).some((action) =>
+      action.type === "CAST_SPELL" && action.card === "Flare of Duplication"
+    )).toBe(false);
+
+    state.stack.push({
+      id: "target_instant_stack",
+      action: { type: "CAST_SPELL", card: "Target Instant" },
+      casterIndex: 0,
+      resolved: false,
+      responses: [],
+      kind: "spell",
+      sourceCard: "Target Instant",
+    });
+    expect(generateActions(state, 0, mainContext).some((action) =>
+      action.type === "CAST_SPELL" && action.card === "Flare of Duplication" && action.targetStackId === "target_instant_stack"
+    )).toBe(true);
+  });
+
   it("fizzles when an explicit permanent target disappears before resolution", async () => {
     const murder = meta({
       name: "Murder",
@@ -1597,6 +1859,47 @@ describe("explicit target, modal, optional, and activated action generation", ()
     state.stack.push(entry!);
     await resolveStackWithPriority(state, 0, [0, 1, 2, 3].map((i) => new PassAgent(`p${i}`)), () => {});
     expect(state.stack).toHaveLength(0);
+  });
+
+  it("fetches any matching land type, puts it onto the battlefield, and shuffles after a Bad River activation", async () => {
+    const badRiver = meta({
+      name: "Bad River",
+      typeLine: "Land",
+      isLand: true,
+      isPermanent: true,
+      oracleText: "Bad River enters the battlefield tapped.\n{T}, Sacrifice Bad River: Search your library for an Island or Swamp card, put it onto the battlefield, then shuffle.",
+    });
+    const mountain = basicLand("Mountain");
+    const swamp = basicLand("Swamp");
+    const forest = basicLand("Forest");
+    const state = makeState([badRiver, mountain, swamp, forest], []);
+    setManaBoard(state, 0, [badRiver]);
+    state.permanents![0][0].tapped = false;
+    state.libraries[0] = ["Mountain", "Swamp", "Forest"];
+    state.cardMetadata[0].mountain = mountain;
+    state.cardMetadata[0].swamp = swamp;
+    state.cardMetadata[0].forest = forest;
+    const sourceId = state.permanents![0][0].id;
+    const action = generateActions(state, 0, mainContext).find((candidate): candidate is Extract<SimAction, { type: "ACTIVATE_ABILITY" }> =>
+      candidate.type === "ACTIVATE_ABILITY" && candidate.sourcePermanentId === sourceId
+    );
+    expect(action).toBeDefined();
+    const entry = activateAbilityToStack(state, 0, action!, () => {});
+    expect(entry).toBeTruthy();
+    state.stack.push(entry!);
+    const log: string[] = [];
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    try {
+      await resolveStackWithPriority(state, 0, [0, 1, 2, 3].map((player) => new PassAgent(`fetch-${player}`)), (message) => log.push(message));
+    } finally {
+      vi.restoreAllMocks();
+    }
+
+    expect(state.graveyards[0]).toContain("Bad River");
+    expect(state.battlefields[0]).toContain("Swamp");
+    expect(state.permanents![0].some((permanent) => permanent.face === "Swamp" && !permanent.tapped)).toBe(true);
+    expect(state.libraries[0]).toEqual(["Forest", "Mountain"]);
+    expect(log).toContain("Player 0 shuffles their library");
   });
 
   it("stack entries include diagnostic identity", () => {

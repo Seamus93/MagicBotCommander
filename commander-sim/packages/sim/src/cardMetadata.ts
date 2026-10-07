@@ -86,15 +86,20 @@ function faceMetadata(face: any) {
   const typeLower = typeLine?.toLowerCase() ?? "";
   const oracleText = typeof face?.oracle_text === "string" ? face.oracle_text : undefined;
   const manaProduction = detectManaProduction(oracleText);
+  const typeParts = parseTypeLine(typeLine);
   return {
     name: face?.name,
     typeLine,
+    supertypes: typeParts.supertypes,
+    types: typeParts.types,
+    subtypes: typeParts.subtypes,
     manaCost: typeof face?.mana_cost === "string" ? face.mana_cost : undefined,
     oracleText,
     manaValue: typeof face?.mana_value === "number" ? face.mana_value : undefined,
     power: parseStat(face?.power),
     toughness: parseStat(face?.toughness),
     colors: Array.isArray(face?.colors) ? face.colors : undefined,
+    colorIndicator: Array.isArray(face?.color_indicator) ? face.color_indicator : undefined,
     colorIdentity: Array.isArray(face?.color_identity) ? face.color_identity : undefined,
     isLand: typeLower.includes("land"),
     isCreature: typeLower.includes("creature"),
@@ -108,6 +113,33 @@ function faceMetadata(face: any) {
     producesMana: manaProduction !== undefined,
     manaProduction,
     keywords: Array.isArray(face?.keywords) ? face.keywords : undefined,
+  };
+}
+
+function parseTypeLine(typeLine?: string) {
+  const [left, right] = (typeLine ?? "").split(/\s+[-\u2014]\s+/, 2);
+  const words = left.split(/\s+/).filter(Boolean);
+  const knownTypes = new Set([
+    "Artifact",
+    "Battle",
+    "Conspiracy",
+    "Creature",
+    "Dungeon",
+    "Enchantment",
+    "Instant",
+    "Kindred",
+    "Land",
+    "Phenomenon",
+    "Plane",
+    "Planeswalker",
+    "Scheme",
+    "Sorcery",
+    "Vanguard",
+  ]);
+  return {
+    supertypes: words.filter((word) => !knownTypes.has(word)),
+    types: words.filter((word) => knownTypes.has(word)),
+    subtypes: right?.split(/\s+/).filter(Boolean) ?? [],
   };
 }
 

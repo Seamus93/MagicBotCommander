@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSeatsFromControllers } from "../state/stateSerializer";
+import { assignSeatsByTurnOrder, buildSeatsFromControllers } from "../state/stateSerializer";
 import {
   authenticateSeatRecipient,
   buildSeatCredentialState,
@@ -86,6 +86,31 @@ describe("seat ownership", () => {
       connectionId: "conn-b",
       recipient: { role: "player", seatId: "northEast", playerId: "p1", playerToken: "token-p1" },
     })).toMatchObject({ ok: false, code: "SEAT_NOT_HUMAN" });
+  });
+
+  it("authenticates a player token after turn-order seat reassignment", () => {
+    const seats = assignSeatsByTurnOrder(buildSeatsFromControllers(["human", "human", "ai", "ai"]), 1);
+    const p0Seat = seats.find((seat) => seat.playerIndex === 0);
+    const credentials = buildSeatCredentialState([
+      { seatId: p0Seat?.id ?? "southWest", playerId: "p0", token: "token-p0" },
+    ]);
+
+    const result = authenticateSeatRecipient({
+      seats,
+      credentials,
+      connectionId: "conn-remap",
+      recipient: {
+        role: "player",
+        seatId: "northWest",
+        playerId: "p0",
+        playerToken: "token-p0",
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      recipient: { role: "player", seatId: p0Seat?.id, playerId: "p0" },
+    });
   });
 
   it("allows table and debug spectators without seat ownership", () => {

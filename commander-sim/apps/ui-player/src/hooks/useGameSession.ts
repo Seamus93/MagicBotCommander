@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { ConnectionRole, Seat, SeatId, SessionCapabilities, SessionMode, ViewType } from "../../../../packages/game-state/src/session";
+import type { AiDecisionTrace } from "../../../../packages/game-state/src/types";
 
 const GAME_SERVER_URL = import.meta.env.VITE_GAME_SERVER_URL ?? "http://localhost:5300";
 const GAME_WS_URL = GAME_SERVER_URL.replace(/^http/, "ws");
@@ -36,8 +37,16 @@ export interface FilteredPlayerState {
   displayName?: string;
   life: number;
   commander: string;
+  commandZone?: string[];
   battlefield: string[];
-  battlefieldPermanents?: Array<{ name: string; tapped: boolean }>;
+  battlefieldPermanents?: Array<{
+    name: string;
+    tapped: boolean;
+    isLand?: boolean;
+    typeLine?: string;
+    imageName?: string;
+    imageFace?: "front" | "back";
+  }>;
   creatures: CreaturePermanent[];
   graveyard: string[];
   exile: string[];
@@ -104,6 +113,7 @@ export interface UseGameSessionReturn {
   capabilities: SessionCapabilities | null;
   pendingDecision: PendingDecision | null;
   gameLog: string[];
+  aiDecisionTraces: AiDecisionTrace[];
   isConnected: boolean;
   gameOver: GameOverInfo | null;
   stateOutOfSyncMessage: string | null;
@@ -192,6 +202,7 @@ export function useGameSession(
   const [capabilities, setCapabilities] = useState<SessionCapabilities | null>(null);
   const [pendingDecision, setPendingDecision] = useState<PendingDecision | null>(null);
   const [gameLog, setGameLog] = useState<string[]>([]);
+  const [aiDecisionTraces, setAiDecisionTraces] = useState<AiDecisionTrace[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [gameOver, setGameOver] = useState<GameOverInfo | null>(null);
   const [stateOutOfSyncMessage, setStateOutOfSyncMessage] = useState<string | null>(null);
@@ -212,6 +223,7 @@ export function useGameSession(
     setCapabilities(null);
     setPendingDecision(null);
     setGameLog([]);
+    setAiDecisionTraces([]);
     setIsConnected(false);
     setGameOver(null);
     setStateOutOfSyncMessage(null);
@@ -297,6 +309,9 @@ export function useGameSession(
           break;
         case "game_log":
           setGameLog((prev) => [...prev.slice(-199), msg.message as string]);
+          break;
+        case "ai_decision_trace":
+          setAiDecisionTraces((prev) => [...prev.slice(-199), msg.trace as AiDecisionTrace]);
           break;
       }
     };
@@ -398,6 +413,7 @@ export function useGameSession(
     capabilities,
     pendingDecision: synchronizedPendingDecision,
     gameLog,
+    aiDecisionTraces,
     isConnected,
     gameOver,
     stateOutOfSyncMessage,

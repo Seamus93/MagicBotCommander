@@ -5,12 +5,16 @@ export type CardName = string;
 export interface CardFaceMetadata {
   name: string;
   typeLine?: string;
+  supertypes?: string[];
+  types?: string[];
+  subtypes?: string[];
   manaCost?: string;
   oracleText?: string;
   manaValue?: number;
   power?: number;
   toughness?: number;
   colors?: string[];
+  colorIndicator?: string[];
   colorIdentity?: string[];
   isLand?: boolean;
   isCreature?: boolean;
@@ -81,6 +85,19 @@ export interface ManaPaymentSource {
   usedMana: ManaPool;
 }
 
+export interface ManaSourceTrace {
+  physicalCard: CardName;
+  activeFace?: CardName;
+  selectedFace?: CardName;
+  zone: "battlefield";
+  tapped: boolean;
+  recognizedManaAbility: boolean;
+  manaAbilityRecognized: boolean;
+  produces: string[];
+  usable: boolean;
+  unusableReason?: string;
+}
+
 export interface ManaPaymentPlan {
   legal: boolean;
   sources: ManaPaymentSource[];
@@ -88,6 +105,141 @@ export interface ManaPaymentPlan {
 }
 
 export type RulesCoverageLevel = "FULL" | "PARTIAL" | "UNSUPPORTED";
+
+export type AiDecisionRejectionReason =
+  | "WRONG_TIMING"
+  | "INSUFFICIENT_TOTAL_MANA"
+  | "MISSING_COLORED_MANA"
+  | "NO_VALID_TARGET"
+  | "ADDITIONAL_COST_UNPAYABLE"
+  | "UNSUPPORTED_CARD_RULE"
+  | "CARD_NOT_CASTABLE"
+  | "ACTION_GENERATION_FAILED"
+  | "OTHER";
+
+export interface AiConsideredActionTrace {
+  type: SimAction["type"] | "CAST_SPELL" | "PLAY_LAND";
+  cardId?: CardName;
+  cardName?: CardName;
+  physicalCard?: CardName;
+  selectedFaceId?: CardName;
+  selectedFaceName?: CardName;
+  selectedFaceTypeLine?: string;
+  sourceZone?: "HAND" | "COMMAND";
+  commanderCastCount?: number;
+  commanderTax?: number;
+  baseCost?: ManaCost;
+  effectiveCost?: ManaCost;
+  target?: string;
+  recognized: boolean;
+  timingLegal: boolean;
+  manaPayable: boolean;
+  targetsValid: boolean;
+  additionalCostsPayable: boolean;
+  spellAdditionalCosts?: CostDescriptor[];
+  activatedAbilityCosts?: CostDescriptor[];
+  additionalCostsRequiredDuringCast?: boolean;
+  unpayableAdditionalCostReason?: string;
+  spellRequiresTargetsDuringCast?: boolean;
+  legal: boolean;
+  rejectionReason?: AiDecisionRejectionReason;
+  paymentPlan?: ManaPaymentPlan;
+  targetRequirements?: TargetRequirementTrace[];
+  validTargets?: TargetRef[];
+  stackSize?: number;
+  stackObjects?: Array<{ id: string; cardName: string; casterIndex: number; kind?: StackEntry["kind"] }>;
+  validStackTargets?: Array<{ id: string; cardName: string; casterIndex: number }>;
+}
+
+export interface TargetRequirementTrace {
+  source: "SPELL_EFFECT" | "ETB_TRIGGER" | "TRIGGERED_ABILITY" | "ACTIVATED_ABILITY";
+  text: string;
+  requiredDuringCast: boolean;
+  validTargetCount: number;
+  validTargets?: TargetRef[];
+}
+
+export interface AiActionEvaluationTrace {
+  action: SimAction;
+  physicalCard?: CardName;
+  selectedFaceId?: CardName;
+  selectedFaceName?: CardName;
+  selectedFaceTypeLine?: string;
+  neuralScore?: number;
+  dbScore?: number;
+  heuristicScore?: number;
+  politicalScore?: number;
+  finalScore: number;
+  scoreRank?: number;
+}
+
+export interface DecisionSelectionTrace {
+  selectedBy: string;
+  selectionReason: string;
+  selectionValueName: string;
+  selectionValue?: number;
+  selectionCandidates: SimAction[];
+  confidenceMeaning?: string;
+}
+
+export interface AiDecisionTrace {
+  decisionId: string;
+  timestamp: string;
+  playerId: number;
+  turn: number;
+  phase: string;
+  step: string;
+  state: {
+    life: number;
+    handSize: number;
+    battlefieldSummary: string[];
+    availableMana: number;
+    untappedManaSources: string[];
+    manaSources: ManaSourceTrace[];
+  };
+  consideredActions: AiConsideredActionTrace[];
+  legalActions: SimAction[];
+  evaluation: AiActionEvaluationTrace[];
+  decision: {
+    chosenAction: SimAction;
+    source: DecisionSource;
+    score?: number;
+    confidence?: number;
+    argmaxAction?: SimAction;
+    argmaxFinalScore?: number;
+    chosenActionFinalScore?: number;
+    isFinalScoreArgmax: boolean;
+    decisionScoreMismatch: boolean;
+    selectedBy: string;
+    selectionReason: string;
+    selectionValueName: string;
+    selectionValue?: number;
+    selectionCandidates: SimAction[];
+    confidenceMeaning?: string;
+  };
+  execution: {
+    attemptedAction: SimAction;
+    success: boolean;
+    failureReason?: string;
+    fallbackAction?: SimAction;
+  };
+  result: {
+    stateChanged: boolean;
+    lifeDelta: number;
+    handDelta: number;
+    battlefieldDelta: number;
+    graveyardDelta: number;
+    nextPhase: string;
+  };
+  performance: {
+    rulesMs: number;
+    dbMs: number;
+    inferenceMs: number;
+    totalMs: number;
+  };
+  questionable: boolean;
+  unsupportedCards: CardName[];
+}
 
 export interface PermanentState {
   id: string;
@@ -182,6 +334,7 @@ export interface EffectDescriptor {
   fromZone?: "library" | "graveyard" | "battlefield" | "hand";
   toZone?: "hand" | "battlefield" | "graveyard" | "exile" | "library";
   subtype?: string;
+  subtypeAlternatives?: string[];
   cardType?: "land" | "creature" | "artifact" | "enchantment" | "permanent" | "card";
   controller?: "self" | "opponent" | "any";
   duration?: "PERMANENT" | "UNTIL_END_OF_TURN" | "UNTIL_YOUR_NEXT_TURN" | "WHILE_SOURCE_ON_BATTLEFIELD";
@@ -189,6 +342,7 @@ export interface EffectDescriptor {
   toughnessDelta?: number;
   keyword?: string;
   tapped?: boolean;
+  shuffleAfterSearch?: boolean;
   selection?: SelectionDescriptor;
 }
 
@@ -250,6 +404,7 @@ export interface TargetRequirement {
   controller?: "self" | "opponent" | "any";
   owner?: "self" | "opponent" | "any";
   cardType?: "land" | "creature" | "artifact" | "enchantment" | "permanent" | "card";
+  spellTypes?: Array<"instant" | "sorcery">;
   subtype?: string;
   required?: boolean;
   optional?: boolean;
@@ -331,6 +486,9 @@ export interface SimGameState {
   permanents?: PermanentState[][];
   graveyards: CardName[][];
   commanders: CardName[];
+  commandZone?: CardName[][];
+  commanderCastCounts?: Record<number, Record<string, number>>;
+  deckInitAudits?: DeckInitAudit[];
   creatures: CreaturePermanent[][];
   artifacts: CardName[][];
   artifactMana: number[];
@@ -355,6 +513,35 @@ export interface SimGameState {
     manaPaymentFailures?: number;
   };
   stack: StackEntry[];
+}
+
+export interface DeckInitAudit {
+  playerId: number;
+  inputDecklistCount: number;
+  expectedDeckSize: number;
+  commander: {
+    cardId: string;
+    cardName: CardName;
+    instanceId: string;
+  };
+  commandZoneCount: number;
+  libraryCountBeforeOpeningHand: number;
+  handCountAfterOpeningDraw: number;
+  libraryCountAfterOpeningDraw: number;
+  totalCardsAcrossZones: number;
+  totalUniqueInstanceIds: number;
+  commanderOccurrencesAcrossZones: number;
+  duplicateInstanceIds: string[];
+  duplicateCardNames: string[];
+  invariantViolations: string[];
+  instanceIdsByZone: {
+    commandZone: string[];
+    library: string[];
+    hand: string[];
+    battlefield: string[];
+    graveyard: string[];
+    exile: string[];
+  };
 }
 
 export interface CostReducer {
@@ -382,11 +569,25 @@ export interface TargetRef {
 }
 
 export type SimAction =
-  | { type: "PLAY_LAND"; card: CardName; face?: string }
+  | {
+      type: "PLAY_LAND";
+      card: CardName;
+      face?: string;
+      selectedFaceId?: string;
+      physicalCard?: CardName;
+      selectedFaceName?: CardName;
+      selectedFaceTypeLine?: string;
+      entryChoice?: { type: "PAY_LIFE"; amount: number } | { type: "DECLINE" };
+    }
   | {
       type: "CAST_SPELL";
       card: CardName;
+      sourceZone?: "HAND" | "COMMAND";
       face?: string;
+      selectedFaceId?: string;
+      physicalCard?: CardName;
+      selectedFaceName?: CardName;
+      selectedFaceTypeLine?: string;
       targetStackId?: string;
       targetId?: string;
       targetPlayer?: number;
@@ -439,6 +640,7 @@ export interface DecisionMetadata {
   confidence?: number;
   expectedReward?: number;
   visits?: number;
+  selection?: DecisionSelectionTrace;
 }
 
 export interface AgentDecision {
@@ -486,6 +688,10 @@ export interface SimAgent {
     state: SimGameState,
     availableActions: SimAction[]
   ): Promise<AgentDecision> | AgentDecision;
+  traceActionScores?(
+    state: SimGameState,
+    availableActions: SimAction[]
+  ): AiActionEvaluationTrace[];
   decideTarget?(
     state: SimGameState,
     opponentIndices: number[]
@@ -539,6 +745,7 @@ export interface SimulationOptions {
   playerCommanders?: Array<CardName | null | undefined>;
   startingPlayerIndex?: number;
   onStateChange?: (state: SimGameState, event: GameEvent) => void;
+  onAiDecisionTrace?: (trace: AiDecisionTrace) => void;
   concededPlayers?: ReadonlySet<number>;
   enableStack?: boolean;
   phaseDelayMs?: number;
@@ -577,6 +784,7 @@ export interface SimulationDiagnostics {
   aborted?: boolean;
   abortReason?: string;
   abortDump?: string;
+  deckInitAudits?: DeckInitAudit[];
   actionsApplied: number;
   maxAvailableActions: number;
   avgAvailableActions: number;
@@ -589,6 +797,7 @@ export interface SimulationDiagnostics {
   responsesGenerated: number;
   maxStackDepth: number;
   maxPriorityIterationsPerWindow: number;
+  maxActionsPerTurn?: number;
   avgActivateActions: number;
   activateActionWindows: number;
   maxActivateActions: number;
@@ -610,6 +819,40 @@ export interface SimulationDiagnostics {
     topCards: Array<{ key: string; count: number }>;
   }>;
   recentActions: string[];
+  recentStateTransitions?: string[];
+  sameStateRepetitionCount?: number;
+  aiDecisionLogs?: Array<{
+    player: number;
+    turn: number;
+    phase: string;
+    legalActions: number;
+    dbRetrievalMs: number;
+    policyInferenceMs: number;
+    rulesEngineMs: number;
+    totalDecisionMs: number;
+    dbCandidatesScanned: number;
+    dbCandidatesReturned: number;
+    stateChanged: boolean;
+    action: string;
+  }>;
+  aiDecisionTraces?: AiDecisionTrace[];
+  lastActionWindow?: {
+    turn: number;
+    phase: string;
+    player: number;
+    legalActions: string[];
+    total: number;
+    stackDepth: number;
+  };
+  lastFingerprintRepeats?: number;
+  episodePerf?: {
+    gameMs: number;
+    aiMs: number;
+    dbMs: number;
+    engineMs: number;
+    actions: number;
+    turns: number;
+  };
   timingsMs: Record<string, number>;
   decisionCounters?: Record<string, number>;
   decisionSamples?: Record<string, number[]>;

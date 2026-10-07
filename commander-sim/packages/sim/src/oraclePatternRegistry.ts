@@ -250,15 +250,19 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
     },
     abilityKind: "TRIGGERED",
     supportLevel: "PARTIAL",
-    parse: (fragment, match) => parseEffectText((match as RegExpMatchArray)?.[1] ?? "").map((effect) => ({
-      kind: "TRIGGERED",
-      trigger: trigger("PERMANENT_ENTERED"),
-      conditions: [{ type: "SOURCE_IS_THIS" }],
-      effects: [effect],
-      sourceFragment: fragment.text,
-      patternId: "ETB_TRIGGER",
-      supportLevel: "PARTIAL",
-    })),
+    parse: (fragment, match) => {
+      const summary = parseEffectAbilitySummary((match as RegExpMatchArray)?.[1] ?? "");
+      return summary.effects.length ? [{
+        kind: "TRIGGERED",
+        trigger: trigger("PERMANENT_ENTERED"),
+        conditions: [{ type: "SOURCE_IS_THIS" }],
+        effects: summary.effects,
+        targets: summary.targets,
+        sourceFragment: fragment.text,
+        patternId: "ETB_TRIGGER",
+        supportLevel: "PARTIAL",
+      }] : [];
+    },
   },
   {
     id: "DIES_DRAW",
@@ -343,30 +347,38 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
     matcher: /\bwhenever .+ attacks,? (.+)$/i,
     abilityKind: "TRIGGERED",
     supportLevel: "PARTIAL",
-    parse: (fragment, match) => parseEffectText((match as RegExpMatchArray)?.[1] ?? "").map((effect) => ({
-      kind: "TRIGGERED",
-      trigger: trigger("ATTACKER_DECLARED"),
-      conditions: [{ type: "SOURCE_IS_THIS" }],
-      effects: [effect],
-      sourceFragment: fragment.text,
-      patternId: "ATTACK_TRIGGER",
-      supportLevel: "PARTIAL",
-    })),
+    parse: (fragment, match) => {
+      const summary = parseEffectAbilitySummary((match as RegExpMatchArray)?.[1] ?? "");
+      return summary.effects.length ? [{
+        kind: "TRIGGERED",
+        trigger: trigger("ATTACKER_DECLARED"),
+        conditions: [{ type: "SOURCE_IS_THIS" }],
+        effects: summary.effects,
+        targets: summary.targets,
+        sourceFragment: fragment.text,
+        patternId: "ATTACK_TRIGGER",
+        supportLevel: "PARTIAL",
+      }] : [];
+    },
   },
   {
     id: "COMBAT_DAMAGE_TRIGGER",
     matcher: /\bwhenever (.+?) deals? combat damage to a player,? (.+)$/i,
     abilityKind: "TRIGGERED",
     supportLevel: "PARTIAL",
-    parse: (fragment, match) => parseEffectText((match as RegExpMatchArray)?.[2] ?? "").map((effect) => ({
-      kind: "TRIGGERED",
-      trigger: trigger("COMBAT_DAMAGE_DEALT"),
-      conditions: combatDamageConditions((match as RegExpMatchArray)?.[1] ?? ""),
-      effects: [effect],
-      sourceFragment: fragment.text,
-      patternId: "COMBAT_DAMAGE_TRIGGER",
-      supportLevel: "PARTIAL",
-    })),
+    parse: (fragment, match) => {
+      const summary = parseEffectAbilitySummary((match as RegExpMatchArray)?.[2] ?? "");
+      return summary.effects.length ? [{
+        kind: "TRIGGERED",
+        trigger: trigger("COMBAT_DAMAGE_DEALT"),
+        conditions: combatDamageConditions((match as RegExpMatchArray)?.[1] ?? ""),
+        effects: summary.effects,
+        targets: summary.targets,
+        sourceFragment: fragment.text,
+        patternId: "COMBAT_DAMAGE_TRIGGER",
+        supportLevel: "PARTIAL",
+      }] : [];
+    },
   },
   {
     id: "PERMANENT_TYPE_ENTERED_TRIGGER",
@@ -375,16 +387,17 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
     supportLevel: "PARTIAL",
     parse: (fragment, match) => {
       const subject = ((match as RegExpMatchArray)?.[1] ?? "").trim();
-      const effects = parseEffectText((match as RegExpMatchArray)?.[2] ?? "");
-      return effects.map((effect) => ({
+      const summary = parseEffectAbilitySummary((match as RegExpMatchArray)?.[2] ?? "");
+      return summary.effects.length ? [{
         kind: "TRIGGERED",
         trigger: trigger("PERMANENT_ENTERED"),
         conditions: enteredPermanentConditions(subject),
-        effects: [effect],
+        effects: summary.effects,
+        targets: summary.targets,
         sourceFragment: fragment.text,
         patternId: "PERMANENT_TYPE_ENTERED_TRIGGER",
         supportLevel: "PARTIAL",
-      }));
+      }] : [];
     },
   },
   {
@@ -399,6 +412,29 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
       patternId: "DRAW_CARDS",
       supportLevel: "FULL",
     }],
+  },
+  {
+    id: "TARGET_SPELL",
+    matcher: standaloneMatcher(/\btarget (instant and\/or sorcery|instant or sorcery|instant|sorcery|spell)(?: spell)?\b/i),
+    abilityKind: "SPELL_EFFECT",
+    supportLevel: "PARTIAL",
+    parse: (fragment, match) => {
+      const targetType = ((match as RegExpMatchArray)?.[1] ?? "spell").toLowerCase();
+      return [{
+        kind: "SPELL_EFFECT",
+        effects: [],
+        targets: [{
+          type: "SPELL",
+          zone: "stack",
+          controller: /\byou control\b/i.test(fragment.text) ? "self" : "any",
+          spellTypes: targetType === "spell" ? undefined : ["instant", "sorcery"],
+          required: true,
+        }],
+        sourceFragment: fragment.text,
+        patternId: "TARGET_SPELL",
+        supportLevel: "PARTIAL",
+      }];
+    },
   },
   {
     id: "GRAVEYARD_RETURN_TO_HAND",
@@ -880,7 +916,7 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
   },
   {
     id: "FETCH_LAND_ACTIVATED",
-    matcher: /\{T\},\s*Sacrifice this land:\s*Search your library for (?:an?|one)?\s*([A-Za-z ]+?) card, put it onto the battlefield( tapped)?/i,
+    matcher: /\{T\},\s*Sacrifice (?:this land|[^:]+):\s*Search your library for (?:an?|one)?\s*([A-Za-z ]+?) card, put it onto the battlefield( tapped)?(?:,?\s*then shuffle)?/i,
     abilityKind: "ACTIVATED",
     supportLevel: "PARTIAL",
     parse: (fragment, match) => [{
@@ -894,7 +930,12 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
         fromZone: "library",
         toZone: "battlefield",
         subtype: ((match as RegExpMatchArray)?.[1] ?? "").trim(),
+        subtypeAlternatives: ((match as RegExpMatchArray)?.[1] ?? "")
+          .split(/\s+or\s+/i)
+          .map((alternative) => alternative.trim())
+          .filter(Boolean),
         tapped: Boolean((match as RegExpMatchArray)?.[2]),
+        shuffleAfterSearch: /\bthen shuffle\b/i.test(fragment.text),
       }],
       sourceFragment: fragment.text,
       patternId: "FETCH_LAND_ACTIVATED",
@@ -948,6 +989,7 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
         kind: "ACTIVATED",
         costs,
         effects: parseEffectText((match as RegExpMatchArray)?.[2] ?? ""),
+        targets: parseEffectAbilities((match as RegExpMatchArray)?.[2] ?? "").flatMap((ability) => ability.targets ?? []),
         sourceFragment: fragment.text,
         patternId: "TAP_ACTIVATED_EFFECT",
         supportLevel: "PARTIAL",
@@ -963,6 +1005,7 @@ export const ORACLE_PATTERN_REGISTRY: OraclePatternDefinition[] = [
       kind: "ACTIVATED",
       costs: [{ type: "PAY_LIFE", life: Number((match as RegExpMatchArray)?.[1] ?? 0) }],
       effects: parseEffectText((match as RegExpMatchArray)?.[2] ?? ""),
+      targets: parseEffectAbilities((match as RegExpMatchArray)?.[2] ?? "").flatMap((ability) => ability.targets ?? []),
       sourceFragment: fragment.text,
       patternId: "PAY_LIFE_ACTIVATED",
       supportLevel: "PARTIAL",
@@ -1229,14 +1272,25 @@ export function matchOraclePatterns(fragment: OracleFragment) {
 }
 
 function parseEffectText(text: string): EffectDescriptor[] {
+  return parseEffectAbilities(text).flatMap((ability) => ability.effects);
+}
+
+function parseEffectAbilitySummary(text: string): Pick<ParsedAbility, "effects" | "targets"> {
+  const abilities = parseEffectAbilities(text);
+  return {
+    effects: abilities.flatMap((ability) => ability.effects),
+    targets: abilities.flatMap((ability) => ability.targets ?? []),
+  };
+}
+
+function parseEffectAbilities(text: string): ParsedAbility[] {
   const fragment: OracleFragment = {
     cardName: "effect",
     text,
     metadata: { name: "effect", oracleText: text },
   };
   return matchOraclePatterns(fragment)
-    .flatMap((match) => match.abilities)
-    .flatMap((ability) => ability.effects);
+    .flatMap((match) => match.abilities);
 }
 
 export function oracleFragmentsForCard(metadata: DeckCardMetadata): OracleFragment[] {
@@ -1349,6 +1403,9 @@ export function parseCardRules(metadata: DeckCardMetadata): ParsedCardRules {
         ...ability,
         supportLevel: abilityRuntimeSupported(ability) ? ability.supportLevel : "PARTIAL" as const,
       }));
+      if (match.definition.id === "TARGET_SPELL" && /\bcopy\b/i.test(fragment.text)) {
+        unsupportedFragments.push(fragment.text);
+      }
       abilities.push(...supportedAbilities);
       recognizedFragments.push({
         fragment: fragment.text,

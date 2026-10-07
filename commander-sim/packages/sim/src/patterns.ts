@@ -996,6 +996,7 @@ export const actionToKey = (
     targetStackId?: string;
     sourcePermanentId?: string;
     abilityId?: string;
+    entryChoice?: { type: "PAY_LIFE"; amount: number } | { type: "DECLINE" };
     targetSemantic?: string;
     targetSemantics?: string[];
     spellType?: string;
@@ -1021,6 +1022,12 @@ export const actionToKey = (
         parts[0] = `RESOLVE_CHOICE:${action.card ?? card ?? "NONE"}`;
         parts.push(`choice=${encodeActionKeyValue(action.choiceType ?? "choice")}`);
         parts.push(`permanent=${encodeActionKeyValue(action.permanentId ?? "unknown")}`);
+      }
+      if (action?.type === "PLAY_LAND" && action.entryChoice) {
+        const choice = action.entryChoice.type === "PAY_LIFE"
+          ? `pay_life_${action.entryChoice.amount}`
+          : "decline";
+        parts.push(`entry=${encodeActionKeyValue(choice)}`);
       }
       if ("sourceCard" in (action ?? {}) && action?.sourceCard) {
         parts.push(`sourceCard=${action.sourceCard}`);

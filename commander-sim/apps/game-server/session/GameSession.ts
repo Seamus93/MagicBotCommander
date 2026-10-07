@@ -1,9 +1,10 @@
-import type { SimGameState, GameEvent, CardName, DeckCardMetadata } from "@game-state/types";
+import type { SimGameState, GameEvent, CardName, DeckCardMetadata, AiDecisionTrace } from "@game-state/types";
 import { simulateGame } from "@sim/engine.js";
 import { DecisionTreeAgent } from "@sim/decisionTreeAgent.js";
 import { loadTrainedPolicyStore } from "@sim/policyLoader.js";
 import { HumanAgent, type WaitingType, type WaitingContext } from "../agents/HumanAgent.js";
 import {
+  assignSeatsByTurnOrder,
   buildPlayerDescriptorsFromSeats,
   buildSeatsFromControllers,
   serializeForRecipient,
@@ -48,11 +49,17 @@ export interface GameLogMessage {
   message: string;
 }
 
+export interface AiDecisionTraceMessage {
+  type: "ai_decision_trace";
+  trace: AiDecisionTrace;
+}
+
 export type GameMessage =
   | WaitingMessage
   | StateUpdateMessage
   | GameOverMessage
-  | GameLogMessage;
+  | GameLogMessage
+  | AiDecisionTraceMessage;
 
 export class GameSession {
   readonly id: string;
@@ -88,14 +95,18 @@ export class GameSession {
       playerDecks?: CardName[][];
       playerDeckMetadata?: DeckCardMetadata[][];
       playerCommanders?: Array<CardName | null>;
+      startingPlayerIndex?: number;
     }
   ) {
     this.id = id;
     this.onMessage = onMessage;
     this.mode = options?.mode ?? "game";
-    this.seats = options?.seats ?? buildSeatsFromControllers(["human", "ai", "ai", "ai"]);
-    this.seatCredentials = buildSeatCredentialState(options?.seatCredentials);
-    this.startingPlayerIndex = Math.floor(Math.random() * 4);
+    this.startingPlayerIndex = options?.startingPlayerIndex ?? Math.floor(Math.random() * 4);
+    this.seats = assignSeatsByTurnOrder(
+      options?.seats ?? buildSeatsFromControllers(["human", "ai", "ai", "ai"]),
+      this.startingPlayerIndex
+    );
+    this.seatCredentials = buildSeatCredentialState(this.remapSeatCredentials(options?.seatCredentials));
 
     const makeHumanAgent = (playerIndex: number) => new HumanAgent(id, (type, ctx, decisionState) => {
       if (decisionState) {
@@ -188,6 +199,9 @@ export class GameSession {
           this.status = "game_over";
           this.onMessage({ type: "game_over", winner: event.winner });
         }
+      },
+      onAiDecisionTrace: (trace) => {
+        this.onMessage({ type: "ai_decision_trace", trace });
       },
       });
     } catch (err: unknown) {
@@ -321,6 +335,18 @@ export class GameSession {
     this.onMessage({
       type: "game_log",
       message: sessionMappingLog("HUMAN_VS_AI", buildPlayerDescriptorsFromSeats(this.seats)),
+    });
+  }
+
+  private remapSeatCredentials(credentials: SeatCredential[] = []): SeatCredential[] {
+    return credentials.map((credential) => {
+      const seat =
+        this.seats.find((candidate) => candidate.playerId === credential.playerId) ??
+        this.seats.find((candidate) => candidate.id === credential.seatId);
+      return {
+        ...credential,
+        seatId: seat?.id ?? credential.seatId,
+      };
     });
   }
 

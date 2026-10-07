@@ -257,6 +257,7 @@ export class SessionManager {
       playerDecks?: CardName[][];
       playerDeckMetadata?: DeckCardMetadata[][];
       playerCommanders?: Array<CardName | null>;
+      startingPlayerIndex?: number;
     }
   ): AllAiGameSession {
     const session = new AllAiGameSession(id, decks, (msg) => {
@@ -283,6 +284,7 @@ export class SessionManager {
       playerDecks?: CardName[][];
       playerDeckMetadata?: DeckCardMetadata[][];
       playerCommanders?: Array<CardName | null>;
+      startingPlayerIndex?: number;
     }
   ): GameSession {
     const session = new GameSession(id, humanDeck, humanDeckMeta, humanCommander, aiDecks, (msg) => {

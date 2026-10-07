@@ -3,6 +3,7 @@ import { simulateGame } from "@sim/engine.js";
 import { DecisionTreeAgent } from "@sim/decisionTreeAgent.js";
 import { loadTrainedPolicyStore } from "@sim/policyLoader.js";
 import {
+  assignSeatsByTurnOrder,
   buildPlayerDescriptorsFromSeats,
   buildSeatsFromControllers,
   serializeForRecipient,
@@ -28,6 +29,7 @@ export class AllAiGameSession {
   readonly seats: Seat[];
   status: SessionStatus = "pending";
   winner: number | null = null;
+  private readonly startingPlayerIndex: number;
 
   private onMessage: (msg: GameMessage) => void;
   private lastState: SimGameState | null = null;
@@ -42,12 +44,16 @@ export class AllAiGameSession {
     id: string,
     decks: Array<{ deck: CardName[]; meta: DeckCardMetadata[]; commander?: CardName | null }>,
     onMessage: (msg: GameMessage) => void,
-    options?: { mode?: SessionMode; seats?: Seat[] }
+    options?: { mode?: SessionMode; seats?: Seat[]; startingPlayerIndex?: number }
   ) {
     this.id = id;
     this.onMessage = onMessage;
     this.mode = options?.mode ?? "debug";
-    this.seats = options?.seats ?? buildSeatsFromControllers(["ai", "ai", "ai", "ai"]);
+    this.startingPlayerIndex = options?.startingPlayerIndex ?? Math.floor(Math.random() * 4);
+    this.seats = assignSeatsByTurnOrder(
+      options?.seats ?? buildSeatsFromControllers(["ai", "ai", "ai", "ai"]),
+      this.startingPlayerIndex
+    );
 
     this.playerDecks = decks.map((d) => d.deck);
     this.playerDeckMetadata = decks.map((d) => d.meta);
@@ -78,6 +84,7 @@ export class AllAiGameSession {
 
       await simulateGame(agents, {
       maxTurns: 60,
+      startingPlayerIndex: this.startingPlayerIndex,
       enableStack: true,
       maxMulligans: 2,
       phaseDelayMs: 1200,
@@ -93,7 +100,7 @@ export class AllAiGameSession {
         this.stateVersion++;
         this.onMessage({
           type: "state_update",
-          state: serializeForViewer(state, 0, 0, {
+          state: serializeForViewer(state, 0, this.startingPlayerIndex, {
             sessionId: this.id,
             stateVersion: this.stateVersion,
             gameMode: "ALL_AI",
@@ -107,6 +114,9 @@ export class AllAiGameSession {
           this.onMessage({ type: "game_over", winner: event.winner });
         }
       },
+      onAiDecisionTrace: (trace) => {
+        this.onMessage({ type: "ai_decision_trace", trace });
+      },
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -117,7 +127,7 @@ export class AllAiGameSession {
 
   getFilteredState(): FilteredGameState | null {
     if (!this.lastState) return null;
-    return serializeForViewer(this.lastState, 0, 0, {
+    return serializeForViewer(this.lastState, 0, this.startingPlayerIndex, {
       sessionId: this.id,
       stateVersion: this.stateVersion,
       gameMode: "ALL_AI",
@@ -128,7 +138,7 @@ export class AllAiGameSession {
 
   getSnapshotForRecipient(recipient: SessionRecipient) {
     if (!this.lastState) return null;
-    return serializeForRecipient(this.lastState, 0, {
+    return serializeForRecipient(this.lastState, this.startingPlayerIndex, {
       sessionId: this.id,
       stateVersion: this.stateVersion,
       mode: this.mode,

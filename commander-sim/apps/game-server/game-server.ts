@@ -9,7 +9,7 @@ import type { GameMessage } from "./session/GameSession.js";
 import type { SeatCredential } from "./session/seatOwnership.js";
 import type { CardName, DeckCardMetadata } from "@game-state/types";
 import { deriveCapabilities, type ClientGameMessage, type ConnectionRole, type SeatId, type SessionRecipient } from "../../packages/game-state/src/session";
-import { buildSeatsFromControllers } from "./state/stateSerializer.js";
+import { assignSeatsByTurnOrder, buildSeatsFromControllers } from "./state/stateSerializer.js";
 import { getDeckById } from "@db/db";
 
 const PORT = Number(process.env.GAME_SERVER_PORT ?? 5300);
@@ -351,23 +351,30 @@ app.post("/lobby/:id/start", async (req, res) => {
 
   if (lobby.allAi) {
     const allDecks = await Promise.all(lobby.seats.map((seat) => loadDeckForEngine(seat.type !== "empty" ? seat.deckId : undefined)));
+    const startingPlayerIndex = Math.floor(Math.random() * 4);
     manager.createAllAi(sessionId, allDecks, (msg) => broadcast(sessionId, msg), {
       mode: lobby.mode,
       seats: buildSeatsFromControllers(["ai", "ai", "ai", "ai"]),
+      startingPlayerIndex,
     });
   } else {
+    const startingPlayerIndex = Math.floor(Math.random() * 4);
     const controllers = lobby.seats.map((seat) => seat.type === "ai" ? "ai" : "human");
-    const seats = buildSeatsFromControllers(controllers).map((seat, index) => {
+    const seats = assignSeatsByTurnOrder(buildSeatsFromControllers(controllers).map((seat, index) => {
       const lobbySeat = lobby.seats[index];
       return {
         ...seat,
         playerId: lobbySeat.type === "human" ? lobbySeat.playerId : seat.playerId,
         deckId: lobbySeat.type !== "empty" ? lobbySeat.deckId : undefined,
       };
-    });
+    }), startingPlayerIndex);
     const credentials: SeatCredential[] = lobby.seats
       .filter((seat): seat is Extract<typeof seat, { type: "human" }> => seat.type === "human")
-      .map((seat) => ({ seatId: seat.seatId, playerId: seat.playerId, token: seat.playerToken }));
+      .map((seat) => ({
+        seatId: seats.find((candidate) => candidate.playerId === seat.playerId)?.id ?? seat.seatId,
+        playerId: seat.playerId,
+        token: seat.playerToken,
+      }));
     const seatDecks = await Promise.all(lobby.seats.map((seat) => loadDeckForEngine(seat.type !== "empty" ? seat.deckId : undefined)));
 
     manager.create(
@@ -384,6 +391,7 @@ app.post("/lobby/:id/start", async (req, res) => {
         playerDecks: seatDecks.map((entry) => entry.deck),
         playerDeckMetadata: seatDecks.map((entry) => entry.meta),
         playerCommanders: seatDecks.map((entry) => entry.commander),
+        startingPlayerIndex,
       }
     );
   }
@@ -494,6 +502,7 @@ app.post("/game/create-ai-only", async (req, res) => {
   }
 
   sessionClients.set(sessionId, new Set());
+  const startingPlayerIndex = Math.floor(Math.random() * 4);
 
   manager.createAllAi(
     sessionId,
@@ -501,7 +510,7 @@ app.post("/game/create-ai-only", async (req, res) => {
     (msg) => {
       broadcast(sessionId, msg);
     },
-    { mode: body.mode ?? "debug", seats: buildSeatsFromControllers(["ai", "ai", "ai", "ai"]) }
+    { mode: body.mode ?? "debug", seats: buildSeatsFromControllers(["ai", "ai", "ai", "ai"]), startingPlayerIndex }
   );
 
   res.json({ sessionId });
@@ -575,14 +584,15 @@ app.post("/game/create", async (req, res) => {
   }
 
   sessionClients.set(sessionId, new Set());
+  const startingPlayerIndex = Math.floor(Math.random() * 4);
   const controllers = [0, 1, 2, 3].map((index) =>
     body.seats?.[index]?.controller === "ai" ? "ai" : body.seats?.[index]?.controller === "human" ? "human" : index === 0 ? "human" : "ai"
   );
-  const seats = buildSeatsFromControllers(controllers).map((seat, index) => ({
+  const seats = assignSeatsByTurnOrder(buildSeatsFromControllers(controllers).map((seat, index) => ({
     ...seat,
     playerId: body.seats?.[index]?.playerId || seat.playerId,
     deckId: body.seats?.[index]?.deckId === undefined ? undefined : String(body.seats[index].deckId),
-  }));
+  })), startingPlayerIndex);
   const seatCredentials: SeatCredential[] = seats
     .filter((seat) => seat.controller === "human")
     .map((seat) => ({
@@ -600,7 +610,7 @@ app.post("/game/create", async (req, res) => {
     (msg) => {
       broadcast(sessionId, msg);
     },
-    { mode: body.mode ?? "game", seats, seatCredentials }
+    { mode: body.mode ?? "game", seats, seatCredentials, startingPlayerIndex }
   );
 
   res.json({

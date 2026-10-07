@@ -40,8 +40,16 @@ export interface PlayerPublicState {
   displayName: string;
   life: number;
   commander: CardName;
+  commandZone?: CardName[];
   battlefield: CardName[];
-  battlefieldPermanents?: Array<{ name: CardName; tapped: boolean }>;
+  battlefieldPermanents?: Array<{
+    name: CardName;
+    tapped: boolean;
+    isLand?: boolean;
+    typeLine?: string;
+    imageName?: CardName;
+    imageFace?: "front" | "back";
+  }>;
   creatures: CreaturePermanent[];
   graveyard: CardName[];
   exile: CardName[];

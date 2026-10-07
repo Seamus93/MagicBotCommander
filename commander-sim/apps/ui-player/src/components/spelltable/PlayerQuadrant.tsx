@@ -13,16 +13,27 @@ import iconGraveyard from "../../assets/spelltable/icon-graveyard.png";
 import iconHand from "../../assets/spelltable/icon-hand.png";
 import iconLibrary from "../../assets/spelltable/icon-library.png";
 import sleeve from "../../assets/sleeve.png";
+import { PERMANENT_CATEGORIES, permanentCategoryForTypeLine } from "./permanentCategory";
+import { visibleStackLayers } from "./visibleStackLayers";
 
 export interface QuadrantPlayerData {
   label: string;
   life: number;
   commander: string | null;
   battlefield: string[];
-  battlefieldPermanents?: Array<{ name: string; tapped: boolean }>;
+  battlefieldPermanents?: Array<{
+    name: string;
+    tapped: boolean;
+    isLand?: boolean;
+    typeLine?: string;
+    imageName?: string;
+    imageFace?: "front" | "back";
+  }>;
   creatures?: Array<{
     id: string;
     name: string;
+    imageName?: string;
+    imageFace?: "front" | "back";
     power: number;
     toughness: number;
     tapped: boolean;
@@ -55,8 +66,8 @@ interface PlayerQuadrantProps {
   accentColor: string;
   accentBg: string;
   accentText: string;
-  onCardDoubleClick?: (cardName: string) => void;
-  onCardInspect?: (cardName: string | null) => void;
+  onCardDoubleClick?: (cardName: string, imageName?: string, imageFace?: "front" | "back") => void;
+  onCardInspect?: (cardName: string | null, imageName?: string, imageFace?: "front" | "back") => void;
   allCounters: Record<number, Record<PlayerCounterKey, number>>;
   commanderCounterLabels: Record<PlayerCounterKey, string>;
   onCounterChange: (playerId: number, counter: PlayerCounterKey, delta: number) => void;
@@ -64,6 +75,9 @@ interface PlayerQuadrantProps {
 
 type BattlefieldCard = {
   name: string;
+  typeLine?: string;
+  imageName?: string;
+  imageFace?: "front" | "back";
   tapped?: boolean;
   overlay?: string;
   keyHint?: string;
@@ -175,8 +189,10 @@ const KNOWN_LAND_NAMES = new Set(
   ].map((name) => name.toLowerCase())
 );
 
-function cardImageUrl(name: string, version: "small" | "normal" | "art_crop" = "small") {
-  return `https://api.scryfall.com/cards/named?exact=${encodeURIComponent(name)}&format=image&version=${version}`;
+function cardImageUrl(name: string, version: "small" | "normal" | "art_crop" = "small", face?: "front" | "back") {
+  const params = new URLSearchParams({ exact: name, format: "image", version });
+  if (face) params.set("face", face);
+  return `https://api.scryfall.com/cards/named?${params.toString()}`;
 }
 
 function themeForPlayer(playerId: number) {
@@ -318,7 +334,13 @@ function ZoneCounters({
     { label: "Library", value: player.libraryCount, title: "Library", icon: iconLibrary },
     { label: "Grave", value: player.graveyard.length, title: "Graveyard", icon: iconGraveyard, action: () => onOpenZone("graveyard") },
     { label: "Exile", value: player.exile.length, title: "Exile", icon: iconExile, action: () => onOpenZone("exile") },
-    { label: "Command", value: commandTax > 0 ? `+${commandTax}` : "+0", title: "Commander tax", icon: iconCommand },
+    {
+      label: "Command",
+      value: player.commandZone?.length ?? (player.commander ? 1 : 0),
+      detail: `Tax +${commandTax}`,
+      title: `Command Zone; commander tax +${commandTax}`,
+      icon: iconCommand,
+    },
   ];
 
   return (
@@ -333,6 +355,9 @@ function ZoneCounters({
             <div className="mt-0.5 truncate text-[8px] uppercase tracking-[.06em] text-slate-300/68">
               {item.label}
             </div>
+            {"detail" in item && (
+              <div className="truncate text-[7px] uppercase tracking-[.04em] text-slate-400/75">{item.detail}</div>
+            )}
           </>
         );
 
@@ -369,8 +394,8 @@ function GameCard({
 }: {
   card: BattlefieldCard;
   theme: Theme;
-  onDoubleClick?: (cardName: string) => void;
-  onInspect?: (cardName: string | null) => void;
+  onDoubleClick?: (cardName: string, imageName?: string, imageFace?: "front" | "back") => void;
+  onInspect?: (cardName: string | null, imageName?: string, imageFace?: "front" | "back") => void;
 }) {
   const [imageFailed, setImageFailed] = useState(false);
 
@@ -378,9 +403,9 @@ function GameCard({
     <div
       className="group relative shrink-0"
       title={card.name}
-      onDoubleClick={() => onDoubleClick?.(card.name)}
-      onMouseEnter={() => onInspect?.(card.name)}
-      onFocus={() => onInspect?.(card.name)}
+      onDoubleClick={() => onDoubleClick?.(card.name, card.imageName, card.imageFace)}
+      onMouseEnter={() => onInspect?.(card.name, card.imageName, card.imageFace)}
+      onFocus={() => onInspect?.(card.name, card.imageName, card.imageFace)}
     >
       <div
         tabIndex={0}
@@ -398,7 +423,7 @@ function GameCard({
           </div>
         ) : (
           <img
-            src={cardImageUrl(card.name)}
+            src={cardImageUrl(card.imageName ?? card.name, "small", card.imageFace)}
             alt={card.name}
             className="h-full w-full rounded-[7px] object-cover"
             loading="lazy"
@@ -420,23 +445,26 @@ function CardStack({
   cards,
   theme,
   maxVisible = 18,
+  groupDuplicates = true,
   onCardDoubleClick,
   onInspect,
 }: {
   cards: BattlefieldCard[];
   theme: Theme;
   maxVisible?: number;
-  onCardDoubleClick?: (cardName: string) => void;
-  onInspect?: (cardName: string | null) => void;
+  groupDuplicates?: boolean;
+  onCardDoubleClick?: (cardName: string, imageName?: string, imageFace?: "front" | "back") => void;
+  onInspect?: (cardName: string | null, imageName?: string, imageFace?: "front" | "back") => void;
 }) {
   const groups = useMemo(() => {
+    if (!groupDuplicates) return cards.map((card) => [card]);
     const map = new Map<string, BattlefieldCard[]>();
     cards.forEach((card) => {
       const key = `${card.name}|${card.tapped ? "t" : "u"}|${card.overlay ?? ""}`;
       map.set(key, [...(map.get(key) ?? []), card]);
     });
     return Array.from(map.values());
-  }, [cards]);
+  }, [cards, groupDuplicates]);
 
   if (!cards.length) {
     return <div className="h-[clamp(58px,7vh,96px)]" />;
@@ -459,10 +487,13 @@ function CardStack({
         return (
           <div key={`${card.name}-${index}`} className={`relative transition-[margin] duration-200 ${overlapClass}`}>
             {count > 1 && (
-              <>
-                <div className="absolute left-1.5 top-1.5 aspect-[63/88] w-[clamp(68px,4.8vw,102px)] rounded-[8px] border border-black/55 bg-black/50" />
-                <div className="absolute left-3 top-3 aspect-[63/88] w-[clamp(68px,4.8vw,102px)] rounded-[8px] border border-black/55 bg-black/40" />
-              </>
+              Array.from({ length: visibleStackLayers(count) }, (_, layer) => (
+                <div
+                  key={`stack-layer-${layer}`}
+                  className="absolute aspect-[63/88] w-[clamp(68px,4.8vw,102px)] rounded-[8px] border border-black/55 bg-black/45"
+                  style={{ left: `${(layer + 1) * 6}px`, top: `${(layer + 1) * 6}px`, zIndex: layer }}
+                />
+              ))
             )}
             <GameCard
               card={card}
@@ -525,6 +556,51 @@ function BattlefieldLane({
   );
 }
 
+function BattlefieldPermanentGroups({
+  groups,
+  theme,
+  onCardDoubleClick,
+  onInspect,
+}: {
+  groups: Array<{ key: string; label: string; cards: BattlefieldCard[] }>;
+  theme: Theme;
+  onCardDoubleClick?: (cardName: string, imageName?: string, imageFace?: "front" | "back") => void;
+  onInspect?: (cardName: string | null, imageName?: string, imageFace?: "front" | "back") => void;
+}) {
+  const count = groups.reduce((total, group) => total + group.cards.length, 0);
+
+  return (
+    <section className="min-h-0">
+      <div className="mb-1 flex items-center gap-2">
+        <div className="text-[10px] font-semibold uppercase tracking-[.16em] text-slate-200/86">Permanents</div>
+        <div className="rounded-full border border-white/10 bg-black/28 px-1.5 py-px text-[10px] font-semibold text-slate-300">{count}</div>
+      </div>
+      {groups.length ? (
+        <div className="flex min-w-0 items-start gap-3 overflow-x-auto overflow-y-hidden pb-1">
+          {groups.map((group) => (
+            <div key={group.key} className="min-w-[88px] max-w-[190px] shrink-0">
+              <div className="mb-0.5 flex items-center gap-1 text-[8px] font-semibold uppercase tracking-[.12em] text-slate-300/75">
+                <span className="truncate">{group.label}</span>
+                <span className="rounded-full bg-black/30 px-1 text-[8px] text-slate-400">{group.cards.length}</span>
+              </div>
+              <CardStack
+                cards={group.cards}
+                theme={theme}
+                maxVisible={12}
+                groupDuplicates={group.key !== "creatures"}
+                onCardDoubleClick={onCardDoubleClick}
+                onInspect={onInspect}
+              />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="h-[clamp(58px,7vh,96px)]" />
+      )}
+    </section>
+  );
+}
+
 function HandPanel({
   cards,
   count,
@@ -534,16 +610,37 @@ function HandPanel({
   count: number;
   onInspect?: (cardName: string | null) => void;
 }) {
+  const [collapsed, setCollapsed] = useState(false);
   const visibleCards = cards.slice(0, 8);
   return (
-    <aside className="w-[clamp(118px,14%,150px)] shrink-0 self-stretch rounded-xl border border-white/10 bg-black/38 p-2 shadow-[0_10px_22px_rgba(0,0,0,.32)] backdrop-blur-md">
-      <div className="mb-2 text-[10px] font-semibold uppercase tracking-[.16em] text-slate-200/88">
-        <span className="inline-flex items-center gap-1.5">
-          <img src={iconHand} alt="" className="h-4 w-5 object-contain opacity-80" loading="lazy" />
-          Hand ({count})
+    <aside className={`w-[clamp(118px,14%,150px)] shrink-0 rounded-xl border border-white/10 bg-black/38 p-2 shadow-[0_10px_22px_rgba(0,0,0,.32)] backdrop-blur-md ${
+      collapsed ? "h-fit self-start overflow-hidden" : "min-h-0 self-stretch overflow-y-auto"
+    }`}>
+      <button
+        type="button"
+        aria-expanded={!collapsed}
+        aria-label={collapsed ? `Expand hand, ${count} cards` : `Collapse hand, ${count} cards`}
+        onClick={() => setCollapsed((value) => !value)}
+        className="mb-2 flex w-full items-center justify-between gap-1 text-left text-[10px] font-semibold uppercase tracking-[.16em] text-slate-200/88"
+      >
+        <span className="inline-flex min-w-0 items-center gap-1.5">
+          <img src={iconHand} alt="" className="h-4 w-5 shrink-0 object-contain opacity-80" loading="lazy" />
+          <span className="truncate">Hand ({count})</span>
         </span>
-      </div>
-      <div className="space-y-1">
+        <svg
+          viewBox="0 0 16 16"
+          aria-hidden="true"
+          className={`size-3 shrink-0 transition-transform ${collapsed ? "-rotate-90" : "rotate-0"}`}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="m3.5 6 4.5 4 4.5-4" />
+        </svg>
+      </button>
+      {!collapsed && <div className="space-y-1">
         {visibleCards.length > 0 ? (
           visibleCards.map((card, index) => (
             <div
@@ -588,7 +685,7 @@ function HandPanel({
             +{cards.length - visibleCards.length} more
           </div>
         )}
-      </div>
+      </div>}
     </aside>
   );
 }
@@ -660,7 +757,7 @@ export default function PlayerQuadrant({
 
   const creatures = player.creatures ?? [];
   const creatureNames = new Set(creatures.map((creature) => creature.name));
-  const battlefieldPermanents =
+  const battlefieldPermanents: NonNullable<QuadrantPlayerData["battlefieldPermanents"]> =
     player.battlefieldPermanents ??
     player.battlefield.map((name) => ({ name, tapped: false }));
   const nonCreaturePermanents = battlefieldPermanents.filter((card) => !creatureNames.has(card.name));
@@ -669,19 +766,32 @@ export default function PlayerQuadrant({
 
   const battlefield = useMemo(() => {
     const lands: BattlefieldCard[] = [];
-    const permanents: BattlefieldCard[] = creatures.map((creature) => ({
+    const permanentCards = Object.fromEntries(
+      PERMANENT_CATEGORIES.map((category) => [category.key, [] as BattlefieldCard[]])
+    ) as Record<(typeof PERMANENT_CATEGORIES)[number]["key"], BattlefieldCard[]>;
+    creatures.forEach((creature) => permanentCards.creatures.push({
       name: creature.name,
+      imageName: creature.imageName,
+      imageFace: creature.imageFace,
       tapped: creature.tapped,
       overlay: `${creature.power}/${creature.toughness}`,
       keyHint: creature.id,
     }));
 
     nonCreaturePermanents.forEach((card) => {
-      if (isLandCard(card.name, typeMap[card.name])) lands.push(card);
-      else permanents.push(card);
+      const typeLineSaysLand = card.typeLine?.toLowerCase().includes("land") ?? false;
+      const isLand = typeLineSaysLand || card.isLand === true || (
+        card.isLand !== false && isLandCard(card.name, card.typeLine ?? typeMap[card.name])
+      );
+      const battlefieldCard = { ...card };
+      if (isLand) lands.push(battlefieldCard);
+      else permanentCards[permanentCategoryForTypeLine(card.typeLine ?? typeMap[card.name])].push(battlefieldCard);
     });
 
-    return { lands, permanents };
+    const permanentGroups = PERMANENT_CATEGORIES
+      .map((category) => ({ key: category.key, label: category.label, cards: permanentCards[category.key] }))
+      .filter((group) => group.cards.length > 0);
+    return { lands, permanentGroups };
   }, [creatures, nonCreaturePermanents, typeMap]);
 
   useEffect(() => {
@@ -795,6 +905,12 @@ export default function PlayerQuadrant({
           {!player.hand && <HandPanel cards={[]} count={player.handCount} onInspect={onCardInspect} />}
 
           <div className="grid min-w-0 flex-1 grid-rows-2 gap-[clamp(10px,1.4vh,16px)]">
+            <BattlefieldPermanentGroups
+              groups={battlefield.permanentGroups}
+              theme={theme}
+              onCardDoubleClick={onCardDoubleClick}
+              onInspect={onCardInspect}
+            />
             <BattlefieldLane
               title="Lands"
               count={battlefield.lands.length}
@@ -803,18 +919,10 @@ export default function PlayerQuadrant({
               onCardDoubleClick={onCardDoubleClick}
               onInspect={onCardInspect}
             />
-            <BattlefieldLane
-              title="Permanents"
-              count={battlefield.permanents.length}
-              cards={battlefield.permanents}
-              theme={theme}
-              onCardDoubleClick={onCardDoubleClick}
-              onInspect={onCardInspect}
-            />
           </div>
         </main>
 
-        {!battlefield.lands.length && !battlefield.permanents.length && (
+        {!battlefield.lands.length && !battlefield.permanentGroups.length && (
           <div className="pointer-events-none absolute bottom-5 right-6 z-10 rounded-full border border-white/8 bg-black/22 px-3 py-1 text-[10px] uppercase tracking-[.18em] text-white/34 backdrop-blur-sm">
             Battlefield ready
           </div>

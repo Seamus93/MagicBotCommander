@@ -1,4 +1,5 @@
-import type { SimGameState } from "@game-state/types";
+import type { CardName, SimGameState } from "@game-state/types";
+import { activeFaceMetadata, getCardFaceImageSide, getCardMetadata } from "../../../packages/game-state/src/cardUtils";
 import type { CreaturePermanent } from "@rules/combat/types";
 import {
   deriveCapabilities,
@@ -37,8 +38,16 @@ export interface FilteredPlayerState {
   displayName: string;
   life: number;
   commander: string;
+  commandZone: CardName[];
   battlefield: string[];
-  battlefieldPermanents?: Array<{ name: string; tapped: boolean }>;
+  battlefieldPermanents?: Array<{
+    name: string;
+    tapped: boolean;
+    isLand?: boolean;
+    typeLine?: string;
+    imageName?: CardName;
+    imageFace?: "front" | "back";
+  }>;
   creatures: CreaturePermanent[];
   graveyard: string[];
   exile: string[];
@@ -97,6 +106,30 @@ export function buildSeatsFromControllers(
       aiAgentId: controller === "ai" ? `ai-${playerIndex}` : undefined,
     };
   });
+}
+
+export function turnOrderFromStartingPlayer(startingPlayerIndex: number, playerCount = 4): number[] {
+  return Array.from({ length: playerCount }, (_, offset) => (startingPlayerIndex + offset) % playerCount);
+}
+
+export function assignSeatsByTurnOrder(
+  seats: Seat[],
+  startingPlayerIndex: number
+): Seat[] {
+  const assigned = seats.map((seat) => ({ ...seat }));
+  const turnOrder = turnOrderFromStartingPlayer(startingPlayerIndex, seats.length);
+
+  turnOrder.forEach((playerIndex, turnOrderIndex) => {
+    const seatIndex = assigned.findIndex((seat) => seat.playerIndex === playerIndex);
+    if (seatIndex < 0) return;
+    assigned[seatIndex] = {
+      ...assigned[seatIndex],
+      id: SEAT_IDS_CLOCKWISE[turnOrderIndex % SEAT_IDS_CLOCKWISE.length],
+      position: POSITIONS_CLOCKWISE[turnOrderIndex % POSITIONS_CLOCKWISE.length],
+    };
+  });
+
+  return assigned;
 }
 
 export function buildPlayerDescriptorsFromSeats(seats: Seat[]): PlayerDescriptor[] {
@@ -158,9 +191,21 @@ export function serializeForViewer(
       displayName: descriptor.displayName,
       life,
       commander: state.commanders[i] ?? "",
+      commandZone: state.commandZone?.[i] ?? [],
       battlefield: state.battlefields[i] ?? [],
       battlefieldPermanents: serializeBattlefieldPermanents(state, i),
-      creatures: state.creatures[i] ?? [],
+      creatures: (state.creatures[i] ?? []).map((creature) => {
+        const permanent = state.permanents?.[i]?.find((candidate) => candidate.id === creature.id);
+        if (!permanent) return creature;
+        const metadata = getCardMetadata(state, i, permanent.cardName);
+        const imageFace = getCardFaceImageSide(metadata, permanent.face ?? permanent.cardName);
+        if (permanent.cardName === creature.name && !imageFace) return creature;
+        return {
+          ...creature,
+          imageName: permanent.cardName,
+          imageFace,
+        };
+      }),
       graveyard: state.graveyards[i] ?? [],
       exile: exileZone,
       libraryCount: state.libraries[i]?.length ?? 0,
@@ -275,15 +320,56 @@ export function sessionMappingLog(gameMode: GameMode, descriptors: PlayerDescrip
 function serializeBattlefieldPermanents(
   state: SimGameState,
   player: number
-): Array<{ name: string; tapped: boolean }> {
+): Array<{
+  name: string;
+  tapped: boolean;
+  isLand?: boolean;
+  typeLine?: string;
+  imageName?: CardName;
+  imageFace?: "front" | "back";
+}> {
   const tapped = { ...(state.tappedPermanents?.[player] ?? {}) };
+  const permanents = [...(state.permanents?.[player] ?? [])];
   return (state.battlefields[player] ?? []).map((name) => {
+    const permanentIndex = permanents.findIndex((permanent) =>
+      (permanent.face ?? permanent.cardName) === name
+    );
+    if (permanentIndex >= 0) {
+      const [permanent] = permanents.splice(permanentIndex, 1);
+      const cardMetadata = getCardMetadata(state, player, permanent.cardName);
+      const metadata = activeFaceMetadata(cardMetadata, name);
+      const imageFace = getCardFaceImageSide(cardMetadata, name);
+      return {
+        name,
+        tapped: permanent.tapped,
+        isLand: landClassification(metadata),
+        typeLine: metadata?.typeLine,
+        ...(permanent.cardName !== name || imageFace ? { imageName: permanent.cardName, imageFace } : {}),
+      };
+    }
     const key = name.trim().toLowerCase();
     const tappedCount = tapped[key] ?? 0;
+    const cardMetadata = getCardMetadata(state, player, name);
+    const metadata = activeFaceMetadata(cardMetadata, name);
+    const imageFace = getCardFaceImageSide(cardMetadata, name);
+    const cardType = {
+      isLand: landClassification(metadata),
+      typeLine: metadata?.typeLine,
+      ...(cardMetadata && (cardMetadata.name !== name || imageFace)
+        ? { imageName: cardMetadata.name, imageFace }
+        : {}),
+    };
     if (tappedCount > 0) {
       tapped[key] = tappedCount - 1;
-      return { name, tapped: true };
+      return { name, tapped: true, ...cardType };
     }
-    return { name, tapped: false };
+    return { name, tapped: false, ...cardType };
   });
+}
+
+function landClassification(metadata: ReturnType<typeof getCardMetadata>) {
+  if (!metadata) return undefined;
+  if (metadata.typeLine?.toLowerCase().includes("land")) return true;
+  if (metadata.landFace || metadata.faces?.some((face) => face.isLand)) return true;
+  return metadata.isLand;
 }

@@ -371,4 +371,24 @@ describe("OraclePatternRegistry", () => {
       ability.effects.some((effect) => effect.type === "DRAW_CARDS" && effect.amount === 2)
     )).toBe(true);
   });
+
+  it("parses fetch-land OR criteria and the required library shuffle", () => {
+    const parsed = parseCardRules(card({
+      name: "Bad River",
+      typeLine: "Land",
+      oracleText: "Bad River enters the battlefield tapped.\n{T}, Sacrifice Bad River: Search your library for an Island or Swamp card, put it onto the battlefield, then shuffle.",
+    }));
+    const ability = parsed.abilities.find((candidate) => candidate.patternId === "FETCH_LAND_ACTIVATED");
+
+    expect(ability?.costs).toMatchObject([
+      { type: "TAP" },
+      { type: "SACRIFICE", source: true },
+    ]);
+    expect(ability?.effects[0]).toMatchObject({
+      type: "SEARCH_LIBRARY",
+      subtypeAlternatives: ["Island", "Swamp"],
+      toZone: "battlefield",
+      shuffleAfterSearch: true,
+    });
+  });
 });

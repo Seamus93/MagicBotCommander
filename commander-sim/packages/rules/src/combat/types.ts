@@ -8,6 +8,8 @@ export interface CreatureBlueprint {
 export interface CreaturePermanent {
   id: string;
   name: string;
+  imageName?: string;
+  imageFace?: "front" | "back";
   power: number;
   toughness: number;
   tapped: boolean;

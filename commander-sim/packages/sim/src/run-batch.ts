@@ -479,6 +479,7 @@ async function main() {
 
     const playerDeckLists = assignment.map((a) => a.deck.cards ?? []);
     const playerDeckMetadata = assignment.map((a) => a.deck.cardMetadata ?? []);
+    const playerCommanders = assignment.map((a) => a.deck.commander ?? a.deck.cards?.[0] ?? null);
 
     const episodeStarted = Date.now();
     let result: SimulationResult;
@@ -488,6 +489,7 @@ async function main() {
         maxTurns: 40,
         playerDecks: playerDeckLists,
         playerDeckMetadata,
+        playerCommanders,
         enableStack: process.env.ENABLE_STACK === "true",
       });
     } catch (err) {

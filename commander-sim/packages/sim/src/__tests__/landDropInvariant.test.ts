@@ -156,7 +156,7 @@ describe("land drop strategic invariant", () => {
     expect(result.metrics?.missedLandDropOpportunity).toBe(0);
   });
 
-  it("B: forza il land drop in Main 2 se Main 1 e stata saltata", async () => {
+  it("B: converte PASS_TURN in land drop gia in Main 1", async () => {
     const result = await simulateGame(
       [new AlwaysPassAgent("p0"), new AlwaysPassAgent("p1")],
       {
@@ -170,8 +170,8 @@ describe("land drop strategic invariant", () => {
 
     const p0LandPlays = landPlays(result);
     expect(p0LandPlays).toHaveLength(1);
-    expect(p0LandPlays[0].state.phaseStep).toBe("Seconda Fase Principale");
-    expect(p0LandPlays[0].metadata?.reasoning).toBe("strategic_land_drop_invariant");
+    expect(p0LandPlays[0].state.phaseStep).toBe("Prima Fase Principale");
+    expect(p0LandPlays[0].metadata?.reasoning).toBe("strategic_main1_land_drop_over_pass");
     expect(result.metrics?.missedLandDropOpportunity).toBe(0);
   });
 
@@ -222,8 +222,8 @@ describe("land drop strategic invariant", () => {
 
     const p0LandPlays = landPlays(result);
     expect(p0LandPlays).toHaveLength(1);
-    expect(p0LandPlays[0].state.phaseStep).toBe("Seconda Fase Principale");
-    expect(p0LandPlays[0].metadata?.reasoning).toBe("strategic_land_drop_invariant");
+    expect(p0LandPlays[0].state.phaseStep).toBe("Prima Fase Principale");
+    expect(p0LandPlays[0].metadata?.reasoning).toBe("strategic_main1_land_drop_over_pass");
     expect(result.metrics?.missedLandDropOpportunity).toBe(0);
   });
 
@@ -278,7 +278,7 @@ describe("land drop strategic invariant", () => {
 
     const p0LandPlays = landPlays(result);
     expect(p0LandPlays).toHaveLength(2);
-    expect(p0LandPlays.every((entry) => entry.state.phaseStep === "Seconda Fase Principale")).toBe(true);
+    expect(p0LandPlays.every((entry) => entry.state.phaseStep === "Prima Fase Principale")).toBe(true);
     expect(result.metrics?.missedLandDropOpportunity).toBe(0);
   });
 
